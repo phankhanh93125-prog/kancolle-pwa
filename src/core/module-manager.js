@@ -21,13 +21,14 @@ export class ModuleManager {
    *   ui: object
    * }} deps
    */
-  constructor({ stageElement, bus, storage, api, ui }) {
+  constructor({ stageElement, bus, storage, api, ui, services = {} }) {
     this._stage = stageElement;
     this._bus = bus;
     this._storage = storage;
     this._shellStore = storage.namespace('core-shell');
     this._api = api;
     this._ui = ui;
+    this._services = { ...services };
 
     /** @type {Map<string, object>} */
     this._registry = new Map();
@@ -141,6 +142,7 @@ export class ModuleManager {
     this.unmountCurrent();
 
     const context = {
+      ...this._services,
       moduleId: mod.id,
       bus: this._bus,
       storage: this._storage.namespace(`mod-${mod.id}`),

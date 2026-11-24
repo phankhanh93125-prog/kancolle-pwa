@@ -2,6 +2,14 @@ import { EventBus } from './core/event-bus.js';
 import { StorageManager } from './core/storage.js';
 import { ApiGateway, PROVIDER_PRESETS } from './core/api.js';
 import { ModuleManager } from './core/module-manager.js';
+import { SaveManager } from './core/save-manager.js';
+import { CalcEngine } from './core/calc-engine.js';
+import { EntitySystem } from './core/entity-system.js';
+import { RuleEngine } from './core/rule-engine.js';
+import { StateMachine, TurnStepper } from './core/state-machine.js';
+import { PromptPipeline } from './core/prompt-pipeline.js';
+import { AssetManager } from './core/asset-manager.js';
+import { createUIKit, showToast } from './core/ui-kit.js';
 import { REGISTERED_MODULES } from './modules/index.js';
 
 function escapeHtml(str) {
@@ -14,16 +22,27 @@ function escapeHtml(str) {
 }
 
 function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  return `${(bytes / 1024).toFixed(2)} KB`;
+  const b = Number(bytes) || 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(2)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 // ------------------------------------------------------------
-// 1. Bootstrap Core Engines
+// 1. Bootstrap Core Game Framework Engines
 // ------------------------------------------------------------
 const bus = new EventBus();
 const storage = new StorageManager({ bus });
 const api = new ApiGateway({ storage, bus });
+const saves = new SaveManager({ storage, bus });
+const calc = new CalcEngine();
+const entities = new EntitySystem({ bus, calc });
+const rules = new RuleEngine({ bus, calc, entities });
+const stateMachine = new StateMachine({ bus });
+const turnStepper = new TurnStepper({ bus });
+const narrative = new PromptPipeline({ api, storage, bus });
+const assets = new AssetManager({ storage, bus });
+const uiKit = createUIKit();
 
 const els = {
   activeModuleName: document.getElementById('active-module-name'),
@@ -52,16 +71,6 @@ function autoResizeInput() {
   const el = els.inputField;
   el.style.height = 'auto';
   el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
-}
-
-function showToast(message, type = 'info') {
-  const item = document.createElement('div');
-  item.className = `toast-item ${type === 'ok' ? 'toast-ok' : type === 'error' ? 'toast-error' : ''}`;
-  item.textContent = message;
-  els.toastRegion.appendChild(item);
-  setTimeout(() => {
-    item.remove();
-  }, 2800);
 }
 
 const ui = {
@@ -147,6 +156,17 @@ const moduleManager = new ModuleManager({
   storage,
   api,
   ui,
+  services: {
+    saves,
+    calc,
+    entities,
+    rules,
+    stateMachine,
+    turnStepper,
+    narrative,
+    assets,
+    uiKit,
+  },
 });
 
 bus.on('module:changed', (mod) => {
@@ -186,7 +206,7 @@ function openModulesSheet() {
     const modules = moduleManager.list();
 
     body.innerHTML = `
-      <p class="muted-text">点击任意已注册模块即可实时切换挂载到主容器，每个模块拥有独立的数据命名空间。</p>
+      <p class="muted-text">点击任意已注册模块即可实时切换挂载到主容器，每个模块拥有独立的数据命名空间（支持 localStorage 与 IndexedDB 双层存储）。</p>
       <div class="module-list" id="module-manager-list">
         ${modules
           .map(
@@ -252,8 +272,8 @@ function openApiSheet() {
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="api-key">API Key（仅保存在本地浏览器，留空自动使用模拟回显）</label>
-            <input id="api-key" class="form-input" type="password" value="${escapeHtml(draft.apiKey)}" placeholder="留空即启用本地模拟回显模式" autocomplete="off">
+            <label class="form-label" for="api-key">API Key（仅保存在本地浏览器，留空自动使用模拟回显 / 离线模式）</label>
+            <input id="api-key" class="form-input" type="password" value="${escapeHtml(draft.apiKey)}" placeholder="留空即启用本地模拟回显与离线降级" autocomplete="off">
           </div>
 
           <div class="form-group">
@@ -357,7 +377,7 @@ function openApiSheet() {
         const saved = api.saveConfig(readDraftFromInputs());
         showToast(
           api.isMockMode(saved)
-            ? '配置已保存到本地（当前为模拟回显模式）'
+            ? '配置已保存到本地（当前为模拟回显 / 离线模式）'
             : `配置已保存：${saved.provider} / ${saved.model}`,
           'ok'
         );
@@ -369,70 +389,88 @@ function openApiSheet() {
   });
 }
 
-// --- Sheet 3: Data Management ---
+// --- Sheet 3: Data Management (Hybrid localStorage + IndexedDB) ---
 function openDataSheet() {
-  openSheet('数据管理', (body) => {
+  openSheet('数据管理（混合存储）', (body) => {
     let confirmResetArmed = false;
 
-    const renderDataView = () => {
-      const stats = storage.getStats();
+    const renderDataView = async () => {
+      body.innerHTML = '<p class="muted-text">正在统计 localStorage 与 IndexedDB 占用...</p>';
+      const stats = await storage.getHybridStats();
+      const quotaText =
+        stats.quotaEstimate && stats.quotaEstimate.quota > 0
+          ? `浏览器可用配额：${formatBytes(stats.quotaEstimate.usage)} / ${formatBytes(stats.quotaEstimate.quota)}`
+          : '浏览器配额信息由本地引擎自动托管';
+
       body.innerHTML = `
         <div class="storage-summary-grid">
           <div class="metric-card">
             <span class="metric-value">${stats.namespaceCount}</span>
-            <span class="metric-label">命名空间</span>
+            <span class="metric-label">总命名空间</span>
           </div>
           <div class="metric-card">
-            <span class="metric-value">${stats.totalKeys}</span>
-            <span class="metric-label">存储键值</span>
+            <span class="metric-value">${formatBytes(stats.local.totalBytes)}</span>
+            <span class="metric-label">localStorage</span>
           </div>
           <div class="metric-card">
-            <span class="metric-value">${formatBytes(stats.totalBytes)}</span>
-            <span class="metric-label">本地占用</span>
+            <span class="metric-value">${formatBytes(stats.idb.totalBytes)}</span>
+            <span class="metric-label">IndexedDB</span>
           </div>
         </div>
+        <p class="muted-text">${escapeHtml(quotaText)}</p>
 
         <div class="namespace-list">
+          ${stats.local.namespaces
+            .map(
+              (ns) => `
+            <div class="namespace-row">
+              <code>[Local] ${escapeHtml(ns.namespace)}</code>
+              <span class="muted-text">${ns.keysCount} 键 · ${formatBytes(ns.bytes)}</span>
+            </div>
+          `
+            )
+            .join('')}
+          ${stats.idb.namespaces
+            .map(
+              (ns) => `
+            <div class="namespace-row">
+              <code>[IDB] ${escapeHtml(ns.namespace)}</code>
+              <span class="muted-text">${ns.keysCount} 项 · ${formatBytes(ns.bytes)}</span>
+            </div>
+          `
+            )
+            .join('')}
           ${
-            stats.namespaces.length
-              ? stats.namespaces
-                  .map(
-                    (ns) => `
-              <div class="namespace-row">
-                <code>${escapeHtml(ns.namespace)}</code>
-                <span class="muted-text">${ns.keysCount} 键 · ${formatBytes(ns.bytes)}</span>
-              </div>
-            `
-                  )
-                  .join('')
-              : '<p class="muted-text">当前尚无本地存储数据。</p>'
+            stats.local.namespaces.length === 0 && stats.idb.namespaces.length === 0
+              ? '<p class="muted-text">当前尚无本地存储数据。</p>'
+              : ''
           }
         </div>
 
         <div class="data-actions-stack">
-          <button type="button" id="btn-export-json" class="btn-primary">导出 JSON 备份</button>
+          <button type="button" id="btn-export-json" class="btn-primary">导出混合 JSON 备份（含 IDB 与图片）</button>
           <button type="button" id="btn-import-json" class="btn-secondary">导入 JSON 备份</button>
           <input type="file" id="input-import-file" accept="application/json,.json" hidden>
           <button type="button" id="btn-reset-storage" class="btn-danger">
-            ${confirmResetArmed ? '再次点击确认：清空全部本地数据' : '清空重置全部本地数据'}
+            ${confirmResetArmed ? '再次点击确认：清空全部本地与 IDB 数据' : '清空重置全部本地与 IDB 数据'}
           </button>
         </div>
       `;
 
-      body.querySelector('#btn-export-json').addEventListener('click', () => {
-        const backup = storage.exportBackup();
+      body.querySelector('#btn-export-json').addEventListener('click', async () => {
+        const backup = await storage.exportHybridBackup();
         const blob = new Blob([JSON.stringify(backup, null, 2)], {
           type: 'application/json;charset=utf-8',
         });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `pwa-base-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `pwa-hybrid-backup-${new Date().toISOString().slice(0, 10)}.json`;
         document.body.appendChild(a);
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
-        showToast('已导出 JSON 备份文件', 'ok');
+        showToast('已导出混合 JSON 备份文件', 'ok');
       });
 
       const fileInput = body.querySelector('#input-import-file');
@@ -445,9 +483,9 @@ function openDataSheet() {
         if (!file) return;
         try {
           const text = await file.text();
-          const result = storage.importBackup(text, { replace: false });
-          showToast(`导入成功：${result.importedKeys} 项数据`, 'ok');
-          renderDataView();
+          const result = await storage.importHybridBackup(text, { replace: false });
+          showToast(`导入成功：Local ${result.importedLocalKeys} 项 + IDB ${result.importedIdbKeys} 项`, 'ok');
+          await renderDataView();
         } catch (err) {
           showToast(err instanceof Error ? err.message : '导入失败', 'error');
         } finally {
@@ -455,16 +493,16 @@ function openDataSheet() {
         }
       });
 
-      body.querySelector('#btn-reset-storage').addEventListener('click', () => {
+      body.querySelector('#btn-reset-storage').addEventListener('click', async () => {
         if (!confirmResetArmed) {
           confirmResetArmed = true;
-          renderDataView();
+          await renderDataView();
           return;
         }
-        const removed = storage.resetAll();
+        const removed = await storage.resetHybridAll();
         confirmResetArmed = false;
-        showToast(`已清空 ${removed} 项本地存储记录`, 'ok');
-        renderDataView();
+        showToast(`已清空 Local ${removed.removedLocal} 项 + IDB ${removed.removedIdb} 项`, 'ok');
+        await renderDataView();
       });
     };
 
@@ -494,5 +532,14 @@ window.__APP_BASE__ = {
   bus,
   storage,
   api,
+  saves,
+  calc,
+  entities,
+  rules,
+  stateMachine,
+  turnStepper,
+  narrative,
+  assets,
+  uiKit,
   modules: moduleManager,
 };

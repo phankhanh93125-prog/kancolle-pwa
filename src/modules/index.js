@@ -1,9 +1,11 @@
+import frameworkLabModule from './framework-lab.js';
 import aiConsoleModule from './ai-console.js';
 
 /**
  * Central pluggable module registry.
- * Add new modules here so ModuleManager registers them automatically on boot.
+ * The first module in the list is mounted as the default home page on fresh load.
  */
 export const REGISTERED_MODULES = [
+  frameworkLabModule,
   aiConsoleModule,
 ];
