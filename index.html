@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#0b0e13">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="PWA Base">
+  <meta name="description" content="移动端 PWA 可插拔模块化架构与多模型 API 网关通用底座">
+  <title>Modular PWA Base</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" type="image/png" href="./icon-192.png">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="stylesheet" href="./styles/main.css">
+</head>
+<body>
+  <div id="app-shell" class="app-shell">
+    <!-- Top Header Bar -->
+    <header class="app-header">
+      <div class="brand-group">
+        <span class="brand-mark" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <rect x="2.5" y="2.5" width="8" height="8" rx="2.2" fill="#14b8a6"/>
+            <rect x="13.5" y="2.5" width="8" height="8" rx="2.2" stroke="#cbd5e1" stroke-width="1.8"/>
+            <rect x="2.5" y="13.5" width="8" height="8" rx="2.2" fill="#232c3a" stroke="#64748b" stroke-width="1.4"/>
+            <circle cx="17.5" cy="17.5" r="4.1" fill="#2dd4bf"/>
+            <circle cx="17.5" cy="17.5" r="1.7" fill="#0f1319"/>
+          </svg>
+        </span>
+        <div class="brand-titles">
+          <h1 class="app-title">PWA Base</h1>
+          <span id="active-module-name" class="active-module-name">加载中...</span>
+        </div>
+      </div>
+
+      <nav class="header-actions" aria-label="系统入口">
+        <button type="button" id="btn-open-modules" class="header-btn" aria-label="模块管理">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+          </svg>
+          <span>模块管理</span>
+        </button>
+        <button type="button" id="btn-open-api" class="header-btn" aria-label="API 设置">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 2v4"/>
+            <path d="M12 18v4"/>
+            <path d="m4.93 4.93 2.83 2.83"/>
+            <path d="m16.24 16.24 2.83 2.83"/>
+            <path d="M2 12h4"/>
+            <path d="M18 12h4"/>
+            <circle cx="12" cy="12" r="4"/>
+          </svg>
+          <span>API 设置</span>
+        </button>
+        <button type="button" id="btn-open-data" class="header-btn" aria-label="数据管理">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <ellipse cx="12" cy="5" rx="8" ry="3"/>
+            <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/>
+            <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>
+          </svg>
+          <span>数据管理</span>
+        </button>
+      </nav>
+    </header>
+
+    <!-- Dynamic Central Stage -->
+    <main id="app-stage" class="app-stage" aria-live="polite"></main>
+
+    <!-- Bottom Universal Interaction Bar -->
+    <footer class="app-footer">
+      <div id="quick-actions-slot" class="quick-actions-slot" role="toolbar" aria-label="模块快捷按钮"></div>
+      <form id="universal-input-form" class="input-bar" autocomplete="off">
+        <textarea
+          id="universal-input"
+          class="universal-input"
+          rows="1"
+          placeholder="输入指令或消息..."
+          aria-label="通用输入框"
+        ></textarea>
+        <button type="submit" id="btn-universal-send" class="btn-send" aria-label="发送消息">
+          <span>发送</span>
+        </button>
+      </form>
+    </footer>
+  </div>
+
+  <!-- Slide-up Bottom Sheet Modal -->
+  <div id="sheet-backdrop" class="sheet-backdrop" hidden>
+    <section
+      id="sheet-dialog"
+      class="sheet-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="sheet-title"
+    >
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <header class="sheet-header">
+        <h2 id="sheet-title" class="sheet-title">设置</h2>
+        <button type="button" id="btn-sheet-close" class="btn-icon-close" aria-label="关闭弹窗">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+            <path d="M18 6 6 18"/>
+            <path d="m6 6 12 12"/>
+          </svg>
+        </button>
+      </header>
+      <div id="sheet-body" class="sheet-body"></div>
+    </section>
+  </div>
+
+  <!-- Toast Notification Region -->
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
