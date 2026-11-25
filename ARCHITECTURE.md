@@ -13,6 +13,9 @@
    - `inventory-system.js`：三核心必装槽（引擎 / 装甲 / 核心，全部装齐判定为适航）+ 可选服装槽 + 每角色完全自由命名的自定义选装槽位（兼容任意通用扩展装备、可自由增删改名且留空依然适航）；支持多条可编辑属性词条与装备强化（`enhanceItem`），穿脱/强化自动重算面板并触发自动存档。
    - `resource-manager.js`：六项专用资源与双货币体系——四项基础资源（燃油 `fuel` / 弹药 `ammo` / 钢材 `steel` / 铝材 `bauxite`，带仓储上限与离线自动恢复）与两项货币（银条 `silver` / 金条 `gold`，不随时间自然恢复），提供共享顶部资源概览条组件（`createResourceOverviewBar`）。
    - `log-system.js`：通用行动日志系统，自动监听 `EventBus` 记录数值变化、穿脱装备、强化、属性检定与资源流水，支持按类别筛选与一键导出纯文本摘要。
+   - `fx-stage.js`：解耦演出与动效挂载层（`playEffect(type, payload)`），订阅 `EventBus` 的检定、受击、暴击、扫描与资源增减信号，提供屏幕微震、数值飘字、扫描波纹、骰子翻转状态与暴击闪烁等轻量 CSS 动效，支持通过 `registerRenderer` 独立替换升级表现层。
+   - `route-generator.js`：随机航线生成引擎与自定义航线仓库，支持按低/中/高危难度程序化生成 3~6 节点随机航线（资源打捞点、气象/侦察点、常规遭遇战、精英封锁战、终点主力决战 + 随机海况修正词条），并兼容读取与保存玩家固定航线（IndexedDB）。
+   - `tactical-combat.js`：独立多回合多指令战术交战引擎，支持「扫描（索敌揭示隐藏情报与锁定增益）」「迂回（消耗额外燃油绕过非 Boss 或获得闪避增益）」「炮击（稳定输出）」「鱼雷（雷装+幸运高爆发高风险）」四类战术指令，联动 `stat-rules.js`、`fx-stage.js` 与 `prompt-pipeline.js` 双轨战报。
    - `rule-engine.js`：纯本地确定性条件与分支事件规则引擎，支持解析通用 JSON 事件节点、加权随机事件池抽取、多选项分支跳转与本地状态变更执行器。
    - `state-machine.js`：通用状态机（`StateMachine`）与通用回合/周期步进器（`TurnStepper`）。
    - `prompt-pipeline.js`：双轨叙事路由器（`PromptPipeline`），支持 `local` / `ai-polish` / `ai-free` 一键切换，无 Key 或离线时自动无感降级为本地模板输出。
@@ -21,8 +24,8 @@
    - `api.js`：统一多模型 API 网关，兼容 **Google Gemini 官方 REST** 与 **OpenAI 兼容格式**。
    - `module-manager.js`：插件化模块管理器，负责模块注册校验、生命周期切换与全套底层引擎上下文注入。
 3. **可插拔功能模块层**（`src/modules/`）：
-   - `port-hub.js`（默认首屏启动模块）：港区主界面大本营中枢，展示六项资源、旗舰执勤看板、适航徽章、一键补给与入渠修复、「前往出征」主入口及预留扩展设施位 A/B/C。
-   - `sortie-console.js`：节点式出征航线控制台，包含适航与油弹前置校验、可视化节点进度图、逐节点 D20 检定与战利品结算、大破（HP < 25%）强行进击风险警告、返航回港区与可视化航线编辑器。
+   - `port-hub.js`（默认首屏启动模块）：**港区大本营**主界面中枢，展示六项资源与双货币、旗舰执勤看板、适航状态徽章、一键补给与入渠修复、「前往出征」主入口及预留扩展设施位 A/B/C。
+   - `sortie-console.js`：**出征战术指挥台**，集成适航与油弹前置校验、按难度一键「随机生成新航线」或预设/自定义航线选择、可视化节点连接图、资源/气象点自动打捞、遇敌多回合四指令（扫描/迂回/炮击/鱼雷）战术交战 HUD、大破（HP < 25%）强行进击警告与安全返航。
    - `character-console.js`：角色控制台，集成六项资源概览、角色管理、三核心必装槽适航校验、完全自由的自定义槽位建造器、五维面板、1D20 检定与行动日志。
    - `supply-workshop.js`：物资与工坊控制台，集成银条/金条补给商店、背包消耗品快捷使用、可自定义权重的随机补给池（单抽/五连抽）以及消耗钢材/铝材/银条的装备强化台。
    - `action-console.js`：行动与事件控制台（支持一键设为默认启动页），集成本地适航出击校验、探索/随机事件/休整交互流、D20 检定拆解、纯本地/AI 增强双轨切换与可视化事件规则编辑器。
@@ -47,6 +50,9 @@
 | `context.inventory` | `src/core/inventory-system.js` | 全局服装/装备/消耗品仓库、自定义穿戴槽位、穿脱联动重算与消耗品使用 |
 | `context.resources` | `src/core/resource-manager.js` | 全局资金/补给/材料及自定义资源管理、余额校验与批量扣除 |
 | `context.logs` | `src/core/log-system.js` | 行动日志自动采集、分类筛选与纯文本摘要导出（`exportTextSummary`） |
+| `context.fxStage` | `src/core/fx-stage.js` | 解耦动效与演出舞台（`playEffect` / `registerRenderer` / `setEnabled`），响应检定/受击/暴击/扫描 |
+| `context.routeGenerator` | `src/core/route-generator.js` | 程序化随机航线生成器（低/中/高危难度与随机海况）与持久化自定义固定航线仓库 |
+| `context.combat` | `src/core/tactical-combat.js` | 多回合多指令战术交战引擎（`startEncounter` / `executeCommand('scan'|'evade'|'shelling'|'torpedo')`） |
 | `context.storage` | `src/core/storage.js` | 当前模块隔离存储（同步 `get/set` 走 localStorage，异步 `getLarge/setLarge` 走 IndexedDB） |
 | `context.rootStorage` | `src/core/storage.js` | 全局混合存储管理器（`getHybridStats` / `exportHybridBackup` / `importHybridBackup`） |
 | `context.saves` | `src/core/save-manager.js` | 4 分区多槽位存档管理器（全局设置 / 自动存档监听 / 5 槽位手动存读档 / 模组区 / JSON 导出导入） |

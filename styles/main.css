@@ -2349,6 +2349,243 @@ textarea:focus-visible {
   gap: 6px;
 }
 
+/* ============================================================
+   FX & Presentation Stage Overlay (Decoupled Animations)
+   ============================================================ */
+
+.fx-stage-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 90;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@keyframes fx-shake-kf-light {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  25% { transform: translate3d(-3px, 1px, 0); }
+  50% { transform: translate3d(3px, -1px, 0); }
+  75% { transform: translate3d(-2px, 1px, 0); }
+}
+
+@keyframes fx-shake-kf-heavy {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  20% { transform: translate3d(-6px, 2px, 0); }
+  40% { transform: translate3d(6px, -2px, 0); }
+  60% { transform: translate3d(-4px, 2px, 0); }
+  80% { transform: translate3d(4px, -1px, 0); }
+}
+
+.fx-shake-light {
+  animation: fx-shake-kf-light 0.28s ease;
+}
+
+.fx-shake-heavy {
+  animation: fx-shake-kf-heavy 0.34s ease;
+}
+
+@keyframes fx-float-up {
+  0% {
+    opacity: 0;
+    transform: translate3d(var(--fx-x, 0px), calc(var(--fx-y, 0px) + 18px), 0) scale(0.92);
+  }
+  20% {
+    opacity: 1;
+    transform: translate3d(var(--fx-x, 0px), var(--fx-y, 0px), 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--fx-x, 0px), calc(var(--fx-y, 0px) - 54px), 0) scale(1.04);
+  }
+}
+
+.fx-float-text {
+  position: absolute;
+  top: 42%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 12px;
+  border-radius: 99px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  background: rgba(14, 18, 24, 0.9);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+  animation: fx-float-up 1.05s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.fx-tone-accent,
+.fx-tone-ok {
+  color: var(--accent-hover);
+  border-color: rgba(45, 212, 191, 0.55);
+}
+
+.fx-tone-warn {
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.55);
+}
+
+.fx-tone-danger {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.6);
+}
+
+.fx-tone-muted {
+  color: var(--text-secondary);
+}
+
+@keyframes fx-scan-expand {
+  0% {
+    width: 36px;
+    height: 36px;
+    opacity: 0.9;
+  }
+  100% {
+    width: 320px;
+    height: 320px;
+    opacity: 0;
+  }
+}
+
+.fx-scan-ripple {
+  position: absolute;
+  border-radius: 999px;
+  border: 2.5px solid var(--accent-hover);
+  background: radial-gradient(circle, rgba(20, 184, 166, 0.16) 0%, transparent 70%);
+  animation: fx-scan-expand 0.78s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes fx-dice-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) rotate(-8deg) scale(0.85);
+  }
+  25% {
+    opacity: 1;
+    transform: translateY(0) rotate(2deg) scale(1.04);
+  }
+  75% {
+    opacity: 1;
+    transform: translateY(-4px) rotate(0deg) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.95);
+  }
+}
+
+.fx-dice-pill {
+  position: absolute;
+  bottom: calc(104px + var(--safe-bottom));
+  padding: 6px 14px;
+  border-radius: 99px;
+  background: rgba(21, 27, 36, 0.95);
+  border: 1.5px solid var(--accent);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  animation: fx-dice-pop 1.15s ease forwards;
+}
+
+@keyframes fx-crit-pulse {
+  0% { opacity: 0; }
+  30% { opacity: 0.35; }
+  100% { opacity: 0; }
+}
+
+.fx-crit-flash {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 45%, rgba(45, 212, 191, 0.55), transparent 72%);
+  animation: fx-crit-pulse 0.4s ease forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-shake-light,
+  .fx-shake-heavy,
+  .fx-float-text,
+  .fx-scan-ripple,
+  .fx-dice-pill,
+  .fx-crit-flash {
+    animation: none !important;
+  }
+}
+
+/* ============================================================
+   Tactical Combat Panel (Scan / Evade / Shelling / Torpedo)
+   ============================================================ */
+
+.enemy-hud-card {
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.42);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tactical-cmd-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tactical-cmd-btn {
+  min-height: 54px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+}
+
+.tactical-cmd-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(20, 184, 166, 0.14);
+}
+
+.tactical-cmd-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.tactical-cmd-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tactical-cmd-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.tactical-cmd-sub {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.tactical-cmd-btn.is-torpedo {
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.tactical-cmd-btn.is-shelling {
+  border-color: rgba(20, 184, 166, 0.45);
+}
+
+
 
 
 

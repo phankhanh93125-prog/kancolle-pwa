@@ -356,8 +356,8 @@ async function renderPortHub() {
 
 export default {
   id: 'port-hub',
-  name: '港区主界面',
-  description: '港区大本营主中枢：六项资源概览、旗舰执勤状态、一键补给修复、前往出征入口与预留扩展设施位。',
+  name: '港区大本营',
+  description: '港区大本营主中枢：六项资源概览、旗舰执勤状态、适航校验、一键补给修复、前往出征入口与预留扩展设施位。',
 
   mount(container, context) {
     portState.container = container;

@@ -1,128 +1,29 @@
 /**
- * Official Business Module: Node-Based Sortie Route Console (`sortie-console`).
+ * Official Business Module: Tactical Sortie Command Console (`sortie-console`).
  *
- * Features:
- *   - Strict pre-sortie validation: Seaworthiness (engine / armor / core) + min fuel / ammo / AP
- *   - Visual mobile node route progress map (Resource / Encounter / Boss nodes)
- *   - Step-by-step progression with fuel & ammo deduction, D20 stat + all-slot equipment checks,
- *     salvage loot rewards, HP/morale damage, heavy damage (<25% HP) advance warning, and retreat to port
- *   - Dual-track Pure Local Template / AI Narrative Polish switch
- *   - Visual mobile Sortie Route Editor Bottom Sheet persisted in IndexedDB
+ * Integrates:
+ *   - RouteGenerator: procedural random routes (low/medium/high, 3-6 nodes, sea conditions) + custom routes
+ *   - TacticalCombatEngine: multi-turn Scan / Evade / Shelling / Torpedo combat HUD
+ *   - FxStage: decoupled EventBus animations (micro-shake, scan ripple, floating damage, dice roll)
+ *   - Pre-sortie Seaworthiness (engine/armor/core) + fuel/ammo/AP checks, Heavy Damage (<25% HP) warning,
+ *     auto-salvage resource/weather nodes, and dual-track local/AI battle reports.
  */
 
-import { CORE_STAT_DEFS, CORE_STAT_MAP } from '../core/stat-rules.js';
+import { CORE_STAT_DEFS } from '../core/stat-rules.js';
 import { createResourceOverviewBar } from '../core/resource-manager.js';
 import { NARRATIVE_MODES } from '../core/prompt-pipeline.js';
 import { LOG_CATEGORIES } from '../core/log-system.js';
+import {
+  NODE_TYPES,
+  NODE_TYPE_LABELS,
+  SEA_DIFFICULTIES,
+} from '../core/route-generator.js';
+import { COMBAT_COMMANDS } from '../core/tactical-combat.js';
 import { getActiveCharacterId, persistCharacterRoster } from './character-console.js';
 import { clamp } from '../core/calc-engine.js';
 
 const SORTIE_STORAGE_NS = 'core-sortie';
-const ROUTES_KEY = 'sortie-routes-v1';
-const RUN_KEY = 'active-sortie-run-v1';
-
-const NODE_TYPE_LABELS = {
-  resource: '资源点',
-  encounter: '遭遇检定',
-  boss: 'Boss 决战',
-};
-
-export const DEFAULT_SORTIE_ROUTES = [
-  {
-    id: 'route_patrol_01',
-    name: '近海常规巡逻线',
-    description: '3 节点标准近海巡逻航线，难度适中，适合日常打捞油钢与银条。',
-    builtIn: true,
-    minFuel: 60,
-    minAmmo: 60,
-    apCost: 15,
-    stepCost: { fuel: 25, ammo: 20 },
-    nodes: [
-      {
-        code: 'A',
-        name: '漂流补给区',
-        type: 'resource',
-        statKey: 'tactics',
-        dc: 12,
-        loot: { fuel: 45, steel: 40, silver: 70 },
-        failDamage: { hp: 6, morale: 4 },
-        affinityGain: 2,
-      },
-      {
-        code: 'B',
-        name: '前哨侦察点',
-        type: 'encounter',
-        statKey: 'agility',
-        dc: 14,
-        loot: { steel: 60, bauxite: 35, silver: 110 },
-        failDamage: { hp: 14, morale: 8 },
-        affinityGain: 3,
-      },
-      {
-        code: 'C',
-        name: '海域压制战',
-        type: 'boss',
-        statKey: 'attack',
-        dc: 16,
-        loot: { steel: 100, bauxite: 65, silver: 220, gold: 3 },
-        failDamage: { hp: 22, morale: 12 },
-        affinityGain: 5,
-      },
-    ],
-  },
-  {
-    id: 'route_strike_02',
-    name: '远洋主力作战线',
-    description: '4 节点高收益远洋作战航线，包含资源打捞、双重遭遇战与高难 Boss 决战。',
-    builtIn: true,
-    minFuel: 120,
-    minAmmo: 120,
-    apCost: 25,
-    stepCost: { fuel: 35, ammo: 35 },
-    nodes: [
-      {
-        code: 'A',
-        name: '外围警戒线',
-        type: 'encounter',
-        statKey: 'agility',
-        dc: 14,
-        loot: { fuel: 40, silver: 90 },
-        failDamage: { hp: 12, morale: 6 },
-        affinityGain: 2,
-      },
-      {
-        code: 'B',
-        name: '沉船打捞点',
-        type: 'resource',
-        statKey: 'luck',
-        dc: 13,
-        loot: { steel: 95, bauxite: 60, silver: 120 },
-        failDamage: { hp: 8, morale: 4 },
-        affinityGain: 2,
-      },
-      {
-        code: 'C',
-        name: '护卫编队拦截',
-        type: 'encounter',
-        statKey: 'burst',
-        dc: 16,
-        loot: { ammo: 60, steel: 85, silver: 160 },
-        failDamage: { hp: 18, morale: 10 },
-        affinityGain: 4,
-      },
-      {
-        code: 'D',
-        name: '中枢要塞决战',
-        type: 'boss',
-        statKey: 'attack',
-        dc: 18,
-        loot: { steel: 160, bauxite: 110, silver: 340, gold: 6 },
-        failDamage: { hp: 28, morale: 15 },
-        affinityGain: 6,
-      },
-    ],
-  },
-];
+const RUN_KEY = 'active-sortie-run-v2';
 
 function deepClone(v) {
   return JSON.parse(JSON.stringify(v ?? null));
@@ -142,10 +43,15 @@ function formatSigned(n) {
   return v >= 0 ? `+${v}` : `${v}`;
 }
 
+function isCombatNodeType(type) {
+  return type === NODE_TYPES.ENCOUNTER || type === NODE_TYPES.ELITE || type === NODE_TYPES.BOSS;
+}
+
 let sortieState = {
   container: null,
   context: null,
-  routes: [],
+  selectedDifficulty: 'low',
+  generatedRoute: null,
   selectedRouteId: null,
   activeRun: null,
   busy: false,
@@ -153,35 +59,26 @@ let sortieState = {
   unsubs: [],
 };
 
-export async function hydrateSortieConsole({ storage }) {
-  const scope = storage.namespace(SORTIE_STORAGE_NS);
-  const [savedRoutes, savedRun] = await Promise.all([
-    scope.getLarge(ROUTES_KEY, null),
-    scope.getLarge(RUN_KEY, null),
-  ]);
-
-  if (Array.isArray(savedRoutes) && savedRoutes.length > 0) {
-    sortieState.routes = deepClone(savedRoutes);
-  } else {
-    sortieState.routes = deepClone(DEFAULT_SORTIE_ROUTES);
-    await scope.setLarge(ROUTES_KEY, sortieState.routes);
+export async function hydrateSortieConsole({ storage, routeGenerator, combat }) {
+  if (routeGenerator) {
+    await routeGenerator.init();
   }
-
-  sortieState.selectedRouteId = sortieState.routes[0]?.id || null;
+  const scope = storage.namespace(SORTIE_STORAGE_NS);
+  const savedRun = await scope.getLarge(RUN_KEY, null);
   sortieState.activeRun = savedRun && typeof savedRun === 'object' ? deepClone(savedRun) : null;
+  if (combat && sortieState.activeRun?.combatSnapshot) {
+    combat.deserialize(sortieState.activeRun.combatSnapshot);
+  }
+  const allRoutes = routeGenerator ? routeGenerator.listAllRoutes() : [];
+  sortieState.selectedRouteId = allRoutes[0]?.id || null;
   sortieState.hydrated = true;
-}
-
-async function persistRoutes() {
-  if (!sortieState.context) return;
-  const scope = sortieState.context.rootStorage.namespace(SORTIE_STORAGE_NS);
-  await scope.setLarge(ROUTES_KEY, sortieState.routes);
 }
 
 async function persistActiveRun() {
   if (!sortieState.context) return;
   const scope = sortieState.context.rootStorage.namespace(SORTIE_STORAGE_NS);
   if (sortieState.activeRun) {
+    sortieState.activeRun.combatSnapshot = sortieState.context.combat?.serialize() || null;
     await scope.setLarge(RUN_KEY, sortieState.activeRun);
   } else {
     await scope.removeLarge(RUN_KEY);
@@ -196,27 +93,25 @@ function getFlagship() {
   return chars.find((c) => c.id === activeId) || chars[0];
 }
 
+function getAvailableRoutes() {
+  const saved = sortieState.context?.routeGenerator?.listAllRoutes() || [];
+  return sortieState.generatedRoute ? [sortieState.generatedRoute, ...saved] : saved;
+}
+
 function getSelectedRoute() {
-  return (
-    sortieState.routes.find((r) => r.id === sortieState.selectedRouteId) ||
-    sortieState.routes[0] ||
-    null
-  );
+  const list = getAvailableRoutes();
+  return list.find((r) => r.id === sortieState.selectedRouteId) || list[0] || null;
 }
 
 function validateSortieLaunch(char, route) {
   const { statRules, inventory, resources } = sortieState.context;
   const errors = [];
   if (!char) return { ok: false, errors: ['暂无可用角色'] };
-  if (!route) return { ok: false, errors: ['请选择出征航线'] };
+  if (!route) return { ok: false, errors: ['请先生成或选择一条航线'] };
 
   const sw = statRules.evaluateSeaworthiness(inventory, char.id);
-  if (!sw.seaworthy) {
-    errors.push(sw.statusText);
-  }
-  if (Number(char.stats.hp ?? 0) <= 0) {
-    errors.push('当前角色 HP 为 0，请先回港区入渠修复');
-  }
+  if (!sw.seaworthy) errors.push(sw.statusText);
+  if (Number(char.stats.hp ?? 0) <= 0) errors.push('当前旗舰 HP 为 0，请先回港区修复');
   if (resources.getBalance('fuel') < route.minFuel) {
     errors.push(`燃油不足（需 ≥ ${route.minFuel}，当前 ${resources.getBalance('fuel')}）`);
   }
@@ -226,7 +121,6 @@ function validateSortieLaunch(char, route) {
   if (Number(char.stats.ap ?? 0) < route.apCost) {
     errors.push(`行动点 AP 不足（需 ≥ ${route.apCost}，当前 ${Math.round(char.stats.ap ?? 0)}）`);
   }
-
   return { ok: errors.length === 0, errors, seaworthy: sw.seaworthy };
 }
 
@@ -234,33 +128,30 @@ function formatLootSummary(lootObj = {}, resources) {
   const parts = [];
   for (const [k, v] of Object.entries(lootObj)) {
     const val = Number(v) || 0;
-    if (val > 0) {
-      parts.push(`${resources.get(k)?.name || k} +${val}`);
-    }
+    if (val > 0) parts.push(`${resources.get(k)?.name || k} +${val}`);
   }
   return parts.length > 0 ? parts.join('、') : '暂无战利品';
 }
 
 // ============================================================
-// Sortie Lifecycle: Launch, Step Node, Retreat to Port
+// Sortie Flow: Launch, Step Node, Tactical Command, Retreat
 // ============================================================
 
 async function launchSortie(route) {
   const char = getFlagship();
   const check = validateSortieLaunch(char, route);
-  const { entities, rootStorage, logs, bus, uiKit } = sortieState.context;
+  const { entities, rootStorage, combat, logs, bus, uiKit } = sortieState.context;
 
   if (!check.ok) {
     uiKit.showToast(`无法启航：${check.errors[0]}`, 'error');
     return;
   }
 
-  // Warn if launching while already heavily damaged (<25% HP)
   const maxHp = Number(char.stats.maxHp ?? 100);
   if (Number(char.stats.hp ?? maxHp) / maxHp < 0.25) {
     const proceed = await uiKit.confirmDialog({
       title: '大破状态启航警告',
-      message: `「${char.name}」当前 HP 低于 25%，处于大破状态。建议先在港区修复后再出击，是否仍要强行启航？`,
+      message: `「${char.name}」当前 HP 低于 25%，处于大破状态。建议先在港区入渠修复，确定仍要强行启航吗？`,
       confirmLabel: '强行启航',
       cancelLabel: '取消',
       tone: 'danger',
@@ -268,15 +159,17 @@ async function launchSortie(route) {
     if (!proceed) return;
   }
 
-  // Deduct launch AP cost
   if (route.apCost > 0) {
     entities.adjustStat(char.id, 'ap', -route.apCost, { min: 0, max: Number(char.stats.maxAp ?? 100) });
     await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
   }
 
+  combat.clearSession();
   sortieState.activeRun = {
     routeId: route.id,
     routeName: route.name,
+    difficultyLabel: route.difficultyLabel || '标准海域',
+    seaCondition: route.seaCondition ? deepClone(route.seaCondition) : null,
     characterId: char.id,
     characterName: char.name,
     stepCost: deepClone(route.stepCost),
@@ -286,6 +179,7 @@ async function launchSortie(route) {
     loot: { fuel: 0, ammo: 0, steel: 0, bauxite: 0, silver: 0, gold: 0 },
     reports: [],
     completed: false,
+    combatSnapshot: null,
     startedAt: Date.now(),
   };
 
@@ -295,32 +189,37 @@ async function launchSortie(route) {
     actorId: char.id,
     actorName: char.name,
     title: `[${char.name}] 启航出征「${route.name}」`,
-    detail: `消耗 AP -${route.apCost}，共 ${route.nodes.length} 个航线节点`,
+    detail: `消耗 AP -${route.apCost}，海况：${route.seaCondition?.label || '标准'}，共 ${route.nodes.length} 节点`,
   });
   bus.emit('sortie:launched', { routeId: route.id, characterId: char.id });
-  uiKit.showToast(`已启航进入「${route.name}」，点击推进首个节点`, 'ok');
+  uiKit.showToast(`已启航进入「${route.name}」`, 'ok');
   await renderSortieConsole();
 }
 
 async function advanceNextNode() {
   if (sortieState.busy || !sortieState.activeRun) return;
   const run = sortieState.activeRun;
-  if (run.completed || run.nextNodeIndex >= run.nodes.length) return;
-
-  const { entities, inventory, statRules, resources, narrative, turnStepper, rootStorage, logs, bus, uiKit } =
+  const { entities, inventory, statRules, resources, narrative, turnStepper, combat, rootStorage, logs, bus, uiKit } =
     sortieState.context;
+
+  if (combat.isActive() || run.completed || run.nextNodeIndex >= run.nodes.length) return;
+
   const char = entities.get(run.characterId) || getFlagship();
   if (!char) return;
 
-  // Heavy damage (<25% HP) explicit confirmation warning before advancing
   const maxHp = Number(char.stats.maxHp ?? 100);
   const curHp = Number(char.stats.hp ?? maxHp);
+  if (curHp <= 0) {
+    uiKit.showToast('当前旗舰 HP 为 0，请立即返航回港区修复', 'error');
+    return;
+  }
+
   if (curHp / maxHp < 0.25) {
     const confirmed = await uiKit.confirmDialog({
       title: '大破强行进击风险警告',
-      message: `警告：「${char.name}」当前 HP 仅剩 ${Math.round(curHp)}/${maxHp}（低于 25% 大破线）！强行进击极易造成严重损毁，建议立即点击「携带战利品返航回港区」。是否仍要强行推进？`,
+      message: `警告：「${char.name}」当前 HP 仅剩 ${Math.round(curHp)}/${maxHp}（低于 25% 大破线）！强行进击风险极高，建议立即返航回港区。确定继续前进吗？`,
       confirmLabel: '强行继续前进',
-      cancelLabel: '取消并考虑返航',
+      cancelLabel: '取消并返航',
       tone: 'danger',
     });
     if (!confirmed) return;
@@ -333,20 +232,36 @@ async function advanceNextNode() {
   };
   const spend = await resources.spendBatch(stepCost, { reason: `出征推进 ${run.routeName}` });
   if (!spend.ok) {
-    uiKit.showToast(`油弹补给不足，无法继续推进：${spend.reason}`, 'error');
+    uiKit.showToast(`油弹不足，无法继续推进：${spend.reason}`, 'error');
     return;
   }
 
+  const nodeIdx = run.nextNodeIndex;
+  const node = run.nodes[nodeIdx];
+  turnStepper.advance({ steps: 1, reason: `sortie-node-${node.code}` });
+
+  // Branch A: Combat Node (encounter / elite / boss) -> Launch Tactical Combat Panel!
+  if (isCombatNodeType(node.type)) {
+    combat.startEncounter({
+      characterId: char.id,
+      node,
+      seaCondition: run.seaCondition,
+    });
+    await persistActiveRun();
+    uiKit.showToast(`节点 ${node.code} 遇敌：${node.name}！请选择战术指令`, 'warn');
+    await renderSortieConsole();
+    return;
+  }
+
+  // Branch B: Non-combat Resource / Weather-Recon Node -> Auto Salvage & Settlement
   sortieState.busy = true;
   await renderSortieConsole();
-
   try {
-    const nodeIdx = run.nextNodeIndex;
-    const node = run.nodes[nodeIdx];
-    const statKey = node.statKey || 'tactics';
+    const statKey = node.statKey || (node.type === NODE_TYPES.RESOURCE ? 'luck' : 'tactics');
     const baseVal = Number(char.stats[statKey] ?? 50);
     const effVal = entities.getEffectiveStat(char.id, statKey, { round: 'round' }).final;
     const eqBonuses = inventory.getCharacterEquipmentBonuses(char.id);
+    const seaBonus = run.seaCondition?.mods?.checkBonus || 0;
 
     const checkResult = statRules.performCheck({
       actorId: char.id,
@@ -356,71 +271,59 @@ async function advanceNextNode() {
       effectiveStatValue: effVal,
       equipmentCheckBonus: eqBonuses.checkBonus,
       moraleValue: char.stats.morale ?? 60,
-      dc: Number(node.dc) || 14,
+      dc: Number(node.dc) || 12,
+      extraModifier: seaBonus,
     });
 
     const isSuccess = checkResult.outcome === 'crit-success' || checkResult.outcome === 'success';
-    const isCrit = checkResult.outcome === 'crit-success';
+    const mult = checkResult.outcome === 'crit-success' ? 1.4 : isSuccess ? 1.0 : 0.45;
     const chips = [
       { text: `燃油 -${stepCost.fuel}`, negative: true },
       { text: `弹药 -${stepCost.ammo}`, negative: true },
     ];
-    const nodeLootGained = {};
+    const gained = {};
+
+    for (const [rk, rawVal] of Object.entries(node.loot || {})) {
+      const val = Math.round((Number(rawVal) || 0) * mult);
+      if (val <= 0) continue;
+      await resources.add(rk, val, { reason: `节点 ${node.code}·${node.name} 打捞` });
+      run.loot[rk] = (run.loot[rk] || 0) + val;
+      gained[rk] = val;
+      chips.push({ text: `${resources.get(rk)?.name || rk} +${val}`, negative: false });
+    }
 
     if (isSuccess) {
-      const mult = isCrit ? 1.4 : 1;
-      for (const [rk, rawVal] of Object.entries(node.loot || {})) {
-        const gain = Math.round((Number(rawVal) || 0) * mult);
-        if (gain <= 0) continue;
-        await resources.add(rk, gain, { reason: `出征节点 ${node.code}·${node.name} 打捞` });
-        run.loot[rk] = (run.loot[rk] || 0) + gain;
-        nodeLootGained[rk] = gain;
-        chips.push({ text: `${resources.get(rk)?.name || rk} +${gain}`, negative: false });
-      }
-      const affGain = Number(node.affinityGain) || 2;
-      entities.adjustStat(char.id, 'affinity', affGain, { min: 0, max: 100 });
+      const aff = Number(node.affinityGain) || 2;
+      entities.adjustStat(char.id, 'affinity', aff, { min: 0, max: 100 });
       entities.adjustStat(char.id, 'morale', 3, { min: 0, max: 100 });
-      chips.push({ text: `好感 +${affGain}`, negative: false });
-      chips.push({ text: '士气 +3', negative: false });
-    } else {
-      const dmgHp = Math.max(4, Number(node.failDamage?.hp) || 14);
-      const dmgMorale = Math.max(3, Number(node.failDamage?.morale) || 8);
-      entities.adjustStat(char.id, 'hp', -dmgHp, { min: 0, max: maxHp });
-      entities.adjustStat(char.id, 'morale', -dmgMorale, { min: 0, max: 100 });
-      chips.push({ text: `HP -${dmgHp}`, negative: true });
-      chips.push({ text: `士气 -${dmgMorale}`, negative: true });
+      chips.push({ text: `好感 +${aff}`, negative: false });
+    } else if (node.type === NODE_TYPES.WEATHER) {
+      const dmg = Math.max(4, Number(node.failDamage?.hp) || 6);
+      entities.adjustStat(char.id, 'hp', -dmg, { min: 0, max: maxHp });
+      chips.push({ text: `海况损耗 HP -${dmg}`, negative: true });
     }
 
     await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
-    turnStepper.advance({ steps: 1, reason: `sortie-node-${node.code}` });
-
-    const equipped = inventory.getCharacterEquipment(char.id);
-    const outfitName = equipped.outfit?.name || '默认便装';
-    const lootText = formatLootSummary(nodeLootGained, resources);
-
-    const templateStr = isSuccess
-      ? '【节点 {nodeCode} · {nodeName}（{nodeType}）】{actor.name}身着「{outfitName}」通过 {check.statLabel} 检定（{check.total} vs DC {check.dc}，{check.outcomeLabel}），成功打捞战利品：{lootText}。'
-      : '【节点 {nodeCode} · {nodeName}（{nodeType}）】{actor.name}在 {check.statLabel} 检定中受挫（{check.total} vs DC {check.dc}，{check.outcomeLabel}），船体与士气受损，当前剩余 HP {actor.hp}/{actor.maxHp}。';
+    const lootText = formatLootSummary(gained, resources);
 
     const rendered = await narrative.run({
-      template: templateStr,
+      template: isSuccess
+        ? '【节点 {nodeCode} · {nodeName}（{nodeType}）】{actor.name}顺利完成打捞与勘察（{check.total} vs DC {check.dc}），收获：{lootText}。'
+        : '【节点 {nodeCode} · {nodeName}（{nodeType}）】受限于海域环境（{check.total} vs DC {check.dc}），仅回收到部分物资：{lootText}。',
       variables: {
         nodeCode: node.code,
         nodeName: node.name,
         nodeType: NODE_TYPE_LABELS[node.type] || node.type,
-        actor: { name: char.name, hp: Math.round(char.stats.hp ?? 0), maxHp },
-        outfitName,
+        actor: { name: char.name },
         lootText,
         check: checkResult,
       },
-      polishInstruction: `请以简洁有代入感的战报口吻润色节点 ${node.code} 的出征战果，保留全部客观检定与战利品/受损数字：`,
+      polishInstruction: `请简短润色节点 ${node.code} 的打捞/气象侦察战报，保留全部客观数字：`,
     });
 
     run.clearedIndices.push(nodeIdx);
     run.nextNodeIndex = nodeIdx + 1;
-    if (run.nextNodeIndex >= run.nodes.length) {
-      run.completed = true;
-    }
+    if (run.nextNodeIndex >= run.nodes.length) run.completed = true;
 
     run.reports.unshift({
       id: `sr_${Date.now()}_${nodeIdx}`,
@@ -444,29 +347,110 @@ async function advanceNextNode() {
     });
 
     await persistActiveRun();
-
     logs.add({
       category: LOG_CATEGORIES.STAT,
       actorId: char.id,
       actorName: char.name,
-      title: `[${char.name}] 出征节点 ${node.code}·${node.name} → ${checkResult.outcomeLabel}`,
-      detail: isSuccess ? `战利品：${lootText}` : `受损后剩余 HP ${Math.round(char.stats.hp ?? 0)}/${maxHp}`,
+      title: `[${char.name}] 节点 ${node.code}·${node.name}（${NODE_TYPE_LABELS[node.type] || node.type}）`,
+      detail: `收获：${lootText}`,
     });
+    bus.emit('sortie:node-resolved', { routeId: run.routeId, nodeCode: node.code, completed: run.completed });
+    uiKit.showToast(`节点 ${node.code} 打捞完成：${lootText}`, 'ok');
+  } finally {
+    sortieState.busy = false;
+    await renderSortieConsole();
+  }
+}
 
-    bus.emit('sortie:node-resolved', {
-      routeId: run.routeId,
+async function handleTacticalCommand(commandId) {
+  if (sortieState.busy || !sortieState.activeRun) return;
+  const run = sortieState.activeRun;
+  const { combat, entities, resources, rootStorage, logs, bus, uiKit } = sortieState.context;
+  if (!combat.isActive()) return;
+
+  sortieState.busy = true;
+  await renderSortieConsole();
+
+  try {
+    const res = await combat.executeCommand(commandId);
+    if (!res.ok) {
+      uiKit.showToast(res.reason || '无法执行战术指令', 'warn');
+      return;
+    }
+
+    const { turnEntry, session } = res;
+    const nodeIdx = run.nextNodeIndex;
+    const node = run.nodes[nodeIdx];
+    const char = entities.get(run.characterId) || getFlagship();
+
+    // Push combat turn report to sortie reports
+    run.reports.unshift({
+      id: `cmbr_${Date.now()}_${turnEntry.turn}`,
       nodeCode: node.code,
-      outcome: checkResult.outcome,
-      completed: run.completed,
-      timestamp: Date.now(),
+      nodeName: `${node.name} · T${turnEntry.turn} ${turnEntry.commandLabel}`,
+      nodeType: turnEntry.outcomeTag,
+      text: turnEntry.text,
+      source: turnEntry.source,
+      degraded: turnEntry.degraded,
+      check: turnEntry.check,
+      chips: turnEntry.chips,
+      timestamp: turnEntry.timestamp,
     });
 
-    uiKit.showToast(
-      run.completed
-        ? `航线「${run.routeName}」全节点通关！请携带战利品返航回港区`
-        : `节点 ${node.code} 结算：${checkResult.outcomeLabel}`,
-      isSuccess ? 'ok' : 'warn'
-    );
+    if (session.status === 'victory' || session.status === 'bypassed') {
+      const gained = {};
+      if (session.status === 'victory') {
+        for (const [rk, rawVal] of Object.entries(node.loot || {})) {
+          const val = Number(rawVal) || 0;
+          if (val <= 0) continue;
+          await resources.add(rk, val, { reason: `击破节点 ${node.code}·${node.name} 战利品` });
+          run.loot[rk] = (run.loot[rk] || 0) + val;
+          gained[rk] = val;
+        }
+        if (char) {
+          const aff = Number(node.affinityGain) || 3;
+          entities.adjustStat(char.id, 'affinity', aff, { min: 0, max: 100 });
+          entities.adjustStat(char.id, 'morale', 4, { min: 0, max: 100 });
+        }
+      }
+
+      run.clearedIndices.push(nodeIdx);
+      run.nextNodeIndex = nodeIdx + 1;
+      if (run.nextNodeIndex >= run.nodes.length) run.completed = true;
+      combat.clearSession();
+
+      const lootText = formatLootSummary(gained, resources);
+      logs.add({
+        category: LOG_CATEGORIES.STAT,
+        actorId: char?.id || null,
+        actorName: char?.name || '',
+        title: `[${char?.name || ''}] 节点 ${node.code}·${node.name} ${session.status === 'victory' ? '交战胜利' : '迂回通过'}`,
+        detail: session.status === 'victory' ? `战利品：${lootText}` : '无伤绕过敌方封锁',
+      });
+      bus.emit('sortie:node-resolved', {
+        routeId: run.routeId,
+        nodeCode: node.code,
+        status: session.status,
+        completed: run.completed,
+      });
+
+      uiKit.showToast(
+        session.status === 'victory'
+          ? `战斗胜利！打捞：${lootText}`
+          : `成功迂回绕过节点 ${node.code}！`,
+        'ok'
+      );
+    } else if (session.status === 'defeated') {
+      combat.clearSession();
+      uiKit.showToast('旗舰 HP 归零！请立即返航回港区入渠修复', 'error');
+    } else {
+      uiKit.showToast(`${turnEntry.commandLabel}：${turnEntry.outcomeTag}`, turnEntry.damageDealt > 0 ? 'ok' : 'info');
+    }
+
+    if (char) {
+      await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
+    }
+    await persistActiveRun();
   } finally {
     sortieState.busy = false;
     await renderSortieConsole();
@@ -474,16 +458,17 @@ async function advanceNextNode() {
 }
 
 async function retreatToPort() {
-  const { resources, logs, bus, modules, uiKit } = sortieState.context;
+  const { resources, combat, logs, bus, modules, uiKit } = sortieState.context;
   const run = sortieState.activeRun;
+  combat.clearSession();
   if (run) {
     const haul = formatLootSummary(run.loot, resources);
     logs.add({
       category: LOG_CATEGORIES.SYSTEM,
       actorId: run.characterId,
       actorName: run.characterName,
-      title: `[${run.characterName}] ${run.completed ? '凯旋返航' : '中途返航'}（${run.routeName}）`,
-      detail: `已通过 ${run.clearedIndices.length}/${run.nodes.length} 节点 | 累计打捞：${haul}`,
+      title: `[${run.characterName}] ${run.completed ? '凯旋返航' : '携战利品返航'}（${run.routeName}）`,
+      detail: `已通关 ${run.clearedIndices.length}/${run.nodes.length} 节点 | 累计打捞：${haul}`,
     });
     sortieState.activeRun = null;
     await persistActiveRun();
@@ -500,7 +485,7 @@ async function retreatToPort() {
 // ============================================================
 
 function openRouteFormSheet(existingRoute = null, onSaved = null) {
-  const { uiKit, bus } = sortieState.context;
+  const { routeGenerator, uiKit } = sortieState.context;
   const isEdit = Boolean(existingRoute);
 
   const draft = existingRoute
@@ -508,43 +493,14 @@ function openRouteFormSheet(existingRoute = null, onSaved = null) {
     : {
         id: `route_custom_${Date.now().toString(36)}`,
         name: '',
-        description: '玩家自定义出征航线。',
-        builtIn: false,
-        minFuel: 60,
-        minAmmo: 60,
+        description: '玩家自定义固定航线。',
+        difficulty: 'low',
         apCost: 15,
         stepCost: { fuel: 25, ammo: 20 },
         nodes: [
-          {
-            code: 'A',
-            name: '物资搜索点',
-            type: 'resource',
-            statKey: 'tactics',
-            dc: 12,
-            loot: { fuel: 50, steel: 50, silver: 80 },
-            failDamage: { hp: 8, morale: 4 },
-            affinityGain: 2,
-          },
-          {
-            code: 'B',
-            name: '中途遭遇点',
-            type: 'encounter',
-            statKey: 'agility',
-            dc: 14,
-            loot: { steel: 70, silver: 120 },
-            failDamage: { hp: 14, morale: 8 },
-            affinityGain: 3,
-          },
-          {
-            code: 'C',
-            name: '终点压制战',
-            type: 'boss',
-            statKey: 'attack',
-            dc: 16,
-            loot: { steel: 110, bauxite: 70, silver: 220, gold: 3 },
-            failDamage: { hp: 20, morale: 12 },
-            affinityGain: 5,
-          },
+          { code: 'A', name: '物资打捞点', type: NODE_TYPES.RESOURCE, statKey: 'tactics', dc: 12 },
+          { code: 'B', name: '常规遭遇编队', type: NODE_TYPES.ENCOUNTER, statKey: 'attack', dc: 14 },
+          { code: 'C', name: '终点主力决战', type: NODE_TYPES.BOSS, statKey: 'attack', dc: 16 },
         ],
       };
 
@@ -556,31 +512,19 @@ function openRouteFormSheet(existingRoute = null, onSaved = null) {
     if (!nameEl) return;
     draft.name = nameEl.value.trim();
     draft.description = wrap.querySelector('#rt-f-desc').value.trim();
+    draft.difficulty = wrap.querySelector('#rt-f-diff').value;
     draft.stepCost.fuel = clamp(Number(wrap.querySelector('#rt-f-sfuel').value) || 25, 0, 500);
     draft.stepCost.ammo = clamp(Number(wrap.querySelector('#rt-f-sammo').value) || 20, 0, 500);
     draft.apCost = clamp(Number(wrap.querySelector('#rt-f-ap').value) || 15, 0, 100);
-    draft.minFuel = Math.max(draft.stepCost.fuel * 2, 20);
-    draft.minAmmo = Math.max(draft.stepCost.ammo * 2, 20);
 
     const nodes = [];
     wrap.querySelectorAll('[data-node-row]').forEach((row, idx) => {
-      const prev = draft.nodes[idx] || {};
-      const type = row.querySelector('[data-n-type]').value;
       nodes.push({
         code: String.fromCharCode(65 + idx),
         name: row.querySelector('[data-n-name]').value.trim() || `节点 ${String.fromCharCode(65 + idx)}`,
-        type,
+        type: row.querySelector('[data-n-type]').value,
         statKey: row.querySelector('[data-n-stat]').value,
         dc: clamp(Number(row.querySelector('[data-n-dc]').value) || 14, 5, 35),
-        loot:
-          prev.loot ||
-          (type === 'boss'
-            ? { steel: 110, bauxite: 70, silver: 220, gold: 3 }
-            : type === 'resource'
-            ? { fuel: 50, steel: 50, silver: 80 }
-            : { steel: 65, silver: 110 }),
-        failDamage: prev.failDamage || (type === 'boss' ? { hp: 20, morale: 12 } : { hp: 12, morale: 6 }),
-        affinityGain: prev.affinityGain || (type === 'boss' ? 5 : 2),
       });
     });
     draft.nodes = nodes;
@@ -588,9 +532,19 @@ function openRouteFormSheet(existingRoute = null, onSaved = null) {
 
   const renderForm = () => {
     wrap.innerHTML = `
-      <div class="form-group">
-        <label class="form-label" for="rt-f-name">航线名称 *</label>
-        <input id="rt-f-name" class="form-input" type="text" value="${escapeHtml(draft.name)}" placeholder="例如：北方资源打捞线">
+      <div class="lab-kv-grid">
+        <div class="form-group">
+          <label class="form-label" for="rt-f-name">航线名称 *</label>
+          <input id="rt-f-name" class="form-input" type="text" value="${escapeHtml(draft.name)}" placeholder="例如：自定义巡逻线">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="rt-f-diff">海域难度</label>
+          <select id="rt-f-diff" class="form-select">
+            <option value="low" ${draft.difficulty === 'low' ? 'selected' : ''}>低危海域</option>
+            <option value="medium" ${draft.difficulty === 'medium' ? 'selected' : ''}>中危海域</option>
+            <option value="high" ${draft.difficulty === 'high' ? 'selected' : ''}>高危海域</option>
+          </select>
+        </div>
       </div>
       <div class="form-group">
         <label class="form-label" for="rt-f-desc">航线简介</label>
@@ -610,9 +564,8 @@ function openRouteFormSheet(existingRoute = null, onSaved = null) {
           <input id="rt-f-ap" class="form-input" type="number" min="0" value="${draft.apCost}">
         </div>
       </div>
-
       <div class="form-group">
-        <span class="form-label">航线节点序列（${draft.nodes.length} 个节点）</span>
+        <span class="form-label">节点序列（${draft.nodes.length} 节点）</span>
         <div class="lab-stack-sm">
           ${draft.nodes
             .map(
@@ -625,9 +578,11 @@ function openRouteFormSheet(existingRoute = null, onSaved = null) {
               <input class="form-input" type="text" data-n-name value="${escapeHtml(n.name)}" placeholder="节点名称">
               <div class="lab-kv-grid-3">
                 <select class="form-select" data-n-type aria-label="节点类型">
-                  <option value="resource" ${n.type === 'resource' ? 'selected' : ''}>资源点</option>
-                  <option value="encounter" ${n.type === 'encounter' ? 'selected' : ''}>遭遇检定</option>
-                  <option value="boss" ${n.type === 'boss' ? 'selected' : ''}>Boss决战</option>
+                  <option value="${NODE_TYPES.RESOURCE}" ${n.type === NODE_TYPES.RESOURCE ? 'selected' : ''}>资源打捞</option>
+                  <option value="${NODE_TYPES.WEATHER}" ${n.type === NODE_TYPES.WEATHER ? 'selected' : ''}>气象侦察</option>
+                  <option value="${NODE_TYPES.ENCOUNTER}" ${n.type === NODE_TYPES.ENCOUNTER ? 'selected' : ''}>常规遭遇</option>
+                  <option value="${NODE_TYPES.ELITE}" ${n.type === NODE_TYPES.ELITE ? 'selected' : ''}>精英封锁</option>
+                  <option value="${NODE_TYPES.BOSS}" ${n.type === NODE_TYPES.BOSS ? 'selected' : ''}>Boss决战</option>
                 </select>
                 <select class="form-select" data-n-stat aria-label="检定属性">
                   ${CORE_STAT_DEFS.map(
@@ -650,13 +605,10 @@ function openRouteFormSheet(existingRoute = null, onSaved = null) {
       if (draft.nodes.length >= 6) return;
       draft.nodes.push({
         code: String.fromCharCode(65 + draft.nodes.length),
-        name: `扩展节点 ${String.fromCharCode(65 + draft.nodes.length)}`,
-        type: 'encounter',
-        statKey: 'tactics',
-        dc: 15,
-        loot: { steel: 75, silver: 120 },
-        failDamage: { hp: 14, morale: 8 },
-        affinityGain: 3,
+        name: `扩展遭遇 ${String.fromCharCode(65 + draft.nodes.length)}`,
+        type: NODE_TYPES.ENCOUNTER,
+        statKey: 'attack',
+        dc: 14,
       });
       renderForm();
     });
@@ -673,8 +625,8 @@ function openRouteFormSheet(existingRoute = null, onSaved = null) {
 
   renderForm();
   uiKit.openBottomSheet({
-    title: isEdit ? `编辑航线 · ${existingRoute.name}` : '新增自定义出征航线',
-    subtitle: '配置持久化至 IndexedDB',
+    title: isEdit ? `编辑自定义航线 · ${existingRoute.name}` : '新增自定义固定航线',
+    subtitle: '持久化存入 IndexedDB',
     content: wrap,
     actions: [
       { id: 'cancel', label: '取消', tone: 'secondary' },
@@ -688,16 +640,9 @@ function openRouteFormSheet(existingRoute = null, onSaved = null) {
             uiKit.showToast('请输入航线名称', 'warn');
             return false;
           }
-          if (isEdit) {
-            const idx = sortieState.routes.findIndex((r) => r.id === existingRoute.id);
-            if (idx >= 0) sortieState.routes[idx] = draft;
-          } else {
-            sortieState.routes.push(draft);
-            sortieState.selectedRouteId = draft.id;
-          }
-          await persistRoutes();
-          bus.emit('sortie:routes-changed', { routeId: draft.id });
-          uiKit.showToast(`航线「${draft.name}」已保存`, 'ok');
+          const saved = await routeGenerator.saveCustomRoute(draft);
+          sortieState.selectedRouteId = saved.id;
+          uiKit.showToast(`航线「${saved.name}」已保存`, 'ok');
           if (typeof onSaved === 'function') onSaved();
           await renderSortieConsole();
           return true;
@@ -708,31 +653,36 @@ function openRouteFormSheet(existingRoute = null, onSaved = null) {
 }
 
 function openRouteEditorSheet() {
-  const { uiKit } = sortieState.context;
+  const { routeGenerator, uiKit } = sortieState.context;
   const wrap = document.createElement('div');
   wrap.className = 'module-stack';
 
   const renderList = () => {
+    const customs = routeGenerator.listCustomRoutes();
     wrap.innerHTML = `
-      <button type="button" id="btn-sortie-new-route" class="btn-primary uikit-touch-target">+ 新增自定义航线</button>
+      <button type="button" id="btn-sortie-new-route" class="btn-primary uikit-touch-target">+ 新增自定义固定航线</button>
       <div class="lab-stack-sm">
-        ${sortieState.routes
-          .map(
-            (r) => `
-          <div class="ac-editor-card" data-editor-route-id="${escapeHtml(r.id)}">
-            <div class="lab-slot-head">
-              <strong>${escapeHtml(r.name)}</strong>
-              <span class="status-badge ${r.builtIn ? 'badge-muted' : 'badge-ok'}">${r.nodes.length} 节点</span>
+        ${
+          customs.length === 0
+            ? '<p class="muted-text">暂无自定义航线，点击上方按钮新建或将随机生成的航线保存为固定航线。</p>'
+            : customs
+                .map(
+                  (r) => `
+            <div class="ac-editor-card" data-editor-route-id="${escapeHtml(r.id)}">
+              <div class="lab-slot-head">
+                <strong>${escapeHtml(r.name)}</strong>
+                <span class="status-badge badge-ok">${r.nodes.length} 节点</span>
+              </div>
+              <span class="cc-stat-sub">单步：油 ${r.stepCost.fuel} / 弹 ${r.stepCost.ammo} · 启航 AP ${r.apCost}</span>
+              <div class="lab-btn-grid">
+                <button type="button" class="btn-secondary uikit-touch-target" data-rt-edit>编辑</button>
+                <button type="button" class="btn-danger uikit-touch-target" data-rt-del>删除</button>
+              </div>
             </div>
-            <span class="cc-stat-sub">单步：油 ${r.stepCost.fuel} / 弹 ${r.stepCost.ammo} · 启航 AP ${r.apCost}</span>
-            <div class="lab-btn-grid">
-              <button type="button" class="btn-secondary uikit-touch-target" data-rt-edit>编辑</button>
-              <button type="button" class="btn-danger uikit-touch-target" data-rt-del ${sortieState.routes.length <= 1 ? 'disabled' : ''}>删除</button>
-            </div>
-          </div>
-        `
-          )
-          .join('')}
+          `
+                )
+                .join('')
+        }
       </div>
     `;
 
@@ -742,7 +692,7 @@ function openRouteEditorSheet() {
 
     wrap.querySelectorAll('[data-editor-route-id]').forEach((card) => {
       const rid = card.getAttribute('data-editor-route-id');
-      const rt = sortieState.routes.find((x) => x.id === rid);
+      const rt = customs.find((x) => x.id === rid);
       if (!rt) return;
 
       card.querySelector('[data-rt-edit]').addEventListener('click', () => {
@@ -750,19 +700,14 @@ function openRouteEditorSheet() {
       });
 
       card.querySelector('[data-rt-del]').addEventListener('click', async () => {
-        if (sortieState.routes.length <= 1) return;
         const ok = await uiKit.confirmDialog({
           title: `删除航线「${rt.name}」`,
-          message: '确认删除该出征航线吗？',
+          message: '确认删除该自定义航线吗？',
           confirmLabel: '确认删除',
           tone: 'danger',
         });
         if (!ok) return;
-        sortieState.routes = sortieState.routes.filter((x) => x.id !== rid);
-        if (sortieState.selectedRouteId === rid) {
-          sortieState.selectedRouteId = sortieState.routes[0]?.id || null;
-        }
-        await persistRoutes();
+        await routeGenerator.deleteCustomRoute(rid);
         uiKit.showToast(`已删除航线：${rt.name}`, 'ok');
         renderList();
         await renderSortieConsole();
@@ -772,8 +717,8 @@ function openRouteEditorSheet() {
 
   renderList();
   uiKit.openBottomSheet({
-    title: '出征航线编辑器',
-    subtitle: '自由配置航线节点序列、单步油弹消耗与检定难度',
+    title: '自定义航线编辑器',
+    subtitle: '支持保存固定航线或随时在主界面程序化随机生成航线',
     content: wrap,
     actions: [{ id: 'close', label: '关闭', tone: 'secondary' }],
   });
@@ -801,9 +746,10 @@ function createNodeMapElement(nodes, clearedIndices = [], nextNodeIndex = -1) {
     const isCurrent = idx === nextNodeIndex;
     const step = document.createElement('div');
     step.className = `sortie-node-step ${isCleared ? 'is-cleared' : ''} ${isCurrent ? 'is-current' : ''} ${
-      node.type === 'boss' ? 'is-boss' : ''
+      node.type === NODE_TYPES.BOSS ? 'is-boss' : ''
     }`;
     step.dataset.nodeCode = node.code;
+    step.dataset.nodeType = node.type;
     step.innerHTML = `
       <span class="sortie-node-code">${isCleared ? '✓' : escapeHtml(node.code)}</span>
       <span class="sortie-node-type">${escapeHtml(NODE_TYPE_LABELS[node.type] || node.type)}</span>
@@ -821,7 +767,7 @@ function createNodeMapElement(nodes, clearedIndices = [], nextNodeIndex = -1) {
 
 async function renderSortieConsole() {
   if (!sortieState.container || !sortieState.context) return;
-  const { resources, statRules, inventory, narrative, modules, uiKit } = sortieState.context;
+  const { resources, statRules, inventory, narrative, routeGenerator, combat, modules, uiKit } = sortieState.context;
   const char = getFlagship();
   if (!char) {
     sortieState.container.innerHTML = `
@@ -910,7 +856,7 @@ async function renderSortieConsole() {
     const next = isAiMode ? NARRATIVE_MODES.LOCAL : NARRATIVE_MODES.AI_POLISH;
     narrative.setMode(next);
     uiKit.showToast(
-      next === NARRATIVE_MODES.LOCAL ? '已切换为纯本地离线战报模板' : '已切换为 AI 剧情润色（无 Key 自动降级）',
+      next === NARRATIVE_MODES.LOCAL ? '已切换为纯本地离线战报模板' : '已切换为 AI 战报润色（无 Key 自动降级）',
       'ok'
     );
     renderSortieConsole();
@@ -921,60 +867,147 @@ async function renderSortieConsole() {
   });
   root.appendChild(topCard);
 
-  // 3. Active Sortie Run OR Route Selection View
+  // 3. Active Sortie Run OR Procedural Generator + Route Selector
   if (sortieState.activeRun) {
     const run = sortieState.activeRun;
+    const combatSession = combat.isActive() ? combat.getSession() : null;
+
     const activeCard = document.createElement('section');
     activeCard.className = 'surface-card lab-stack-sm';
     activeCard.id = 'sortie-active-panel';
     activeCard.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
-        <h2 class="section-title">出征中：${escapeHtml(run.routeName)}</h2>
-        <span class="status-badge ${run.completed ? 'badge-ok' : 'badge-warn'}">
-          ${run.completed ? '全节点通关' : `进度 ${run.clearedIndices.length}/${run.nodes.length}`}
+        <h2 class="section-title">${escapeHtml(run.routeName)}</h2>
+        <span class="status-badge ${run.completed ? 'badge-ok' : combatSession ? 'badge-danger' : 'badge-warn'}">
+          ${run.completed ? '全节点通关' : combatSession ? '战术交战中' : `进度 ${run.clearedIndices.length}/${run.nodes.length}`}
         </span>
       </div>
+      ${
+        run.seaCondition
+          ? `<span class="cc-stat-sub">海况词条：<strong>${escapeHtml(run.seaCondition.label)}</strong> · ${escapeHtml(run.seaCondition.description)}</span>`
+          : ''
+      }
       <div id="sortie-map-mount"></div>
       <div class="muted-text" style="font-size:12px;" id="sortie-loot-summary">
         累计战利品：<strong>${escapeHtml(formatLootSummary(run.loot, resources))}</strong>
       </div>
-      ${
-        isHeavyDamage && !run.completed
-          ? '<div class="seaworthy-alert" id="sortie-heavy-dmg-alert">大破危险状态（HP < 25%）！建议立即点击「携带战利品返航回港区」进行入渠修复，强行进击风险极高。</div>'
-          : ''
-      }
-      <div class="lab-stack-sm" id="sortie-decision-btns">
-        ${
-          !run.completed
-            ? `
-          <button type="button" id="btn-sortie-advance" class="btn-primary port-cta-btn" ${sortieState.busy ? 'disabled' : ''}>
-            ${
-              run.nextNodeIndex === 0
-                ? `向首节点 ${run.nodes[0].code} 进发（油-${run.stepCost.fuel} / 弹-${run.stepCost.ammo}）`
-                : `继续前进 → 节点 ${run.nodes[run.nextNodeIndex].code}（油-${run.stepCost.fuel} / 弹-${run.stepCost.ammo}）`
-            }
-          </button>
-        `
-            : ''
-        }
-        <button type="button" id="btn-sortie-retreat" class="${run.completed ? 'btn-primary port-cta-btn' : 'btn-secondary uikit-touch-target'}">
-          ${run.completed ? '胜利凯旋 · 携带战利品返航回港区' : '携带战利品返航回港区'}
-        </button>
-      </div>
     `;
-
     activeCard
       .querySelector('#sortie-map-mount')
       .appendChild(createNodeMapElement(run.nodes, run.clearedIndices, run.completed ? -1 : run.nextNodeIndex));
 
-    const advBtn = activeCard.querySelector('#btn-sortie-advance');
-    if (advBtn) {
-      advBtn.addEventListener('click', () => advanceNextNode());
+    // Sub-panel A: Active Multi-Command Tactical Combat Panel
+    if (combatSession) {
+      const enemy = combatSession.enemy;
+      const combatPanel = document.createElement('div');
+      combatPanel.className = 'enemy-hud-card';
+      combatPanel.id = 'sortie-combat-panel';
+
+      combatPanel.innerHTML = `
+        <div class="lab-slot-head">
+          <strong>敌方目标：${escapeHtml(enemy.name)}</strong>
+          <span class="status-badge badge-danger">
+            ${enemy.forcedEngagement ? '主力决战 · 强制交战' : NODE_TYPE_LABELS[enemy.tier] || '交战'} · 第 ${combatSession.turn} 回合
+          </span>
+        </div>
+        <div id="sortie-enemy-hp-bar"></div>
+        <div class="cc-badge-row" id="sortie-enemy-intel">
+          ${
+            enemy.scanned
+              ? `
+            <span class="status-badge badge-ok">已扫描 · 护甲 ${enemy.armor}</span>
+            <span class="status-badge badge-warn">弱点：${escapeHtml(enemy.weaknessLabel)}</span>
+          `
+              : '<span class="status-badge badge-muted">护甲：??? · 弱点：???（执行「扫描」揭露）</span>'
+          }
+          ${
+            combatSession.lockOnBonus > 0
+              ? `<span class="status-badge badge-ok" id="sortie-lockon-badge">锁定增益 +${combatSession.lockOnBonus}</span>`
+              : ''
+          }
+          ${
+            combatSession.evasionBuffTurns > 0
+              ? `<span class="status-badge badge-ok">闪避减伤 (${combatSession.evasionBuffTurns}回合)</span>`
+              : ''
+          }
+        </div>
+        <div class="tactical-cmd-grid" id="sortie-tactical-cmds">
+          <button type="button" id="btn-cmd-scan" class="tactical-cmd-btn" data-combat-cmd="scan" ${sortieState.busy ? 'disabled' : ''}>
+            <span class="tactical-cmd-title">扫描（Scan）</span>
+            <span class="tactical-cmd-sub">索敌 · 油-5 · 揭露弱点+锁定</span>
+          </button>
+          <button type="button" id="btn-cmd-evade" class="tactical-cmd-btn" data-combat-cmd="evade" ${sortieState.busy ? 'disabled' : ''}>
+            <span class="tactical-cmd-title">迂回（Evade）</span>
+            <span class="tactical-cmd-sub">机动 · 油-20 · ${enemy.forcedEngagement ? '先手闪避减伤' : '无伤绕过敌人'}</span>
+          </button>
+          <button type="button" id="btn-cmd-shelling" class="tactical-cmd-btn is-shelling" data-combat-cmd="shelling" ${sortieState.busy ? 'disabled' : ''}>
+            <span class="tactical-cmd-title">炮击（Shelling）</span>
+            <span class="tactical-cmd-sub">火力 · 弹-15 · 稳定常规伤害</span>
+          </button>
+          <button type="button" id="btn-cmd-torpedo" class="tactical-cmd-btn is-torpedo" data-combat-cmd="torpedo" ${sortieState.busy ? 'disabled' : ''}>
+            <span class="tactical-cmd-title">鱼雷（Torpedo）</span>
+            <span class="tactical-cmd-sub">雷装+幸运 · 弹-30 · 高爆高风险</span>
+          </button>
+        </div>
+      `;
+
+      const enemyBar = uiKit.createProgressBar({
+        label: '敌方耐久',
+        value: enemy.scanned ? enemy.hp : enemy.maxHp,
+        max: enemy.maxHp,
+        tone: 'danger',
+        showPercent: false,
+        sublabel: enemy.scanned ? `${enemy.hp} / ${enemy.maxHp}` : '??? / ???（未扫描）',
+      });
+      combatPanel.querySelector('#sortie-enemy-hp-bar').appendChild(enemyBar.element);
+
+      combatPanel.querySelectorAll('[data-combat-cmd]').forEach((btn) => {
+        btn.addEventListener('click', () => handleTacticalCommand(btn.getAttribute('data-combat-cmd')));
+      });
+
+      activeCard.appendChild(combatPanel);
+    } else {
+      // Sub-panel B: Advance / Retreat Decision Controls
+      if (isHeavyDamage && !run.completed) {
+        const warn = document.createElement('div');
+        warn.className = 'seaworthy-alert';
+        warn.id = 'sortie-heavy-dmg-alert';
+        warn.textContent = '大破危险状态（HP < 25%）！建议立即点击「携带战利品返航回港区」进行入渠修复，强行进击风险极高。';
+        activeCard.appendChild(warn);
+      }
+
+      const btnStack = document.createElement('div');
+      btnStack.className = 'lab-stack-sm';
+      btnStack.id = 'sortie-decision-btns';
+
+      if (!run.completed) {
+        const nextNode = run.nodes[run.nextNodeIndex];
+        const advBtn = document.createElement('button');
+        advBtn.type = 'button';
+        advBtn.id = 'btn-sortie-advance';
+        advBtn.className = 'btn-primary port-cta-btn';
+        advBtn.disabled = sortieState.busy;
+        advBtn.textContent =
+          run.nextNodeIndex === 0
+            ? `向首节点 ${nextNode.code} 进发（油-${run.stepCost.fuel} / 弹-${run.stepCost.ammo}）`
+            : `继续向下一节点 ${nextNode.code} 进发（油-${run.stepCost.fuel} / 弹-${run.stepCost.ammo}）`;
+        advBtn.addEventListener('click', () => advanceNextNode());
+        btnStack.appendChild(advBtn);
+      }
+
+      const retBtn = document.createElement('button');
+      retBtn.type = 'button';
+      retBtn.id = 'btn-sortie-retreat';
+      retBtn.className = run.completed ? 'btn-primary port-cta-btn' : 'btn-secondary uikit-touch-target';
+      retBtn.textContent = run.completed ? '胜利凯旋 · 携带战利品返航回港区' : '携带战利品返航回港区';
+      retBtn.addEventListener('click', () => retreatToPort());
+      btnStack.appendChild(retBtn);
+      activeCard.appendChild(btnStack);
     }
-    activeCard.querySelector('#btn-sortie-retreat').addEventListener('click', () => retreatToPort());
+
     root.appendChild(activeCard);
 
-    // Node Battle / Salvage Reports Timeline
+    // Tactical Battle & Salvage Reports Timeline
     const reportsWrap = document.createElement('div');
     reportsWrap.className = 'ac-timeline';
     reportsWrap.id = 'sortie-reports-list';
@@ -985,27 +1018,33 @@ async function renderSortieConsole() {
       card.innerHTML = `
         <div class="ac-card-head">
           <h3 class="ac-card-title">节点 ${escapeHtml(rep.nodeCode)} · ${escapeHtml(rep.nodeName)}</h3>
-          <span class="status-badge ${rep.degraded ? 'badge-warn' : 'badge-muted'}">${escapeHtml(rep.nodeType)} · ${escapeHtml(rep.check.outcomeLabel)}</span>
+          <span class="status-badge ${rep.degraded ? 'badge-warn' : 'badge-muted'}">${escapeHtml(rep.nodeType)}</span>
         </div>
         <p class="ac-card-body">${escapeHtml(rep.text)}</p>
-        <div class="cc-check-result outcome-${escapeHtml(rep.check.outcome)}" style="padding:10px;">
-          <div class="cc-check-headline">
-            <span class="cc-check-outcome" style="font-size:15px;">${escapeHtml(rep.check.statLabel)} · ${escapeHtml(rep.check.outcomeLabel)}</span>
-            <span class="cc-check-score" style="font-size:13.5px;">${rep.check.total} / DC ${rep.check.dc}（${formatSigned(rep.check.margin)}）</span>
+        ${
+          rep.check
+            ? `
+          <div class="cc-check-result outcome-${escapeHtml(rep.check.outcome)}" style="padding:10px;">
+            <div class="cc-check-headline">
+              <span class="cc-check-outcome" style="font-size:14.5px;">${escapeHtml(rep.check.statLabel)} · ${escapeHtml(rep.check.outcomeLabel)}</span>
+              <span class="cc-check-score" style="font-size:13px;">${rep.check.total} / DC ${rep.check.dc}（${formatSigned(rep.check.margin)}）</span>
+            </div>
+            <div class="cc-check-steps">
+              ${(rep.check.steps || [])
+                .map(
+                  (st) => `
+                <div class="cc-check-step">
+                  <span>${escapeHtml(st.label)}</span>
+                  <strong>${escapeHtml(st.text)}</strong>
+                </div>
+              `
+                )
+                .join('')}
+            </div>
           </div>
-          <div class="cc-check-steps">
-            ${(rep.check.steps || [])
-              .map(
-                (st) => `
-              <div class="cc-check-step">
-                <span>${escapeHtml(st.label)}</span>
-                <strong>${escapeHtml(st.text)}</strong>
-              </div>
-            `
-              )
-              .join('')}
-          </div>
-        </div>
+        `
+            : ''
+        }
         <div class="ac-settlement-chips">
           ${(rep.chips || [])
             .map((c) => `<span class="ac-delta-chip ${c.negative ? 'is-neg' : ''}">${escapeHtml(c.text)}</span>`)
@@ -1016,7 +1055,46 @@ async function renderSortieConsole() {
     }
     root.appendChild(reportsWrap);
   } else {
-    // Route Selection & Pre-Sortie Validation View
+    // Procedural Route Generator Card
+    const genCard = document.createElement('section');
+    genCard.className = 'surface-card lab-stack-sm';
+    genCard.id = 'sortie-generator-card';
+    genCard.innerHTML = `
+      <div class="section-header-row" style="margin-bottom:0;">
+        <h2 class="section-title">随机航线生成器</h2>
+        <span class="status-badge badge-ok">3~6 节点 + 随机海况</span>
+      </div>
+      <div class="cc-btn-3col" id="sortie-diff-chips">
+        ${Object.values(SEA_DIFFICULTIES)
+          .map(
+            (d) => `
+          <button type="button" class="${sortieState.selectedDifficulty === d.id ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" data-sortie-diff="${d.id}">
+            ${escapeHtml(d.label)}
+          </button>
+        `
+          )
+          .join('')}
+      </div>
+      <button type="button" id="btn-sortie-gen-route" class="btn-primary port-cta-btn">随机生成新航线</button>
+    `;
+
+    genCard.querySelectorAll('[data-sortie-diff]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        sortieState.selectedDifficulty = btn.getAttribute('data-sortie-diff');
+        renderSortieConsole();
+      });
+    });
+    genCard.querySelector('#btn-sortie-gen-route').addEventListener('click', () => {
+      const fresh = routeGenerator.generateRoute({ difficulty: sortieState.selectedDifficulty });
+      sortieState.generatedRoute = fresh;
+      sortieState.selectedRouteId = fresh.id;
+      uiKit.showToast(`已生成「${fresh.name}」（${fresh.nodes.length} 节点 · 海况：${fresh.seaCondition.label}）`, 'ok');
+      renderSortieConsole();
+    });
+    root.appendChild(genCard);
+
+    // Route Selector & Pre-Sortie Validation Card
+    const allRoutes = getAvailableRoutes();
     const selectedRoute = getSelectedRoute();
     const validation = validateSortieLaunch(char, selectedRoute);
 
@@ -1025,9 +1103,8 @@ async function renderSortieConsole() {
     selectCard.id = 'sortie-select-panel';
     selectCard.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
-        <h2 class="section-title">选择出征航线（${sortieState.routes.length} 条）</h2>
+        <h2 class="section-title">航线列表（${allRoutes.length} 条）</h2>
       </div>
-      <div class="lab-stack-sm" id="sortie-route-list"></div>
       ${
         !validation.ok
           ? `<div class="seaworthy-alert" id="sortie-launch-errors">启航条件未满足：${escapeHtml(validation.errors.join('；'))}</div>`
@@ -1036,10 +1113,11 @@ async function renderSortieConsole() {
       <button type="button" id="btn-sortie-launch" class="btn-primary port-cta-btn" ${validation.ok ? '' : 'disabled'}>
         ${selectedRoute ? `启航出击：${escapeHtml(selectedRoute.name)}（AP -${selectedRoute.apCost}）` : '请选择航线'}
       </button>
+      <div class="lab-stack-sm" id="sortie-route-list"></div>
     `;
 
     const listHost = selectCard.querySelector('#sortie-route-list');
-    for (const rt of sortieState.routes) {
+    for (const rt of allRoutes) {
       const isSel = selectedRoute && rt.id === selectedRoute.id;
       const card = document.createElement('div');
       card.className = `sortie-route-card ${isSel ? 'is-selected' : ''}`;
@@ -1047,27 +1125,51 @@ async function renderSortieConsole() {
       card.innerHTML = `
         <div class="lab-slot-head">
           <strong>${escapeHtml(rt.name)}</strong>
-          <span class="status-badge ${isSel ? 'badge-ok' : 'badge-muted'}">${rt.nodes.length} 节点</span>
+          <span class="status-badge ${rt.generated ? 'badge-warn' : isSel ? 'badge-ok' : 'badge-muted'}">
+            ${rt.generated ? '随机生成' : rt.builtIn ? '预设' : '自定义'} · ${rt.nodes.length} 节点
+          </span>
         </div>
         <p class="muted-text" style="font-size:12px;">${escapeHtml(rt.description)}</p>
         <div data-rt-map></div>
-        <div class="cc-stat-sub">最低要求：油 ≥ ${rt.minFuel} / 弹 ≥ ${rt.minAmmo} / AP ≥ ${rt.apCost} · 单步油 ${rt.stepCost.fuel} / 弹 ${rt.stepCost.ammo}</div>
-        <button type="button" class="${isSel ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" data-select-route="${escapeHtml(rt.id)}">
-          ${isSel ? '当前已选航线' : '选择此航线'}
-        </button>
+        <div class="cc-stat-sub">
+          海况：${escapeHtml(rt.seaCondition?.label || '标准')} · 最低要求 油≥${rt.minFuel} / 弹≥${rt.minAmmo} / AP≥${rt.apCost} · 单步 油${rt.stepCost.fuel}/弹${rt.stepCost.ammo}
+        </div>
+        <div class="lab-btn-row">
+          <button type="button" class="${isSel ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" data-select-route="${escapeHtml(rt.id)}">
+            ${isSel ? '当前已选航线' : '选择此航线'}
+          </button>
+          ${
+            rt.generated
+              ? '<button type="button" class="btn-secondary uikit-touch-target" data-save-gen-route>保存为固定航线</button>'
+              : ''
+          }
+        </div>
       `;
       card.querySelector('[data-rt-map]').appendChild(createNodeMapElement(rt.nodes, [], -1));
       card.querySelector('[data-select-route]').addEventListener('click', () => {
         sortieState.selectedRouteId = rt.id;
         renderSortieConsole();
       });
+      const saveGenBtn = card.querySelector('[data-save-gen-route]');
+      if (saveGenBtn) {
+        saveGenBtn.addEventListener('click', async () => {
+          const saved = await routeGenerator.saveCustomRoute({
+            ...deepClone(rt),
+            id: `route_custom_${Date.now().toString(36)}`,
+            generated: false,
+          });
+          sortieState.generatedRoute = null;
+          sortieState.selectedRouteId = saved.id;
+          uiKit.showToast(`已将「${saved.name}」保存为固定航线`, 'ok');
+          renderSortieConsole();
+        });
+      }
       listHost.appendChild(card);
     }
 
     selectCard.querySelector('#btn-sortie-launch').addEventListener('click', () => {
       if (selectedRoute) launchSortie(selectedRoute);
     });
-
     root.appendChild(selectCard);
   }
 
@@ -1080,21 +1182,21 @@ async function renderSortieConsole() {
 
 export default {
   id: 'sortie-console',
-  name: '出征航线台',
-  description: '节点式出征航线控制台：适航与油弹前置校验、可视化节点进度图、D20 战利品结算、大破强行进击警告与可视化航线编辑器。',
+  name: '出征战术指挥台',
+  description: '程序化随机航线生成、多指令战术交战（扫描/迂回/炮击/鱼雷）、演出动效联动、大破警告与双轨战报。',
 
   mount(container, context) {
     sortieState.container = container;
     sortieState.context = context;
 
-    context.ui.setPlaceholder('出征指挥记录：输入备忘将写入行动日志...');
+    context.ui.setPlaceholder('战地指挥记录：输入备忘将写入行动日志...');
     context.ui.setInputHandler((text) => {
       const char = getFlagship();
       context.logs.add({
         category: LOG_CATEGORIES.SYSTEM,
         actorId: char?.id || null,
         actorName: char?.name || '',
-        title: `${char ? `[${char.name}] ` : ''}出征战地记录`,
+        title: `${char ? `[${char.name}] ` : ''}战术指挥记录`,
         detail: text,
       });
       context.uiKit.showToast('已记入行动日志', 'ok');
@@ -1107,14 +1209,24 @@ export default {
         onClick: () => context.modules.mount('port-hub'),
       },
       {
+        id: 'sortie-q-gen',
+        label: '随机新航线',
+        onClick: () => {
+          if (sortieState.activeRun) {
+            context.uiKit.showToast('当前出征尚未结束，返航后可生成新航线', 'warn');
+            return;
+          }
+          const fresh = context.routeGenerator.generateRoute({ difficulty: sortieState.selectedDifficulty });
+          sortieState.generatedRoute = fresh;
+          sortieState.selectedRouteId = fresh.id;
+          context.uiKit.showToast(`已生成：${fresh.name}`, 'ok');
+          renderSortieConsole();
+        },
+      },
+      {
         id: 'sortie-q-editor',
         label: '航线编辑器',
         onClick: () => openRouteEditorSheet(),
-      },
-      {
-        id: 'sortie-q-char',
-        label: '角色控制台',
-        onClick: () => context.modules.mount('character-console'),
       },
     ]);
 
@@ -1130,7 +1242,11 @@ export default {
     ];
 
     if (!sortieState.hydrated) {
-      hydrateSortieConsole({ storage: context.rootStorage }).then(() => renderSortieConsole());
+      hydrateSortieConsole({
+        storage: context.rootStorage,
+        routeGenerator: context.routeGenerator,
+        combat: context.combat,
+      }).then(() => renderSortieConsole());
     } else {
       renderSortieConsole();
     }

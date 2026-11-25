@@ -13,6 +13,9 @@ import { StatRulesEngine } from './core/stat-rules.js';
 import { InventorySystem } from './core/inventory-system.js';
 import { ResourceManager } from './core/resource-manager.js';
 import { LogSystem } from './core/log-system.js';
+import { FxStage } from './core/fx-stage.js';
+import { RouteGenerator } from './core/route-generator.js';
+import { TacticalCombatEngine } from './core/tactical-combat.js';
 import { createUIKit, showToast } from './core/ui-kit.js';
 import { REGISTERED_MODULES } from './modules/index.js';
 import { hydrateCharacterRoster } from './modules/character-console.js';
@@ -53,6 +56,16 @@ const statRules = new StatRulesEngine({ storage, bus });
 const inventory = new InventorySystem({ storage, entities, bus });
 const resources = new ResourceManager({ storage, bus });
 const logs = new LogSystem({ storage, bus });
+const fxStage = new FxStage({ bus, storage });
+const routeGenerator = new RouteGenerator({ storage, bus });
+const combat = new TacticalCombatEngine({
+  entities,
+  inventory,
+  statRules,
+  resources,
+  narrative,
+  bus,
+});
 const uiKit = createUIKit();
 
 const els = {
@@ -180,6 +193,9 @@ const moduleManager = new ModuleManager({
     inventory,
     resources,
     logs,
+    fxStage,
+    routeGenerator,
+    combat,
     uiKit,
   },
 });
@@ -538,15 +554,16 @@ async function bootApplication() {
     await hydrateCharacterRoster({ storage, entities, inventory, statRules });
     await Promise.all([
       hydrateActionConsole({ storage, rules }),
-      hydrateSortieConsole({ storage }),
+      hydrateSortieConsole({ storage, routeGenerator, combat }),
     ]);
   } catch (err) {
     console.error('[App] Persistence hydration failed:', err);
   }
 
   logs.attachBusListeners();
+  fxStage.attachBusListeners();
 
-  // Trigger Auto-Save snapshot whenever equipment, slots, characters, port service, sortie, actions, resources, or rules mutate
+  // Trigger Auto-Save snapshot whenever equipment, slots, characters, port service, sortie, combat, actions, resources, or rules mutate
   saves.bindAutoSaveEvents(
     [
       'inventory:equipped',
@@ -567,6 +584,8 @@ async function bootApplication() {
       'sortie:node-resolved',
       'sortie:returned',
       'sortie:routes-changed',
+      'combat:turn-resolved',
+      'route:custom-saved',
     ],
     (eventName) => ({
       name: '系统自动存档快照',
@@ -622,6 +641,9 @@ window.__APP_BASE__ = {
   inventory,
   resources,
   logs,
+  fxStage,
+  routeGenerator,
+  combat,
   uiKit,
   modules: moduleManager,
 };
