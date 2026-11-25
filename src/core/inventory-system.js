@@ -1,5 +1,5 @@
 /**
- * Generic Equipment, Mandatory Core Slots, Freeform Custom Slots & Warehouse System.
+ * Generic Equipment, Mandatory Core Slots, Freeform Custom Slots, Dynamic Attribute Expansion & Warehouse System.
  *
  * Slot architecture per character:
  *   1. 3 Fixed Mandatory Core Slots (required: true, non-removable):
@@ -7,19 +7,19 @@
  *        - armor  (装甲)  -> category: 'armor'
  *        - core   (核心)  -> category: 'core'
  *      A character is Seaworthy (适航) if and only if all 3 core slots are equipped.
+ *      Effectiveness of these 3 core slots is amplified by Commander `maintenance` (整备).
  *   2. Optional Outfit Slot (required: false):
  *        - outfit (服装)  -> category: 'outfit'
  *   3. Freeform Custom Optional Slots (required: false, custom: true):
- *      Zero hardcoded slot names or rigid sub-type enums. Players freely create, rename,
- *      or delete any number of named custom slots per character; any 'extension' item can
- *      be equipped into any custom slot, and leaving all custom slots empty stays Seaworthy.
- *
- * Supports enhancement upgrades (level 0..10), automatic EntitySystem stat recalculation,
- * EventBus notifications, and IndexedDB persistence.
+ *      Players freely create, rename, or delete any number of named custom slots per character.
+ *      Any equipped module carrying standard 8 naval stats OR arbitrary custom attribute keys
+ *      automatically expands the character card's stat breakdown (`getCharacterStatBreakdown`).
  */
 
+import { NAVAL_EIGHT_STAT_DEFS, NAVAL_EIGHT_STAT_MAP, normalizeStatKey } from './stat-rules.js';
+
 const STORAGE_NS = 'core-inventory';
-const STATE_KEY = 'inventory-state-v2';
+const STATE_KEY = 'inventory-state-v3';
 
 export const MAX_ENHANCE_LEVEL = 10;
 
@@ -47,6 +47,8 @@ export const MANDATORY_CORE_SLOTS = Object.freeze([
   { id: 'core', label: '核心', required: true, custom: false, allowedCategories: [ITEM_CATEGORIES.CORE] },
 ]);
 
+export const MANDATORY_SLOT_IDS = new Set(['engine', 'armor', 'core']);
+
 export const OPTIONAL_OUTFIT_SLOT = Object.freeze({
   id: 'outfit',
   label: '服装',
@@ -58,91 +60,95 @@ export const OPTIONAL_OUTFIT_SLOT = Object.freeze({
 export const STARTER_ITEMS = [
   {
     id: 'item_core_engine_01',
-    name: '基础引擎',
+    name: '标准蒸汽轮机引擎',
     category: ITEM_CATEGORIES.ENGINE,
     tags: ['核心必装', '动力'],
-    description: '标准制式基础动力单元，提供稳定的机动性与基础输出支持。',
-    quantity: 2,
+    description: '制式舰用推进引擎，提供稳定的机动性与反潜航速支持。',
+    quantity: 4,
     level: 0,
     bonuses: [
-      { stat: 'agility', layer: 'baseAdd', value: 10 },
-      { stat: 'attack', layer: 'baseAdd', value: 4 },
+      { stat: 'evasion', layer: 'baseAdd', value: 12 },
+      { stat: 'asw', layer: 'baseAdd', value: 4 },
     ],
   },
   {
     id: 'item_core_armor_01',
-    name: '标准装甲',
+    name: '复合均质舰体装甲',
     category: ITEM_CATEGORIES.ARMOR,
     tags: ['核心必装', '防护'],
-    description: '均衡型基础装甲结构，提升战术容错与结构稳定性。',
-    quantity: 2,
+    description: '均衡型舰体装甲结构，提升装甲防护、耐久上限与防空结构强度。',
+    quantity: 4,
     level: 0,
     bonuses: [
-      { stat: 'tactics', layer: 'baseAdd', value: 6 },
-      { stat: 'burst', layer: 'baseAdd', value: 4 },
+      { stat: 'armor', layer: 'baseAdd', value: 10 },
+      { stat: 'maxHp', layer: 'baseAdd', value: 8 },
+      { stat: 'aa', layer: 'baseAdd', value: 4 },
     ],
   },
   {
     id: 'item_core_core_01',
-    name: '通用核心',
+    name: '标准火控中枢核心',
     category: ITEM_CATEGORIES.CORE,
     tags: ['核心必装', '中枢'],
-    description: '基础舰载控制核心，为五维属性与检定提供稳定基准加成。',
-    quantity: 2,
+    description: '舰载作战控制核心，强化火力、雷击、侦查与检定基准精度。',
+    quantity: 4,
     level: 0,
     bonuses: [
-      { stat: 'attack', layer: 'baseAdd', value: 8 },
-      { stat: 'burst', layer: 'baseAdd', value: 8 },
+      { stat: 'firepower', layer: 'baseAdd', value: 8 },
+      { stat: 'torpedo', layer: 'baseAdd', value: 6 },
+      { stat: 'recon', layer: 'baseAdd', value: 6 },
       { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
     ],
   },
   {
     id: 'item_ext_01',
-    name: '通用扩展装备 · 甲型组件',
+    name: '双联装高平两用炮模块',
     category: ITEM_CATEGORIES.EXTENSION,
-    tags: ['通用扩展', '输出'],
-    description: '可装入任意自定义扩展槽位的通用模块，侧重攻击与爆发加成。',
-    quantity: 2,
+    tags: ['通用扩展', '火控防空'],
+    description: '可装入任意自定义槽位的扩展武装，兼顾火力、防空与自定义「射程延伸」词条。',
+    quantity: 3,
     level: 0,
     bonuses: [
-      { stat: 'attack', layer: 'baseAdd', value: 12 },
-      { stat: 'burst', layer: 'baseAdd', value: 6 },
+      { stat: 'firepower', layer: 'baseAdd', value: 12 },
+      { stat: 'aa', layer: 'baseAdd', value: 10 },
+      { stat: '射程延伸', layer: 'baseAdd', value: 2 },
     ],
   },
   {
     id: 'item_ext_02',
-    name: '通用扩展装备 · 乙型组件',
+    name: '主动声呐与夜战观瞄模块',
     category: ITEM_CATEGORIES.EXTENSION,
-    tags: ['通用扩展', '机动侦察'],
-    description: '可装入任意自定义扩展槽位的通用模块，侧重机动、战术与检定稳定度。',
-    quantity: 2,
+    tags: ['通用扩展', '反潜侦查'],
+    description: '可装入任意自定义槽位的特种观瞄模块，提升侦查、反潜并附带「夜战修正」扩展属性。',
+    quantity: 3,
     level: 0,
     bonuses: [
-      { stat: 'agility', layer: 'baseAdd', value: 10 },
-      { stat: 'tactics', layer: 'baseAdd', value: 10 },
+      { stat: 'recon', layer: 'baseAdd', value: 10 },
+      { stat: 'asw', layer: 'baseAdd', value: 12 },
+      { stat: '夜战修正', layer: 'baseAdd', value: 8 },
       { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
     ],
   },
   {
     id: 'item_outfit_standard',
-    name: '标准常服',
+    name: '标准港区常服',
     category: ITEM_CATEGORIES.OUTFIT,
     tags: ['服装', '日常'],
-    description: '剪裁整洁的常规服装，轻便舒适并提供基础机动与幸运加成。',
-    quantity: 2,
+    description: '剪裁轻便的港区执勤常服，提供机动与侦查小幅加成。',
+    quantity: 3,
     level: 0,
     bonuses: [
-      { stat: 'agility', layer: 'baseAdd', value: 6 },
-      { stat: 'luck', layer: 'baseAdd', value: 6 },
+      { stat: 'evasion', layer: 'baseAdd', value: 6 },
+      { stat: 'recon', layer: 'baseAdd', value: 4 },
     ],
   },
   {
     id: 'item_consumable_med',
-    name: '应急修复包',
+    name: '应急损管修复包',
     category: ITEM_CATEGORIES.CONSUMABLE,
     tags: ['消耗品', '恢复'],
-    description: '现场紧急修复物资，使用后恢复 25 点生命/耐久与 10 点士气。',
-    quantity: 4,
+    description: '现场紧急损管物资，使用后恢复 25 点耐久与 10 点士气。',
+    quantity: 5,
     level: 0,
     bonuses: [
       { stat: 'hp', layer: 'baseAdd', value: 25 },
@@ -151,11 +157,11 @@ export const STARTER_ITEMS = [
   },
   {
     id: 'item_consumable_ration',
-    name: '高能补给盒',
+    name: '高能舰队配给盒',
     category: ITEM_CATEGORIES.CONSUMABLE,
     tags: ['消耗品', '补给'],
     description: '便携式高能配给，使用后恢复 30 点行动点 AP 与 15 点士气。',
-    quantity: 4,
+    quantity: 5,
     level: 0,
     bonuses: [
       { stat: 'ap', layer: 'baseAdd', value: 30 },
@@ -175,8 +181,11 @@ function sanitizeBonuses(bonuses = []) {
     if (!b || !b.stat) continue;
     const val = Number(b.value);
     if (!Number.isFinite(val) || val === 0) continue;
+    const rawStat = String(b.stat).trim();
+    if (!rawStat) continue;
+    const stat = normalizeStatKey(rawStat);
     out.push({
-      stat: String(b.stat).trim(),
+      stat,
       layer: ['baseAdd', 'percentAdd', 'percentMult', 'flatFinal'].includes(b.layer)
         ? b.layer
         : 'baseAdd',
@@ -204,13 +213,17 @@ export function computeEnhancedBonuses(baseBonuses = [], level = 0) {
   });
 }
 
-export function getEnhanceCost(item) {
+/**
+ * Enhancement material cost, optionally discounted by Commander `maintenance` (0..0.45).
+ */
+export function getEnhanceCost(item, { discount = 0 } = {}) {
   const lv = Math.max(0, Math.floor(Number(item?.level) || 0));
   const tier = lv + 1;
+  const mult = Math.max(0.5, 1 - Math.max(0, Math.min(0.45, Number(discount) || 0)));
   return {
-    steel: 80 * tier,
-    bauxite: 40 * tier,
-    silver: 120 * tier,
+    steel: Math.max(10, Math.round(80 * tier * mult)),
+    bauxite: Math.max(5, Math.round(40 * tier * mult)),
+    silver: Math.max(15, Math.round(120 * tier * mult)),
   };
 }
 
@@ -219,13 +232,15 @@ export class InventorySystem {
    * @param {{
    *   storage: import('./storage.js').StorageManager,
    *   entities: import('./entity-system.js').EntitySystem,
+   *   commander?: import('./commander-system.js').CommanderSystem | null,
    *   bus?: import('./event-bus.js').EventBus | null
    * }} deps
    */
-  constructor({ storage, entities, bus = null }) {
+  constructor({ storage, entities, commander = null, bus = null }) {
     this._storage = storage;
     this._scope = storage.namespace(STORAGE_NS);
     this._entities = entities;
+    this._commander = commander;
     this._bus = bus;
 
     /** @type {Map<string, object>} */
@@ -235,6 +250,24 @@ export class InventorySystem {
     /** @type {Record<string, Record<string, string>>} characterId -> { slotId: itemId } */
     this._equipped = {};
     this._hydrated = false;
+
+    if (this._bus) {
+      this._bus.on('commander:updated', () => {
+        this.syncAllCharacters();
+      });
+    }
+  }
+
+  setCommander(commander) {
+    this._commander = commander;
+    this.syncAllCharacters();
+  }
+
+  getCorePartsAmplifier() {
+    if (this._commander && typeof this._commander.getCorePartsAmplifier === 'function') {
+      return this._commander.getCorePartsAmplifier();
+    }
+    return 1.0;
   }
 
   _emit(event, payload) {
@@ -290,10 +323,6 @@ export class InventorySystem {
     return this.getCharacterSlots(characterId).find((s) => s.id === slotId) || null;
   }
 
-  /**
-   * Add a completely freeform custom optional slot to a character (required: false).
-   * Accepts any non-empty name; fits any 'extension' item without rigid sub-type enums.
-   */
   async addCharacterCustomSlot(characterId, label) {
     const cid = String(characterId || '').trim();
     const cleanLabel = String(label || '').trim();
@@ -351,9 +380,6 @@ export class InventorySystem {
     return true;
   }
 
-  /**
-   * Check whether a character has all 3 mandatory core slots (engine, armor, core) equipped.
-   */
   checkSeaworthiness(characterId) {
     const cid = String(characterId || '');
     const slotMap = this._equipped[cid] || {};
@@ -403,7 +429,6 @@ export class InventorySystem {
       ? def.category
       : ITEM_CATEGORIES.EXTENSION;
 
-    // For consumables with same name, stack quantity cleanly if requested
     if (category === ITEM_CATEGORIES.CONSUMABLE && def.stackByName) {
       for (const existing of this._items.values()) {
         if (existing.category === ITEM_CATEGORIES.CONSUMABLE && existing.name === name) {
@@ -459,7 +484,6 @@ export class InventorySystem {
         ? Math.max(0, Math.min(MAX_ENHANCE_LEVEL, Math.floor(Number(patch.level) || 0)))
         : existing.level || 0;
 
-    // When user edits bonuses visually, treat edited bonuses as the new current/base values
     let nextBaseBonuses = existing.baseBonuses || existing.bonuses || [];
     let nextBonuses = existing.bonuses || [];
     if (patch.bonuses !== undefined) {
@@ -495,7 +519,6 @@ export class InventorySystem {
 
     this._items.set(existing.id, updated);
 
-    // Re-sync stats for all characters currently wearing this item
     for (const [charId, slotMap] of Object.entries(this._equipped)) {
       if (Object.values(slotMap).includes(existing.id)) {
         this.syncCharacterModifiers(charId);
@@ -507,9 +530,6 @@ export class InventorySystem {
     return deepClone(updated);
   }
 
-  /**
-   * Enhance an equipment/core/outfit item by +1 level, scaling its stat bonuses and re-syncing wearers.
-   */
   async enhanceItem(itemId) {
     const existing = this._items.get(String(itemId));
     if (!existing) throw new Error(`物品 "${itemId}" 不存在`);
@@ -522,9 +542,10 @@ export class InventorySystem {
     }
 
     const nextLevel = prevLevel + 1;
-    const baseBonuses = Array.isArray(existing.baseBonuses) && existing.baseBonuses.length > 0
-      ? existing.baseBonuses
-      : existing.bonuses || [];
+    const baseBonuses =
+      Array.isArray(existing.baseBonuses) && existing.baseBonuses.length > 0
+        ? existing.baseBonuses
+        : existing.bonuses || [];
     const nextBonuses = computeEnhancedBonuses(baseBonuses, nextLevel);
 
     existing.level = nextLevel;
@@ -585,7 +606,7 @@ export class InventorySystem {
   }
 
   // ------------------------------------------------------------
-  // Equip / Unequip / Consume & Dynamic Full-Slot Stat Sync
+  // Equip / Unequip / Consume & Dynamic Full-Slot Stat Breakdown
   // ------------------------------------------------------------
 
   getCompatibleSlotIdForItem(characterId, item) {
@@ -593,7 +614,6 @@ export class InventorySystem {
     const slots = this.getCharacterSlots(characterId);
     const matching = slots.filter((s) => s.allowedCategories.includes(item.category));
     if (matching.length === 0) return null;
-    // Prefer an empty matching slot first
     const slotMap = this._equipped[String(characterId)] || {};
     const empty = matching.find((s) => !slotMap[s.id]);
     return (empty || matching[0]).id;
@@ -618,6 +638,23 @@ export class InventorySystem {
     return null;
   }
 
+  /**
+   * Compute amplified bonus value when the item sits in one of the 3 mandatory core slots
+   * (amplified by Commander `maintenance`).
+   */
+  _resolveSlotBonusValue(slotId, bonus) {
+    const rawVal = Number(bonus.value) || 0;
+    if (!MANDATORY_SLOT_IDS.has(slotId) || rawVal <= 0 || bonus.stat === 'checkBonus') {
+      return rawVal;
+    }
+    const amp = this.getCorePartsAmplifier();
+    if (amp <= 1.0) return rawVal;
+    if (bonus.layer === 'percentAdd' || bonus.layer === 'percentMult') {
+      return Number((rawVal * amp).toFixed(4));
+    }
+    return Math.round(rawVal * amp);
+  }
+
   getCharacterEquipmentBonuses(characterId) {
     const equipped = this.getCharacterEquipment(characterId);
     let checkBonus = 0;
@@ -628,11 +665,17 @@ export class InventorySystem {
       if (!item) continue;
       items.push({ slotId, id: item.id, name: item.name, category: item.category, level: item.level || 0 });
       for (const b of item.bonuses || []) {
+        const effVal = this._resolveSlotBonusValue(slotId, b);
         if (b.stat === 'checkBonus') {
-          checkBonus += Number(b.value) || 0;
+          checkBonus += effVal;
         } else {
           if (!statBonuses[b.stat]) statBonuses[b.stat] = [];
-          statBonuses[b.stat].push({ layer: b.layer, value: b.value, source: item.name });
+          statBonuses[b.stat].push({
+            layer: b.layer,
+            value: effVal,
+            source: item.level > 0 ? `${item.name} +${item.level}` : item.name,
+            slotId,
+          });
         }
       }
     }
@@ -641,6 +684,70 @@ export class InventorySystem {
       checkBonus: Number(checkBonus.toFixed(2)),
       statBonuses,
       items,
+      coreAmplifier: this.getCorePartsAmplifier(),
+    };
+  }
+
+  /**
+   * Full stat breakdown separating Base (白值) vs Equipment/Module Bonus (装备/模块加成) vs Total (总值),
+   * covering:
+   *   1. standardStats: all 8 Naval Stats (maxHp, firepower, armor, torpedo, evasion, recon, aa, asw)
+   *   2. dynamicStats: any extra custom attributes dynamically contributed by equipped items/custom-slot modules
+   */
+  getCharacterStatBreakdown(characterId) {
+    const entity = this._entities?.get(characterId);
+    const eqInfo = this.getCharacterEquipmentBonuses(characterId);
+    const standardKeys = new Set(NAVAL_EIGHT_STAT_DEFS.map((d) => d.key));
+    const ignoreKeys = new Set(['hp', 'morale', 'ap', 'maxAp', 'affinity', 'checkBonus']);
+
+    const standardStats = NAVAL_EIGHT_STAT_DEFS.map((def) => {
+      const base = Math.round(Number(entity?.stats?.[def.key] ?? def.defaultValue));
+      const total = entity
+        ? Math.round(this._entities.getEffectiveStat(characterId, def.key, { round: 'round' }).final)
+        : base;
+      const bonus = Number((total - base).toFixed(2));
+      const sources = (eqInfo.statBonuses[def.key] || []).map((s) => s.source);
+      return {
+        key: def.key,
+        label: def.label,
+        shortLabel: def.shortLabel,
+        base,
+        bonus,
+        total,
+        sources,
+      };
+    });
+
+    // Discover ALL non-standard custom stat keys across equipped modules & custom slots
+    const dynamicKeySet = new Set();
+    for (const statKey of Object.keys(eqInfo.statBonuses)) {
+      if (!standardKeys.has(statKey) && !ignoreKeys.has(statKey)) {
+        dynamicKeySet.add(statKey);
+      }
+    }
+
+    const dynamicStats = Array.from(dynamicKeySet).map((key) => {
+      const base = Number(entity?.stats?.[key] ?? 0);
+      const total = entity
+        ? Number(this._entities.getEffectiveStat(characterId, key, { round: 'none' }).final.toFixed(2))
+        : base;
+      const bonus = Number((total - base).toFixed(2));
+      const sources = (eqInfo.statBonuses[key] || []).map((s) => s.source);
+      return {
+        key,
+        label: NAVAL_EIGHT_STAT_MAP[key]?.label || key,
+        base,
+        bonus,
+        total,
+        sources,
+      };
+    });
+
+    return {
+      standardStats,
+      dynamicStats,
+      checkBonus: eqInfo.checkBonus,
+      coreAmplifier: eqInfo.coreAmplifier,
     };
   }
 
@@ -662,15 +769,22 @@ export class InventorySystem {
       if (!item) continue;
       (item.bonuses || []).forEach((bonus, idx) => {
         if (bonus.stat === 'checkBonus') return;
+        const effVal = this._resolveSlotBonusValue(slotId, bonus);
         this._entities.addModifier(characterId, {
           id: `inv_eq_${slotId}_${item.id}_${idx}`,
           stat: bonus.stat,
           layer: bonus.layer || 'baseAdd',
-          value: bonus.value,
+          value: effVal,
           source: item.level > 0 ? `${item.name} +${item.level}` : item.name,
           enabled: true,
         });
       });
+    }
+
+    // Clamp current HP to effective maxHp ceiling if maxHp changed
+    const effMaxHp = Math.max(1, Math.round(this._entities.getEffectiveStat(characterId, 'maxHp', { round: 'round' }).final));
+    if (Number(entity.stats.hp ?? effMaxHp) > effMaxHp) {
+      this._entities.setStat(characterId, 'hp', effMaxHp, { min: 0, max: effMaxHp });
     }
   }
 
@@ -707,7 +821,6 @@ export class InventorySystem {
 
     if (!this._equipped[cid]) this._equipped[cid] = {};
 
-    // Clear if same item was in another slot on this character
     for (const [sId, eqId] of Object.entries(this._equipped[cid])) {
       if (eqId === item.id && sId !== slot.id) {
         delete this._equipped[cid][sId];
@@ -780,12 +893,13 @@ export class InventorySystem {
     const entity = this._entities?.get(cid);
     if (!entity) throw new Error(`角色 "${cid}" 不存在`);
 
+    const effMaxHp = Math.max(1, Math.round(this._entities.getEffectiveStat(cid, 'maxHp', { round: 'round' }).final));
     const applied = [];
     for (const b of item.bonuses || []) {
       const before = Number(entity.stats[b.stat] ?? 0);
       const maxBound =
         b.stat === 'hp'
-          ? Number(entity.stats.maxHp ?? 100)
+          ? effMaxHp
           : b.stat === 'ap'
           ? Number(entity.stats.maxAp ?? 100)
           : b.stat === 'morale'
@@ -821,7 +935,7 @@ export class InventorySystem {
 
   serialize() {
     return {
-      version: 2,
+      version: 3,
       customSlotsByCharacter: deepClone(this._customSlotsByCharacter),
       items: Array.from(this._items.values()).map((it) => deepClone(it)),
       equipped: deepClone(this._equipped),

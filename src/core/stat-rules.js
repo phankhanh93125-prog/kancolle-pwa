@@ -1,30 +1,79 @@
 /**
- * Generic Stat Rules, Dynamic Status Bars, Affinity Stages, and 1D20 Check Engine.
+ * Naval Shipgirl Stat Rules, Dynamic Status Bars, Affinity Stages, and 1D20 Check Engine.
  *
- * Domain-neutral rule definitions:
- *   - 5 Core Stats: attack, burst, agility, tactics, luck (default 10..100, +1 check mod per 10 pts)
- *   - Dynamic Status Bars: hp, morale (0..100), ap (supports offline auto-recovery)
- *   - Affinity Stages: 0..100 mapped cleanly into 4 stages
- *   - Standard 1D20 Check: 1D20 + statMod + equipmentCheckBonus + moraleMod + extraMod vs DC
- *     yielding 'crit-success' | 'success' | 'fail' | 'crit-fail' with step-by-step breakdown.
+ * Upgraded Naval Shipgirl Stat Template:
+ *   - Ship Type (`shipType`): built-in presets (驱逐舰, 轻巡洋舰, 重巡洋舰, 战列舰, 航空母舰, 潜艇, 工作舰) + custom free text
+ *   - 8 Naval Core & Survival Stats:
+ *       1. maxHp     (耐久 / HP上限)
+ *       2. firepower (火力)
+ *       3. armor     (装甲)
+ *       4. torpedo   (雷击)
+ *       5. evasion   (机动)
+ *       6. recon     (侦查)
+ *       7. aa        (防空)
+ *       8. asw       (反潜)
+ *   - Dynamic Status Bars: hp (当前耐久), morale (士气 0..100), ap (行动点), affinity (好感度 0..100)
+ *   - Standard 1D20 Check with Commander Luck edge-tuning (`commanderLuck`), morale mod, and equipment bonuses.
+ *   - Legacy 5-stat key aliases (`attack -> firepower`, `burst -> torpedo`, `agility -> evasion`, `tactics -> recon`)
+ *     for seamless compatibility with existing event/item rules.
  */
 
 import { clamp, roll } from './calc-engine.js';
 
 const STORAGE_NS = 'core-stat-rules';
-const CONFIG_KEY = 'rules-config';
+const CONFIG_KEY = 'rules-config-v2';
 
-export const CORE_STAT_DEFS = Object.freeze([
-  { key: 'attack', label: '攻击/火力', shortLabel: '攻击', min: 10, max: 100, defaultValue: 50 },
-  { key: 'burst', label: '爆发/雷装', shortLabel: '爆发', min: 10, max: 100, defaultValue: 45 },
-  { key: 'agility', label: '机动', shortLabel: '机动', min: 10, max: 100, defaultValue: 55 },
-  { key: 'tactics', label: '战术/侦察', shortLabel: '战术', min: 10, max: 100, defaultValue: 50 },
-  { key: 'luck', label: '幸运', shortLabel: '幸运', min: 10, max: 100, defaultValue: 40 },
+export const SHIP_TYPE_PRESETS = Object.freeze([
+  '驱逐舰',
+  '轻巡洋舰',
+  '重巡洋舰',
+  '战列舰',
+  '航空母舰',
+  '潜艇',
+  '工作舰',
 ]);
+
+/**
+ * Full 8 Naval Stats displayed on every Shipgirl Character Card
+ * (maxHp is the survival durability ceiling; the other 7 are combat/utility stats).
+ */
+export const NAVAL_EIGHT_STAT_DEFS = Object.freeze([
+  { key: 'maxHp', label: '耐久', shortLabel: '耐久', min: 20, max: 300, defaultValue: 90, isVital: true },
+  { key: 'firepower', label: '火力', shortLabel: '火力', min: 1, max: 200, defaultValue: 55 },
+  { key: 'armor', label: '装甲', shortLabel: '装甲', min: 1, max: 200, defaultValue: 45 },
+  { key: 'torpedo', label: '雷击', shortLabel: '雷击', min: 0, max: 200, defaultValue: 50 },
+  { key: 'evasion', label: '机动', shortLabel: '机动', min: 1, max: 200, defaultValue: 55 },
+  { key: 'recon', label: '侦查', shortLabel: '侦查', min: 1, max: 200, defaultValue: 50 },
+  { key: 'aa', label: '防空', shortLabel: '防空', min: 0, max: 200, defaultValue: 48 },
+  { key: 'asw', label: '反潜', shortLabel: '反潜', min: 0, max: 200, defaultValue: 46 },
+]);
+
+/**
+ * 7 Checkable Naval Combat Stats (exported as CORE_STAT_DEFS for backward compatibility with check UIs).
+ */
+export const CORE_STAT_DEFS = Object.freeze(
+  NAVAL_EIGHT_STAT_DEFS.filter((d) => !d.isVital)
+);
+
+export const NAVAL_EIGHT_STAT_MAP = Object.freeze(
+  Object.fromEntries(NAVAL_EIGHT_STAT_DEFS.map((d) => [d.key, d]))
+);
 
 export const CORE_STAT_MAP = Object.freeze(
   Object.fromEntries(CORE_STAT_DEFS.map((d) => [d.key, d]))
 );
+
+export const LEGACY_STAT_ALIASES = Object.freeze({
+  attack: 'firepower',
+  burst: 'torpedo',
+  agility: 'evasion',
+  tactics: 'recon',
+});
+
+export function normalizeStatKey(statKey) {
+  const k = String(statKey || '').trim();
+  return LEGACY_STAT_ALIASES[k] || k;
+}
 
 export const DYNAMIC_STAT_DEFS = Object.freeze([
   { key: 'hp', label: '生命/耐久', shortLabel: 'HP', defaultMax: 100 },
@@ -40,8 +89,8 @@ export const AFFINITY_STAGES = Object.freeze([
 ]);
 
 export const DEFAULT_STAT_RULES_CONFIG = Object.freeze({
-  statMin: 10,
-  statMax: 100,
+  statMin: 0,
+  statMax: 200,
   statModifierStep: 10,        // Every 10 points gives +1 check modifier
   diceSides: 20,               // 1D20 standard check
   critSuccessNatural: 20,      // Natural roll >= 20 -> Critical Success
@@ -59,11 +108,14 @@ export const DEFAULT_STAT_RULES_CONFIG = Object.freeze({
     ap: 1.0,
   },
   scoreWeights: {
-    attack: 1.2,
-    burst: 1.1,
-    agility: 1.0,
-    tactics: 1.0,
-    luck: 0.8,
+    maxHp: 0.7,
+    firepower: 1.2,
+    armor: 1.0,
+    torpedo: 1.1,
+    evasion: 1.0,
+    recon: 1.0,
+    aa: 0.9,
+    asw: 0.9,
   },
 });
 
@@ -115,11 +167,14 @@ export class StatRulesEngine {
         ap: clamp(Number(rec.ap ?? base.offlineRecoveryPerMin.ap), 0, 100),
       },
       scoreWeights: {
-        attack: clamp(Number(weights.attack ?? base.scoreWeights.attack), 0.1, 5),
-        burst: clamp(Number(weights.burst ?? base.scoreWeights.burst), 0.1, 5),
-        agility: clamp(Number(weights.agility ?? base.scoreWeights.agility), 0.1, 5),
-        tactics: clamp(Number(weights.tactics ?? base.scoreWeights.tactics), 0.1, 5),
-        luck: clamp(Number(weights.luck ?? base.scoreWeights.luck), 0.1, 5),
+        maxHp: clamp(Number(weights.maxHp ?? base.scoreWeights.maxHp), 0.1, 5),
+        firepower: clamp(Number(weights.firepower ?? base.scoreWeights.firepower), 0.1, 5),
+        armor: clamp(Number(weights.armor ?? base.scoreWeights.armor), 0.1, 5),
+        torpedo: clamp(Number(weights.torpedo ?? base.scoreWeights.torpedo), 0.1, 5),
+        evasion: clamp(Number(weights.evasion ?? base.scoreWeights.evasion), 0.1, 5),
+        recon: clamp(Number(weights.recon ?? base.scoreWeights.recon), 0.1, 5),
+        aa: clamp(Number(weights.aa ?? base.scoreWeights.aa), 0.1, 5),
+        asw: clamp(Number(weights.asw ?? base.scoreWeights.asw), 0.1, 5),
       },
     };
   }
@@ -189,10 +244,23 @@ export class StatRulesEngine {
     return '疲惫';
   }
 
-  getAffinityStage(affinityValue) {
+  /**
+   * Map affinity (0..100) into 4 stages, optionally lowered by Commander `charisma` thresholdReduction.
+   */
+  getAffinityStage(affinityValue, { thresholdReduction = 0 } = {}) {
     const val = clamp(Math.round(Number(affinityValue ?? 0)), 0, 100);
-    const stage =
-      AFFINITY_STAGES.find((s) => val >= s.min && val <= s.max) || AFFINITY_STAGES[0];
+    const red = clamp(Math.floor(Number(thresholdReduction) || 0), 0, 20);
+    const adjusted = AFFINITY_STAGES.map((s, idx) => ({
+      ...s,
+      min: idx === 0 ? 0 : Math.max(1, s.min - red),
+      max: idx === AFFINITY_STAGES.length - 1 ? 100 : Math.max(idx * 5 + 4, s.max - red),
+    }));
+    // Ensure contiguous boundaries
+    for (let i = 0; i < adjusted.length - 1; i++) {
+      adjusted[i].max = Math.max(adjusted[i].min, adjusted[i + 1].min - 1);
+    }
+
+    const stage = adjusted.find((s) => val >= s.min && val <= s.max) || adjusted[adjusted.length - 1];
     const span = Math.max(1, stage.max - stage.min + 1);
     const progressInStage = clamp((val - stage.min) / span, 0, 1);
     return {
@@ -203,20 +271,21 @@ export class StatRulesEngine {
       min: stage.min,
       max: stage.max,
       tone: stage.tone,
+      thresholdReduction: red,
       progressInStage: Number(progressInStage.toFixed(4)),
     };
   }
 
   /**
-   * Compute overall composite character rating from effective 5 core stats + check bonus.
+   * Compute overall composite character rating from effective 8 naval stats + check bonus.
    */
   computeOverallScore(effectiveStats = {}, equipmentCheckBonus = 0) {
     const w = this._config.scoreWeights;
     let total = 0;
-    for (const def of CORE_STAT_DEFS) {
+    for (const def of NAVAL_EIGHT_STAT_DEFS) {
       total += (Number(effectiveStats[def.key]) || 0) * (w[def.key] || 1);
     }
-    total += (Number(equipmentCheckBonus) || 0) * 12;
+    total += (Number(equipmentCheckBonus) || 0) * 14;
     return Math.round(total);
   }
 
@@ -232,16 +301,18 @@ export class StatRulesEngine {
 
   /**
    * Build offline time recovery rules for EntitySystem.settleOfflineTime().
+   * Accepts optional moraleMultiplier (from Commander `affinity`).
    */
-  buildOfflineRecoveryRules(entityList = []) {
+  buildOfflineRecoveryRules(entityList = [], { moraleMultiplier = 1.0 } = {}) {
     const rates = this._config.offlineRecoveryPerMin;
+    const mMult = Math.max(0.5, Number(moraleMultiplier) || 1.0);
     const rules = [];
     for (const entity of entityList) {
       const maxHp = Number(entity.stats?.maxHp ?? 100);
       const maxAp = Number(entity.stats?.maxAp ?? 100);
       rules.push(
         { entityId: entity.id, stat: 'hp', ratePerMinute: rates.hp, min: 0, max: maxHp, round: 'round' },
-        { entityId: entity.id, stat: 'morale', ratePerMinute: rates.morale, min: 0, max: 100, round: 'round' },
+        { entityId: entity.id, stat: 'morale', ratePerMinute: rates.morale * mMult, min: 0, max: 100, round: 'round' },
         { entityId: entity.id, stat: 'ap', ratePerMinute: rates.ap, min: 0, max: maxAp, round: 'round' }
       );
     }
@@ -249,42 +320,28 @@ export class StatRulesEngine {
   }
 
   // ------------------------------------------------------------
-  // Standard 1D20 Attribute Check
+  // Standard 1D20 Attribute Check (with Commander Luck edge-tuning)
   // ------------------------------------------------------------
 
-  /**
-   * Execute standard 1D20 + statMod + equipmentBonus + moraleMod (+ extraMod) vs DC check.
-   *
-   * @param {{
-   *   actorId?: string,
-   *   actorName?: string,
-   *   statKey: string,
-   *   baseStatValue: number,
-   *   effectiveStatValue?: number,
-   *   equipmentCheckBonus?: number,
-   *   moraleValue?: number,
-   *   dc?: number,
-   *   extraModifier?: number,
-   *   rng?: () => number,
-   *   emitEvent?: boolean
-   * }} params
-   */
   performCheck({
     actorId = null,
     actorName = '',
-    statKey = 'attack',
+    statKey = 'firepower',
     baseStatValue = 50,
     effectiveStatValue = null,
     equipmentCheckBonus = 0,
     moraleValue = 60,
     dc = 15,
     extraModifier = 0,
+    commanderLuck = 0,
     rng = Math.random,
     emitEvent = true,
   } = {}) {
-    const statDef = CORE_STAT_MAP[statKey] || { key: statKey, label: statKey };
+    const normalizedKey = normalizeStatKey(statKey);
+    const statDef = NAVAL_EIGHT_STAT_MAP[normalizedKey] || { key: normalizedKey, label: normalizedKey };
     const baseVal = Number(baseStatValue) || 0;
-    const effVal = effectiveStatValue !== null && effectiveStatValue !== undefined ? Number(effectiveStatValue) : baseVal;
+    const effVal =
+      effectiveStatValue !== null && effectiveStatValue !== undefined ? Number(effectiveStatValue) : baseVal;
     const equipStatDelta = Number((effVal - baseVal).toFixed(2));
 
     const diceRes = roll(1, this._config.diceSides, 0, rng);
@@ -297,17 +354,25 @@ export class StatRulesEngine {
     const totalEquipModifier = statBonusFromEquipMod + flatEquipCheckBonus;
     const moraleMod = this.getMoraleModifier(moraleValue);
     const extraMod = Number(extraModifier) || 0;
-    const targetDc = clamp(Math.round(Number(dc) || 15), 1, 99);
 
-    const total = naturalRoll + baseStatMod + totalEquipModifier + moraleMod + extraMod;
+    // Independent Commander Luck edge adjustment
+    const lk = Math.round(Number(commanderLuck) || 0);
+    const critSuccessShift = lk > 0 ? Math.min(3, Math.floor(lk / 10)) : 0;
+    const critFailShift = lk < 0 ? Math.min(3, Math.floor(Math.abs(lk) / 10)) : 0;
+    const luckEdgeMod = lk >= 0 ? Math.floor(lk / 15) : Math.ceil(lk / 15);
+    const effectiveCritSuccessNat = Math.max(15, this._config.critSuccessNatural - critSuccessShift);
+    const effectiveCritFailNat = Math.min(5, this._config.critFailNatural + critFailShift);
+
+    const targetDc = clamp(Math.round(Number(dc) || 15), 1, 99);
+    const total = naturalRoll + baseStatMod + totalEquipModifier + moraleMod + extraMod + luckEdgeMod;
     const margin = total - targetDc;
 
     let outcome = 'fail';
     let outcomeLabel = '失败';
-    if (naturalRoll <= this._config.critFailNatural) {
+    if (naturalRoll <= effectiveCritFailNat) {
       outcome = 'crit-fail';
       outcomeLabel = '大失败';
-    } else if (naturalRoll >= this._config.critSuccessNatural) {
+    } else if (naturalRoll >= effectiveCritSuccessNat) {
       outcome = 'crit-success';
       outcomeLabel = '大成功';
     } else if (margin >= this._config.critMarginThreshold) {
@@ -329,7 +394,7 @@ export class StatRulesEngine {
         text: formatSigned(baseStatMod),
       },
       {
-        label: `装备与服装加成（属性 ${formatSigned(equipStatDelta)} → 修正 ${formatSigned(statBonusFromEquipMod)}，检定词条 ${formatSigned(flatEquipCheckBonus)}）`,
+        label: `装备与模块加成（属性 ${formatSigned(equipStatDelta)} → 修正 ${formatSigned(statBonusFromEquipMod)}，检定词条 ${formatSigned(flatEquipCheckBonus)}）`,
         value: totalEquipModifier,
         text: formatSigned(totalEquipModifier),
       },
@@ -340,16 +405,24 @@ export class StatRulesEngine {
       },
     ];
     if (extraMod !== 0) {
-      steps.push({ label: '额外修正', value: extraMod, text: formatSigned(extraMod) });
+      steps.push({ label: '战术/阵型/海况修正', value: extraMod, text: formatSigned(extraMod) });
+    }
+    if (lk !== 0) {
+      steps.push({
+        label: `指挥官运气微调（运气 ${formatSigned(lk)}，大成功≥${effectiveCritSuccessNat} / 大失败≤${effectiveCritFailNat}）`,
+        value: luckEdgeMod,
+        text: formatSigned(luckEdgeMod),
+      });
     }
 
     const formulaParts = [
       `1D${this._config.diceSides}(${naturalRoll})`,
       `属性(${formatSigned(baseStatMod)})`,
-      `装备服装(${formatSigned(totalEquipModifier)})`,
+      `装备模块(${formatSigned(totalEquipModifier)})`,
       `士气(${formatSigned(moraleMod)})`,
     ];
-    if (extraMod !== 0) formulaParts.push(`额外(${formatSigned(extraMod)})`);
+    if (extraMod !== 0) formulaParts.push(`战术(${formatSigned(extraMod)})`);
+    if (luckEdgeMod !== 0) formulaParts.push(`运气(${formatSigned(luckEdgeMod)})`);
     const formulaText = `${formulaParts.join(' + ')} = ${total} vs DC ${targetDc}`;
 
     const result = {
@@ -367,6 +440,8 @@ export class StatRulesEngine {
       moraleValue: Number(moraleValue) || 0,
       moraleModifier: moraleMod,
       extraModifier: extraMod,
+      commanderLuck: lk,
+      luckEdgeModifier: luckEdgeMod,
       total,
       margin,
       outcome,

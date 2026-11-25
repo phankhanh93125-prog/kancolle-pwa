@@ -26,10 +26,18 @@ const WORKSHOP_STORAGE_NS = 'core-supply-workshop';
 const POOL_CONFIG_KEY = 'supply-pool-config-v1';
 
 const STAT_LABELS = {
-  attack: '攻击',
-  burst: '爆发',
+  maxHp: '耐久',
+  firepower: '火力',
+  armor: '装甲',
+  torpedo: '雷击',
+  evasion: '机动',
+  recon: '侦查',
+  aa: '防空',
+  asw: '反潜',
+  attack: '火力',
+  burst: '雷击',
   agility: '机动',
-  tactics: '战术',
+  tactics: '侦查',
   luck: '幸运',
   checkBonus: '检定',
   hp: 'HP',
@@ -643,6 +651,7 @@ function renderEnhanceTab(host) {
     <div class="lab-stack-sm" id="sw-enhance-list"></div>
   `;
 
+  const maintDisc = wsState.context?.commander ? wsState.context.commander.getEnhanceCostDiscount() : 0;
   const listEl = card.querySelector('#sw-enhance-list');
   if (items.length === 0) {
     listEl.innerHTML = '<p class="muted-text">仓库暂无可强化物品。</p>';
@@ -650,7 +659,7 @@ function renderEnhanceTab(host) {
     for (const item of items) {
       const lv = Number(item.level) || 0;
       const isMax = lv >= MAX_ENHANCE_LEVEL;
-      const cost = getEnhanceCost(item);
+      const cost = getEnhanceCost(item, { discount: maintDisc });
       const afford = resources.canAfford(cost);
       const nextBonuses = isMax ? [] : computeEnhancedBonuses(item.baseBonuses || item.bonuses, lv + 1);
       const wearers = inventory.getWearersOfItem(item.id);

@@ -86,7 +86,9 @@ async function persistActiveRun() {
 }
 
 function getFlagship() {
-  const { entities, rootStorage } = sortieState.context;
+  const { entities, formation, rootStorage } = sortieState.context;
+  const members = formation ? formation.getMembers() : [];
+  if (members.length > 0) return members[0];
   const chars = entities.list({ kind: 'character' });
   if (chars.length === 0) return null;
   const activeId = getActiveCharacterId(rootStorage);
@@ -104,24 +106,35 @@ function getSelectedRoute() {
 }
 
 function validateSortieLaunch(char, route) {
-  const { statRules, inventory, resources } = sortieState.context;
+  const { statRules, inventory, resources, formation } = sortieState.context;
   const errors = [];
-  if (!char) return { ok: false, errors: ['暂无可用角色'] };
   if (!route) return { ok: false, errors: ['请先生成或选择一条航线'] };
 
-  const sw = statRules.evaluateSeaworthiness(inventory, char.id);
-  if (!sw.seaworthy) errors.push(sw.statusText);
-  if (Number(char.stats.hp ?? 0) <= 0) errors.push('当前旗舰 HP 为 0，请先回港区修复');
+  let fleetMembers = [];
+  if (formation) {
+    const fVal = formation.validateFleetForSortie();
+    if (!fVal.ok) errors.push(...fVal.errors);
+    fleetMembers = fVal.members;
+  } else if (char) {
+    const sw = statRules.evaluateSeaworthiness(inventory, char.id);
+    if (!sw.seaworthy) errors.push(sw.statusText);
+    if (Number(char.stats.hp ?? 0) <= 0) errors.push('当前旗舰 HP 为 0，请先回港区修复');
+    fleetMembers = [char];
+  } else {
+    errors.push('暂无可用出征角色');
+  }
+
+  const lead = fleetMembers[0] || char;
   if (resources.getBalance('fuel') < route.minFuel) {
     errors.push(`燃油不足（需 ≥ ${route.minFuel}，当前 ${resources.getBalance('fuel')}）`);
   }
   if (resources.getBalance('ammo') < route.minAmmo) {
     errors.push(`弹药不足（需 ≥ ${route.minAmmo}，当前 ${resources.getBalance('ammo')}）`);
   }
-  if (Number(char.stats.ap ?? 0) < route.apCost) {
-    errors.push(`行动点 AP 不足（需 ≥ ${route.apCost}，当前 ${Math.round(char.stats.ap ?? 0)}）`);
+  if (lead && Number(lead.stats.ap ?? 0) < route.apCost) {
+    errors.push(`旗舰行动点 AP 不足（需 ≥ ${route.apCost}，当前 ${Math.round(lead.stats.ap ?? 0)}）`);
   }
-  return { ok: errors.length === 0, errors, seaworthy: sw.seaworthy };
+  return { ok: errors.length === 0, errors, seaworthy: errors.length === 0, fleetMembers };
 }
 
 function formatLootSummary(lootObj = {}, resources) {
@@ -140,18 +153,24 @@ function formatLootSummary(lootObj = {}, resources) {
 async function launchSortie(route) {
   const char = getFlagship();
   const check = validateSortieLaunch(char, route);
-  const { entities, rootStorage, combat, logs, bus, uiKit } = sortieState.context;
+  const { entities, formation, commander, rootStorage, combat, logs, bus, uiKit } = sortieState.context;
 
   if (!check.ok) {
     uiKit.showToast(`无法启航：${check.errors[0]}`, 'error');
     return;
   }
 
-  const maxHp = Number(char.stats.maxHp ?? 100);
-  if (Number(char.stats.hp ?? maxHp) / maxHp < 0.25) {
+  const fleetMembers = check.fleetMembers;
+  const lead = fleetMembers[0] || char;
+
+  const heavyDamaged = fleetMembers.filter((m) => {
+    const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(m.id, 'maxHp', { round: 'round' }).final));
+    return Number(m.stats.hp ?? effMaxHp) / effMaxHp < 0.25;
+  });
+  if (heavyDamaged.length > 0) {
     const proceed = await uiKit.confirmDialog({
-      title: '大破状态启航警告',
-      message: `「${char.name}」当前 HP 低于 25%，处于大破状态。建议先在港区入渠修复，确定仍要强行启航吗？`,
+      title: '编队大破状态启航警告',
+      message: `编队中「${heavyDamaged.map((m) => m.name).join('、')}」当前耐久低于 25%，处于大破状态。建议先回港区入渠修复，确定仍要强行启航吗？`,
       confirmLabel: '强行启航',
       cancelLabel: '取消',
       tone: 'danger',
@@ -160,9 +179,18 @@ async function launchSortie(route) {
   }
 
   if (route.apCost > 0) {
-    entities.adjustStat(char.id, 'ap', -route.apCost, { min: 0, max: Number(char.stats.maxAp ?? 100) });
-    await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
+    for (const m of fleetMembers) {
+      entities.adjustStat(m.id, 'ap', -route.apCost, { min: 0, max: Number(m.stats.maxAp ?? 100) });
+    }
+    await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: lead.id });
   }
+
+  const activeFormation = formation ? formation.getActiveFormation() : { id: 'line_ahead', name: '单纵阵' };
+  const dispatchDisc = commander ? commander.getSortieStepDiscount() : 0;
+  const effStepCost = {
+    fuel: Math.max(5, Math.round((Number(route.stepCost?.fuel) || 20) * (1 - dispatchDisc))),
+    ammo: Math.max(5, Math.round((Number(route.stepCost?.ammo) || 18) * (1 - dispatchDisc))),
+  };
 
   combat.clearSession();
   sortieState.activeRun = {
@@ -170,9 +198,12 @@ async function launchSortie(route) {
     routeName: route.name,
     difficultyLabel: route.difficultyLabel || '标准海域',
     seaCondition: route.seaCondition ? deepClone(route.seaCondition) : null,
-    characterId: char.id,
-    characterName: char.name,
-    stepCost: deepClone(route.stepCost),
+    characterId: lead.id,
+    characterName: lead.name,
+    fleetMemberIds: fleetMembers.map((m) => m.id),
+    formationId: activeFormation.id,
+    formationName: activeFormation.name,
+    stepCost: effStepCost,
     nodes: deepClone(route.nodes),
     nextNodeIndex: 0,
     clearedIndices: [],
@@ -186,38 +217,56 @@ async function launchSortie(route) {
   await persistActiveRun();
   logs.add({
     category: LOG_CATEGORIES.SYSTEM,
-    actorId: char.id,
-    actorName: char.name,
-    title: `[${char.name}] 启航出征「${route.name}」`,
-    detail: `消耗 AP -${route.apCost}，海况：${route.seaCondition?.label || '标准'}，共 ${route.nodes.length} 节点`,
+    actorId: lead.id,
+    actorName: lead.name,
+    title: `[${lead.name} 等 ${fleetMembers.length} 舰] 启航出征「${route.name}」`,
+    detail: `阵型：${activeFormation.name} · 消耗 AP -${route.apCost} · 海况：${route.seaCondition?.label || '标准'} · 共 ${route.nodes.length} 节点`,
   });
-  bus.emit('sortie:launched', { routeId: route.id, characterId: char.id });
-  uiKit.showToast(`已启航进入「${route.name}」`, 'ok');
+  bus.emit('sortie:launched', { routeId: route.id, characterId: lead.id, fleetSize: fleetMembers.length });
+  uiKit.showToast(`编队（${fleetMembers.length}舰 · ${activeFormation.name}）已启航！`, 'ok');
   await renderSortieConsole();
 }
 
 async function advanceNextNode() {
   if (sortieState.busy || !sortieState.activeRun) return;
   const run = sortieState.activeRun;
-  const { entities, inventory, statRules, resources, narrative, turnStepper, combat, rootStorage, logs, bus, uiKit } =
-    sortieState.context;
+  const {
+    entities,
+    statRules,
+    resources,
+    narrative,
+    turnStepper,
+    combat,
+    formation,
+    commander,
+    rootStorage,
+    logs,
+    bus,
+    uiKit,
+  } = sortieState.context;
 
   if (combat.isActive() || run.completed || run.nextNodeIndex >= run.nodes.length) return;
 
-  const char = entities.get(run.characterId) || getFlagship();
+  const memberIds =
+    Array.isArray(run.fleetMemberIds) && run.fleetMemberIds.length > 0 ? run.fleetMemberIds : [run.characterId];
+  const fleetMembers = memberIds.map((id) => entities.get(id)).filter(Boolean);
+  const char = fleetMembers[0] || getFlagship();
   if (!char) return;
 
-  const maxHp = Number(char.stats.maxHp ?? 100);
-  const curHp = Number(char.stats.hp ?? maxHp);
-  if (curHp <= 0) {
-    uiKit.showToast('当前旗舰 HP 为 0，请立即返航回港区修复', 'error');
+  const aliveMembers = fleetMembers.filter((m) => Number(m.stats.hp ?? 0) > 0);
+  if (aliveMembers.length === 0) {
+    uiKit.showToast('编队全员耐久归零，请立即返航回港区修复', 'error');
     return;
   }
 
-  if (curHp / maxHp < 0.25) {
+  const heavyDamaged = aliveMembers.filter((m) => {
+    const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(m.id, 'maxHp', { round: 'round' }).final));
+    return Number(m.stats.hp ?? effMaxHp) / effMaxHp < 0.25;
+  });
+  if (heavyDamaged.length > 0) {
     const confirmed = await uiKit.confirmDialog({
       title: '大破强行进击风险警告',
-      message: `警告：「${char.name}」当前 HP 仅剩 ${Math.round(curHp)}/${maxHp}（低于 25% 大破线）！强行进击风险极高，建议立即返航回港区。确定继续前进吗？`,
+      message: `警告：「${heavyDamaged.map((m) => m.name).join('、')}」耐久低于 25% 大破线！强行进击风险极高，建议立即返航回港区。确定继续前进吗？`,
       confirmLabel: '强行继续前进',
       cancelLabel: '取消并返航',
       tone: 'danger',
@@ -238,17 +287,20 @@ async function advanceNextNode() {
 
   const nodeIdx = run.nextNodeIndex;
   const node = run.nodes[nodeIdx];
+  node.intelRevealed = true;
   turnStepper.advance({ steps: 1, reason: `sortie-node-${node.code}` });
 
-  // Branch A: Combat Node (encounter / elite / boss) -> Launch Tactical Combat Panel!
+  // Branch A: Combat Node (encounter / elite / boss) -> Launch Full-Fleet Tactical Combat Panel!
   if (isCombatNodeType(node.type)) {
     combat.startEncounter({
       characterId: char.id,
+      fleetMemberIds: memberIds,
+      formationId: run.formationId,
       node,
       seaCondition: run.seaCondition,
     });
     await persistActiveRun();
-    uiKit.showToast(`节点 ${node.code} 遇敌：${node.name}！请选择战术指令`, 'warn');
+    uiKit.showToast(`节点 ${node.code} 遇敌：${node.name}！全队进入战术交战`, 'warn');
     await renderSortieConsole();
     return;
   }
@@ -257,26 +309,37 @@ async function advanceNextNode() {
   sortieState.busy = true;
   await renderSortieConsole();
   try {
-    const statKey = node.statKey || (node.type === NODE_TYPES.RESOURCE ? 'luck' : 'tactics');
-    const baseVal = Number(char.stats[statKey] ?? 50);
-    const effVal = entities.getEffectiveStat(char.id, statKey, { round: 'round' }).final;
-    const eqBonuses = inventory.getCharacterEquipmentBonuses(char.id);
+    const fleetSum = formation
+      ? formation.computeFleetSummary(memberIds, run.formationId)
+      : null;
+    const statKey = node.statKey || 'recon';
+    const baseVal = fleetSum
+      ? Math.round((fleetSum.totals?.[statKey] || fleetSum.totals?.recon || 50) / Math.max(1, fleetSum.aliveCount))
+      : Number(char.stats[statKey] ?? 50);
+    const effVal = fleetSum
+      ? Number(fleetSum.checkRatings?.[statKey] ?? fleetSum.checkRatings?.recon ?? baseVal)
+      : entities.getEffectiveStat(char.id, statKey, { round: 'round' }).final;
+    const eqCheckBonus = fleetSum ? fleetSum.avgCheckBonus : 0;
+    const avgMorale = fleetSum ? fleetSum.avgMorale : Number(char.stats.morale ?? 60);
     const seaBonus = run.seaCondition?.mods?.checkBonus || 0;
+    const cmdLuck = commander ? commander.getLuck() : 0;
+    const luckDropBonus = commander ? commander.getLuckEffects().rareDropBonus : 0;
 
     const checkResult = statRules.performCheck({
       actorId: char.id,
-      actorName: char.name,
+      actorName: fleetMembers.length > 1 ? `${char.name}等${fleetMembers.length}舰` : char.name,
       statKey,
       baseStatValue: baseVal,
       effectiveStatValue: effVal,
-      equipmentCheckBonus: eqBonuses.checkBonus,
-      moraleValue: char.stats.morale ?? 60,
+      equipmentCheckBonus: eqCheckBonus,
+      moraleValue: avgMorale,
       dc: Number(node.dc) || 12,
       extraModifier: seaBonus,
+      commanderLuck: cmdLuck,
     });
 
     const isSuccess = checkResult.outcome === 'crit-success' || checkResult.outcome === 'success';
-    const mult = checkResult.outcome === 'crit-success' ? 1.4 : isSuccess ? 1.0 : 0.45;
+    const mult = (checkResult.outcome === 'crit-success' ? 1.4 : isSuccess ? 1.0 : 0.45) * (1 + Math.max(-0.25, luckDropBonus));
     const chips = [
       { text: `燃油 -${stepCost.fuel}`, negative: true },
       { text: `弹药 -${stepCost.ammo}`, negative: true },
@@ -292,15 +355,25 @@ async function advanceNextNode() {
       chips.push({ text: `${resources.get(rk)?.name || rk} +${val}`, negative: false });
     }
 
+    const affMult = commander ? commander.getAffinityGainMultiplier() : 1.0;
     if (isSuccess) {
-      const aff = Number(node.affinityGain) || 2;
-      entities.adjustStat(char.id, 'affinity', aff, { min: 0, max: 100 });
-      entities.adjustStat(char.id, 'morale', 3, { min: 0, max: 100 });
-      chips.push({ text: `好感 +${aff}`, negative: false });
+      const aff = Math.max(1, Math.round((Number(node.affinityGain) || 2) * affMult));
+      for (const m of aliveMembers) {
+        entities.adjustStat(m.id, 'affinity', aff, { min: 0, max: 100 });
+        entities.adjustStat(m.id, 'morale', 3, { min: 0, max: 100 });
+      }
+      chips.push({ text: `全队好感 +${aff}`, negative: false });
     } else if (node.type === NODE_TYPES.WEATHER) {
       const dmg = Math.max(4, Number(node.failDamage?.hp) || 6);
-      entities.adjustStat(char.id, 'hp', -dmg, { min: 0, max: maxHp });
-      chips.push({ text: `海况损耗 HP -${dmg}`, negative: true });
+      const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(char.id, 'maxHp', { round: 'round' }).final));
+      entities.adjustStat(char.id, 'hp', -dmg, { min: 0, max: effMaxHp });
+      chips.push({ text: `海况损耗 ${char.name} HP -${dmg}`, negative: true });
+    }
+
+    if (commander) {
+      const expGain = 15;
+      await commander.grantExp(expGain, `出征节点 ${node.code}`);
+      chips.push({ text: `指挥官 EXP +${expGain}`, negative: false });
     }
 
     await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
@@ -314,7 +387,7 @@ async function advanceNextNode() {
         nodeCode: node.code,
         nodeName: node.name,
         nodeType: NODE_TYPE_LABELS[node.type] || node.type,
-        actor: { name: char.name },
+        actor: { name: fleetMembers.length > 1 ? `${char.name}率领的${fleetMembers.length}舰编队` : char.name },
         lootText,
         check: checkResult,
       },
@@ -351,7 +424,7 @@ async function advanceNextNode() {
       category: LOG_CATEGORIES.STAT,
       actorId: char.id,
       actorName: char.name,
-      title: `[${char.name}] 节点 ${node.code}·${node.name}（${NODE_TYPE_LABELS[node.type] || node.type}）`,
+      title: `[${char.name}等] 节点 ${node.code}·${node.name}（${NODE_TYPE_LABELS[node.type] || node.type}）`,
       detail: `收获：${lootText}`,
     });
     bus.emit('sortie:node-resolved', { routeId: run.routeId, nodeCode: node.code, completed: run.completed });
@@ -365,7 +438,7 @@ async function advanceNextNode() {
 async function handleTacticalCommand(commandId) {
   if (sortieState.busy || !sortieState.activeRun) return;
   const run = sortieState.activeRun;
-  const { combat, entities, resources, rootStorage, logs, bus, uiKit } = sortieState.context;
+  const { combat, entities, resources, commander, rootStorage, logs, bus, uiKit } = sortieState.context;
   if (!combat.isActive()) return;
 
   sortieState.busy = true;
@@ -381,7 +454,10 @@ async function handleTacticalCommand(commandId) {
     const { turnEntry, session } = res;
     const nodeIdx = run.nextNodeIndex;
     const node = run.nodes[nodeIdx];
-    const char = entities.get(run.characterId) || getFlagship();
+    const memberIds =
+      Array.isArray(run.fleetMemberIds) && run.fleetMemberIds.length > 0 ? run.fleetMemberIds : [run.characterId];
+    const fleetMembers = memberIds.map((id) => entities.get(id)).filter(Boolean);
+    const char = fleetMembers[0] || getFlagship();
 
     // Push combat turn report to sortie reports
     run.reports.unshift({
@@ -399,19 +475,27 @@ async function handleTacticalCommand(commandId) {
 
     if (session.status === 'victory' || session.status === 'bypassed') {
       const gained = {};
+      const luckDropBonus = commander ? commander.getLuckEffects().rareDropBonus : 0;
+      const affMult = commander ? commander.getAffinityGainMultiplier() : 1.0;
+
       if (session.status === 'victory') {
         for (const [rk, rawVal] of Object.entries(node.loot || {})) {
-          const val = Number(rawVal) || 0;
+          const val = Math.round((Number(rawVal) || 0) * (1 + Math.max(-0.2, luckDropBonus)));
           if (val <= 0) continue;
           await resources.add(rk, val, { reason: `击破节点 ${node.code}·${node.name} 战利品` });
           run.loot[rk] = (run.loot[rk] || 0) + val;
           gained[rk] = val;
         }
-        if (char) {
-          const aff = Number(node.affinityGain) || 3;
-          entities.adjustStat(char.id, 'affinity', aff, { min: 0, max: 100 });
-          entities.adjustStat(char.id, 'morale', 4, { min: 0, max: 100 });
+        const aff = Math.max(1, Math.round((Number(node.affinityGain) || 3) * affMult));
+        for (const m of fleetMembers) {
+          entities.adjustStat(m.id, 'affinity', aff, { min: 0, max: 100 });
+          entities.adjustStat(m.id, 'morale', 4, { min: 0, max: 100 });
         }
+      }
+
+      if (commander) {
+        const expGain = node.type === NODE_TYPES.BOSS ? 45 : node.type === NODE_TYPES.ELITE ? 30 : 20;
+        await commander.grantExp(expGain, `节点 ${node.code} ${session.status === 'victory' ? '胜利' : '迂回'}`);
       }
 
       run.clearedIndices.push(nodeIdx);
@@ -424,8 +508,8 @@ async function handleTacticalCommand(commandId) {
         category: LOG_CATEGORIES.STAT,
         actorId: char?.id || null,
         actorName: char?.name || '',
-        title: `[${char?.name || ''}] 节点 ${node.code}·${node.name} ${session.status === 'victory' ? '交战胜利' : '迂回通过'}`,
-        detail: session.status === 'victory' ? `战利品：${lootText}` : '无伤绕过敌方封锁',
+        title: `[${char?.name || ''}等] 节点 ${node.code}·${node.name} ${session.status === 'victory' ? '交战胜利' : '迂回通过'}`,
+        detail: session.status === 'victory' ? `战利品：${lootText}` : '全队无伤绕过敌方封锁',
       });
       bus.emit('sortie:node-resolved', {
         routeId: run.routeId,
@@ -437,12 +521,12 @@ async function handleTacticalCommand(commandId) {
       uiKit.showToast(
         session.status === 'victory'
           ? `战斗胜利！打捞：${lootText}`
-          : `成功迂回绕过节点 ${node.code}！`,
+          : `全队成功迂回绕过节点 ${node.code}！`,
         'ok'
       );
     } else if (session.status === 'defeated') {
       combat.clearSession();
-      uiKit.showToast('旗舰 HP 归零！请立即返航回港区入渠修复', 'error');
+      uiKit.showToast('编队全员耐久归零！请立即返航回港区入渠修复', 'error');
     } else {
       uiKit.showToast(`${turnEntry.commandLabel}：${turnEntry.outcomeTag}`, turnEntry.damageDealt > 0 ? 'ok' : 'info');
     }
@@ -767,25 +851,44 @@ function createNodeMapElement(nodes, clearedIndices = [], nextNodeIndex = -1) {
 
 async function renderSortieConsole() {
   if (!sortieState.container || !sortieState.context) return;
-  const { resources, statRules, inventory, narrative, routeGenerator, combat, modules, uiKit } = sortieState.context;
+  const {
+    entities,
+    resources,
+    statRules,
+    inventory,
+    narrative,
+    routeGenerator,
+    combat,
+    formation,
+    commander,
+    modules,
+    uiKit,
+  } = sortieState.context;
   const char = getFlagship();
   if (!char) {
     sortieState.container.innerHTML = `
       <section class="surface-card">
-        <h2 class="section-title">暂无可用出征角色</h2>
-        <p class="muted-text">请先返回港区或角色控制台配置旗舰角色。</p>
+        <h2 class="section-title">暂无可用出征编队</h2>
+        <p class="muted-text">请先返回港区大本营配置至少 1 名适航舰娘入队。</p>
       </section>
     `;
     return;
   }
 
+  const runMemberIds = sortieState.activeRun?.fleetMemberIds || null;
+  const runFormationId = sortieState.activeRun?.formationId || null;
+  const fleetSummary = formation
+    ? formation.computeFleetSummary(runMemberIds, runFormationId)
+    : null;
+  const fleetCap = formation ? formation.getFleetCap() : 3;
+
   const seaworthyInfo = statRules.evaluateSeaworthiness(inventory, char.id);
   const mode = narrative.getMode();
   const isAiMode = mode !== NARRATIVE_MODES.LOCAL;
-  const maxHp = Number(char.stats.maxHp ?? 100);
+  const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(char.id, 'maxHp', { round: 'round' }).final));
   const maxAp = Number(char.stats.maxAp ?? 100);
-  const curHp = Number(char.stats.hp ?? maxHp);
-  const isHeavyDamage = curHp / maxHp < 0.25;
+  const curHp = Math.min(effMaxHp, Math.round(Number(char.stats.hp ?? effMaxHp)));
+  const isHeavyDamage = curHp / effMaxHp < 0.25;
 
   sortieState.container.innerHTML = '';
   const root = document.createElement('div');
@@ -794,7 +897,7 @@ async function renderSortieConsole() {
   // 1. Unified 6-Resource Bar
   root.appendChild(createResourceOverviewBar(resources, { id: 'sortie-resource-bar' }));
 
-  // 2. Flagship Compact Status & Controls Bar
+  // 2. Fleet & Flagship Compact Status Bar
   const topCard = document.createElement('section');
   topCard.className = 'surface-card lab-stack-sm';
   topCard.id = 'sortie-flagship-bar';
@@ -802,6 +905,11 @@ async function renderSortieConsole() {
     <div class="lab-slot-head">
       <div class="cc-badge-row">
         <strong>旗舰：${escapeHtml(char.name)}</strong>
+        ${
+          fleetSummary
+            ? `<span class="status-badge badge-ok" id="sortie-fleet-badge">编队 ${fleetSummary.count}/${fleetCap} 舰 · ${escapeHtml(fleetSummary.formationName)}</span>`
+            : ''
+        }
         <span class="status-badge ${seaworthyInfo.seaworthy ? 'badge-ok' : 'badge-danger'}" id="sortie-seaworthy-badge">
           ${seaworthyInfo.seaworthy ? '适航' : '未适航'}
         </span>
@@ -812,38 +920,62 @@ async function renderSortieConsole() {
       </button>
     </div>
 
+    ${
+      fleetSummary
+        ? `
+      <div class="port-gear-summary" id="sortie-fleet-stats-strip">
+        <span class="ns-chip">全队火力 ${fleetSummary.effective.firepower}</span>
+        <span class="ns-chip">全队雷击 ${fleetSummary.effective.torpedo}</span>
+        <span class="ns-chip">防空 ${fleetSummary.effective.aa}</span>
+        <span class="ns-chip">反潜 ${fleetSummary.effective.asw}</span>
+        <span class="ns-chip">侦查 ${fleetSummary.effective.recon}</span>
+        <span class="ns-chip">机动 ${fleetSummary.effective.evasion}</span>
+      </div>
+      <div class="port-gear-summary" id="sortie-fleet-hp-strip">
+        ${fleetSummary.members
+          .map(
+            (m, i) => `
+          <span class="ns-chip">${i === 0 ? '★' : `#${i}`}${escapeHtml(m.name)} ${m.hp}/${m.maxHp}</span>
+        `
+          )
+          .join('')}
+      </div>
+    `
+        : ''
+    }
+
     <div id="sortie-compact-bars" class="ac-bars-compact"></div>
 
     <div class="lab-btn-grid">
       <button type="button" id="btn-sortie-open-editor" class="btn-secondary uikit-touch-target">航线编辑器</button>
-      <button type="button" id="btn-sortie-back-port" class="btn-secondary uikit-touch-target">返回港区</button>
+      <button type="button" id="btn-sortie-back-port" class="btn-secondary uikit-touch-target">返回港区编成</button>
     </div>
   `;
 
   const barsHost = topCard.querySelector('#sortie-compact-bars');
   barsHost.appendChild(
     uiKit.createProgressBar({
-      label: 'HP',
+      label: '旗舰HP',
       value: curHp,
-      max: maxHp,
+      max: effMaxHp,
       showPercent: false,
-      sublabel: `${Math.round(curHp)}/${maxHp}`,
-      tone: isHeavyDamage ? 'danger' : curHp / maxHp < 0.5 ? 'warn' : 'accent',
+      sublabel: `${Math.round(curHp)}/${effMaxHp}`,
+      tone: isHeavyDamage ? 'danger' : curHp / effMaxHp < 0.5 ? 'warn' : 'accent',
     }).element
   );
   barsHost.appendChild(
     uiKit.createProgressBar({
-      label: '士气',
-      value: char.stats.morale ?? 50,
+      label: '均士气',
+      value: fleetSummary ? fleetSummary.avgMorale : char.stats.morale ?? 50,
       max: 100,
       showPercent: false,
-      sublabel: `${Math.round(char.stats.morale ?? 50)}`,
-      tone: (char.stats.morale ?? 50) < 30 ? 'danger' : 'accent',
+      sublabel: `${Math.round(fleetSummary ? fleetSummary.avgMorale : char.stats.morale ?? 50)}`,
+      tone: (fleetSummary ? fleetSummary.avgMorale : char.stats.morale ?? 50) < 30 ? 'danger' : 'accent',
     }).element
   );
   barsHost.appendChild(
     uiKit.createProgressBar({
-      label: 'AP',
+      label: '旗舰AP',
       value: char.stats.ap ?? maxAp,
       max: maxAp,
       showPercent: false,
@@ -879,7 +1011,7 @@ async function renderSortieConsole() {
       <div class="section-header-row" style="margin-bottom:0;">
         <h2 class="section-title">${escapeHtml(run.routeName)}</h2>
         <span class="status-badge ${run.completed ? 'badge-ok' : combatSession ? 'badge-danger' : 'badge-warn'}">
-          ${run.completed ? '全节点通关' : combatSession ? '战术交战中' : `进度 ${run.clearedIndices.length}/${run.nodes.length}`}
+          ${run.completed ? '全节点通关' : combatSession ? '全队战术交战中' : `进度 ${run.clearedIndices.length}/${run.nodes.length}`}
         </span>
       </div>
       ${
@@ -917,8 +1049,9 @@ async function renderSortieConsole() {
               ? `
             <span class="status-badge badge-ok">已扫描 · 护甲 ${enemy.armor}</span>
             <span class="status-badge badge-warn">弱点：${escapeHtml(enemy.weaknessLabel)}</span>
+            <span class="status-badge badge-danger">${escapeHtml(enemy.threatLabel || '水面编队')}${enemy.airThreat > 0 ? ` · 空袭${enemy.airThreat}` : ''}${enemy.subThreat > 0 ? ` · 潜艇${enemy.subThreat}` : ''}</span>
           `
-              : '<span class="status-badge badge-muted">护甲：??? · 弱点：???（执行「扫描」揭露）</span>'
+              : '<span class="status-badge badge-muted">护甲：??? · 威胁/弱点：???（执行「扫描」揭露）</span>'
           }
           ${
             combatSession.lockOnBonus > 0
@@ -927,26 +1060,26 @@ async function renderSortieConsole() {
           }
           ${
             combatSession.evasionBuffTurns > 0
-              ? `<span class="status-badge badge-ok">闪避减伤 (${combatSession.evasionBuffTurns}回合)</span>`
+              ? `<span class="status-badge badge-ok">全队闪避减伤 (${combatSession.evasionBuffTurns}回合)</span>`
               : ''
           }
         </div>
         <div class="tactical-cmd-grid" id="sortie-tactical-cmds">
           <button type="button" id="btn-cmd-scan" class="tactical-cmd-btn" data-combat-cmd="scan" ${sortieState.busy ? 'disabled' : ''}>
             <span class="tactical-cmd-title">扫描（Scan）</span>
-            <span class="tactical-cmd-sub">索敌 · 油-5 · 揭露弱点+锁定</span>
+            <span class="tactical-cmd-sub">全队侦查+战术 · 揭露弱点/威胁+锁定</span>
           </button>
           <button type="button" id="btn-cmd-evade" class="tactical-cmd-btn" data-combat-cmd="evade" ${sortieState.busy ? 'disabled' : ''}>
             <span class="tactical-cmd-title">迂回（Evade）</span>
-            <span class="tactical-cmd-sub">机动 · 油-20 · ${enemy.forcedEngagement ? '先手闪避减伤' : '无伤绕过敌人'}</span>
+            <span class="tactical-cmd-sub">全队机动+战术 · ${enemy.forcedEngagement ? '先手闪避减伤' : '全队无伤绕过'}</span>
           </button>
           <button type="button" id="btn-cmd-shelling" class="tactical-cmd-btn is-shelling" data-combat-cmd="shelling" ${sortieState.busy ? 'disabled' : ''}>
             <span class="tactical-cmd-title">炮击（Shelling）</span>
-            <span class="tactical-cmd-sub">火力 · 弹-15 · 稳定常规伤害</span>
+            <span class="tactical-cmd-sub">全队火力+防空/反潜 · 协同齐射</span>
           </button>
           <button type="button" id="btn-cmd-torpedo" class="tactical-cmd-btn is-torpedo" data-combat-cmd="torpedo" ${sortieState.busy ? 'disabled' : ''}>
             <span class="tactical-cmd-title">鱼雷（Torpedo）</span>
-            <span class="tactical-cmd-sub">雷装+幸运 · 弹-30 · 高爆高风险</span>
+            <span class="tactical-cmd-sub">全队雷击+运气 · 高爆协同补刀</span>
           </button>
         </div>
       `;
@@ -1085,7 +1218,7 @@ async function renderSortieConsole() {
       });
     });
     genCard.querySelector('#btn-sortie-gen-route').addEventListener('click', () => {
-      const fresh = routeGenerator.generateRoute({ difficulty: sortieState.selectedDifficulty });
+      const fresh = routeGenerator.generateRoute({ difficulty: sortieState.selectedDifficulty, commander });
       sortieState.generatedRoute = fresh;
       sortieState.selectedRouteId = fresh.id;
       uiKit.showToast(`已生成「${fresh.name}」（${fresh.nodes.length} 节点 · 海况：${fresh.seaCondition.label}）`, 'ok');

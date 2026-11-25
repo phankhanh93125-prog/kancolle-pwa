@@ -10,7 +10,13 @@
  *   - Resource overview, Chronological Action Logs, Stat Rules Settings & Real-Time 1D20 Check Simulator
  */
 
-import { CORE_STAT_DEFS, CORE_STAT_MAP } from '../core/stat-rules.js';
+import {
+  CORE_STAT_DEFS,
+  CORE_STAT_MAP,
+  NAVAL_EIGHT_STAT_DEFS,
+  NAVAL_EIGHT_STAT_MAP,
+  SHIP_TYPE_PRESETS,
+} from '../core/stat-rules.js';
 import {
   ITEM_CATEGORIES,
   ITEM_CATEGORY_LABELS,
@@ -24,83 +30,130 @@ import { LOG_CATEGORIES, LOG_CATEGORY_LABELS } from '../core/log-system.js';
 import { clamp } from '../core/calc-engine.js';
 
 const CHAR_STORAGE_NS = 'core-characters';
-const ROSTER_KEY = 'roster-state-v2';
+const ROSTER_KEY = 'roster-state-v3';
 
 const BONUS_STAT_OPTIONS = [
-  { key: 'attack', label: '攻击/火力' },
-  { key: 'burst', label: '爆发/雷装' },
-  { key: 'agility', label: '机动' },
-  { key: 'tactics', label: '战术/侦察' },
-  { key: 'luck', label: '幸运' },
+  { key: 'maxHp', label: '耐久 (HP上限)' },
+  { key: 'firepower', label: '火力' },
+  { key: 'armor', label: '装甲' },
+  { key: 'torpedo', label: '雷击' },
+  { key: 'evasion', label: '机动' },
+  { key: 'recon', label: '侦查' },
+  { key: 'aa', label: '防空' },
+  { key: 'asw', label: '反潜' },
   { key: 'checkBonus', label: '检定额外加成' },
-  { key: 'hp', label: '生命/耐久' },
+  { key: 'hp', label: '当前耐久恢复' },
   { key: 'morale', label: '士气' },
   { key: 'ap', label: '行动点' },
 ];
 
 const BONUS_STAT_LABEL_MAP = Object.fromEntries(BONUS_STAT_OPTIONS.map((o) => [o.key, o.label]));
 
+/**
+ * 3 Default Seaworthy Naval Shipgirls (all 3 equipped with engine/armor/core on first boot)
+ * so the player can immediately deploy a full 3-ship starter fleet.
+ */
 export const DEFAULT_CHARACTER_TEMPLATES = [
   {
     id: 'char_template_01',
     kind: 'character',
-    name: '角色模板 A',
-    tags: ['均衡型', '示例'],
+    name: '示范驱逐 · 一号舰',
+    tags: ['驱逐舰', '雷击反潜'],
     stats: {
-      attack: 62,
-      burst: 54,
-      agility: 52,
-      tactics: 50,
-      luck: 45,
-      hp: 90,
-      maxHp: 100,
-      morale: 72,
-      ap: 80,
+      maxHp: 78,
+      hp: 78,
+      firepower: 46,
+      armor: 34,
+      torpedo: 76,
+      evasion: 78,
+      recon: 62,
+      aa: 54,
+      asw: 74,
+      morale: 78,
+      ap: 90,
       maxAp: 100,
-      affinity: 55,
+      affinity: 52,
     },
     statBounds: {
-      hp: { min: 0, max: 100 },
+      hp: { min: 0, max: 300 },
       morale: { min: 0, max: 100 },
       ap: { min: 0, max: 100 },
       affinity: { min: 0, max: 100 },
     },
     meta: {
-      roleTag: '均衡前卫型',
+      shipType: '驱逐舰',
+      roleTag: '高机动雷击反潜',
       avatarAssetId: null,
-      personality: '沉着务实、行动条理清晰，注重团队协同与稳健推进。',
-      speechHabit: '「收到，按计划稳步执行。」',
+      personality: '敏捷果断、擅长夜战突击与反潜护航，对指挥官指令响应极快。',
+      speechHabit: '「一号舰全速前进，鱼雷管注水完毕！」',
     },
   },
   {
     id: 'char_template_02',
     kind: 'character',
-    name: '角色模板 B',
-    tags: ['机动型', '示例'],
+    name: '示范轻巡 · 二号舰',
+    tags: ['轻巡洋舰', '侦查防空'],
     stats: {
-      attack: 46,
-      burst: 48,
-      agility: 74,
-      tactics: 68,
-      luck: 60,
-      hp: 85,
-      maxHp: 100,
-      morale: 84,
+      maxHp: 94,
+      hp: 94,
+      firepower: 60,
+      armor: 52,
+      torpedo: 58,
+      evasion: 64,
+      recon: 72,
+      aa: 70,
+      asw: 66,
+      morale: 82,
       ap: 90,
       maxAp: 100,
-      affinity: 36,
+      affinity: 42,
     },
     statBounds: {
-      hp: { min: 0, max: 100 },
+      hp: { min: 0, max: 300 },
       morale: { min: 0, max: 100 },
       ap: { min: 0, max: 100 },
       affinity: { min: 0, max: 100 },
     },
     meta: {
-      roleTag: '机动侦察型',
+      shipType: '轻巡洋舰',
+      roleTag: '均衡侦查防空',
       avatarAssetId: null,
-      personality: '敏锐机警、擅长快速响应与信息收集，面对突发状况适应力强。',
-      speechHabit: '「前方情况已确认，随时可以行动。」',
+      personality: '冷静周密、擅长舰队侦察协调与对空掩护，是可靠的僚机中枢。',
+      speechHabit: '「空域与水下态势已同步，随时可以掩护编队。」',
+    },
+  },
+  {
+    id: 'char_template_03',
+    kind: 'character',
+    name: '示范战列 · 三号舰',
+    tags: ['战列舰', '重炮重甲'],
+    stats: {
+      maxHp: 132,
+      hp: 132,
+      firepower: 86,
+      armor: 82,
+      torpedo: 12,
+      evasion: 38,
+      recon: 48,
+      aa: 68,
+      asw: 22,
+      morale: 76,
+      ap: 90,
+      maxAp: 100,
+      affinity: 38,
+    },
+    statBounds: {
+      hp: { min: 0, max: 300 },
+      morale: { min: 0, max: 100 },
+      ap: { min: 0, max: 100 },
+      affinity: { min: 0, max: 100 },
+    },
+    meta: {
+      shipType: '战列舰',
+      roleTag: '主力重炮重甲',
+      avatarAssetId: null,
+      personality: '沉稳坚毅、拥有强悍正面火力与装甲抗伤能力，擅长为编队承伤压阵。',
+      speechHabit: '「主炮装填就绪，交给我正面突破即可。」',
     },
   },
 ];
@@ -120,7 +173,7 @@ function formatSigned(n) {
 }
 
 function formatBonusChip(bonus) {
-  const label = BONUS_STAT_LABEL_MAP[bonus.stat] || bonus.stat;
+  const label = BONUS_STAT_LABEL_MAP[bonus.stat] || NAVAL_EIGHT_STAT_MAP[bonus.stat]?.label || bonus.stat;
   if (bonus.layer === 'percentAdd' || bonus.layer === 'percentMult') {
     const pct = Math.round((Number(bonus.value) || 0) * 100);
     return `${label} ${pct >= 0 ? `+${pct}%` : `${pct}%`}`;
@@ -157,9 +210,9 @@ async function equipStarterCorePartsIfPresent(inventory, charId, includeOutfit =
 }
 
 /**
- * Hydrate persisted character roster from IndexedDB into EntitySystem on app boot.
+ * Hydrate persisted naval shipgirl roster from IndexedDB into EntitySystem on app boot.
  */
-export async function hydrateCharacterRoster({ storage, entities, inventory, statRules }) {
+export async function hydrateCharacterRoster({ storage, entities, inventory, statRules, commander = null }) {
   const scope = storage.namespace(CHAR_STORAGE_NS);
   const saved = await scope.getLarge(ROSTER_KEY, null);
   const now = Date.now();
@@ -175,7 +228,8 @@ export async function hydrateCharacterRoster({ storage, entities, inventory, sta
     if (saved.lastActiveAt && now - saved.lastActiveAt >= 60 * 1000) {
       const charList = entities.list({ kind: 'character' });
       if (charList.length > 0) {
-        const rules = statRules.buildOfflineRecoveryRules(charList);
+        const moraleMultiplier = commander ? commander.getMoraleRecoveryMultiplier() : 1.0;
+        const rules = statRules.buildOfflineRecoveryRules(charList, { moraleMultiplier });
         entities.settleOfflineTime({
           lastTimestamp: saved.lastActiveAt,
           now,
@@ -189,12 +243,25 @@ export async function hydrateCharacterRoster({ storage, entities, inventory, sta
     return { activeCharacterId: restoredId, seeded: false };
   }
 
-  // First boot: seed 2 plain generic templates with 3 starter mandatory core parts equipped
+  // First boot: seed 3 seaworthy starter shipgirls equipped with engine/armor/core + 1 sample custom module
   for (const tpl of DEFAULT_CHARACTER_TEMPLATES) {
     entities.register(tpl);
   }
   await equipStarterCorePartsIfPresent(inventory, 'char_template_01', true);
   await equipStarterCorePartsIfPresent(inventory, 'char_template_02', false);
+  await equipStarterCorePartsIfPresent(inventory, 'char_template_03', false);
+
+  // Equip a starter custom slot with dynamic extended attribute ('夜战修正') on ship #1
+  if (inventory.getItem('item_ext_02')) {
+    const slot = await inventory.addCharacterCustomSlot('char_template_01', '夜战与声呐扩展槽');
+    await inventory.equipItem('char_template_01', slot.id, 'item_ext_02');
+  }
+
+  // Ensure initial HP matches effective maxHp after core armor bonus
+  for (const tpl of DEFAULT_CHARACTER_TEMPLATES) {
+    const effMaxHp = Math.round(entities.getEffectiveStat(tpl.id, 'maxHp', { round: 'round' }).final);
+    entities.setStat(tpl.id, 'hp', effMaxHp, { min: 0, max: effMaxHp });
+  }
 
   consoleState.activeCharacterId = 'char_template_01';
   await persistCharacterRoster({
@@ -438,13 +505,15 @@ function openSlotEquipPickerSheet(char, slot) {
 }
 
 function openCharacterEditorSheet(existingChar = null) {
-  const { entities, inventory, assets, uiKit, logs, bus, statRules } = consoleState.context;
+  const { entities, inventory, assets, uiKit, logs, bus, statRules, commander } = consoleState.context;
   const isEdit = Boolean(existingChar);
   const rulesCfg = statRules.getConfig();
+  const initialAffBonus = commander ? commander.getInitialAffinityBonus() : 0;
 
   const draft = existingChar
     ? {
         name: existingChar.name,
+        shipType: existingChar.meta?.shipType || '驱逐舰',
         roleTag: existingChar.meta?.roleTag || '',
         avatarAssetId: existingChar.meta?.avatarAssetId || null,
         personality: existingChar.meta?.personality || '',
@@ -453,22 +522,25 @@ function openCharacterEditorSheet(existingChar = null) {
       }
     : {
         name: '',
-        roleTag: '自定义角色',
+        shipType: '驱逐舰',
+        roleTag: '新编舰船',
         avatarAssetId: null,
         personality: '',
         speechHabit: '',
         stats: {
-          attack: 50,
-          burst: 50,
-          agility: 50,
-          tactics: 50,
-          luck: 50,
-          hp: 100,
-          maxHp: 100,
-          morale: 70,
+          maxHp: 90,
+          hp: 90,
+          firepower: 55,
+          armor: 45,
+          torpedo: 50,
+          evasion: 55,
+          recon: 50,
+          aa: 48,
+          asw: 46,
+          morale: 75,
           ap: 100,
           maxAp: 100,
-          affinity: 20,
+          affinity: clamp(20 + initialAffBonus, 0, 100),
         },
       };
 
@@ -479,18 +551,20 @@ function openCharacterEditorSheet(existingChar = null) {
     const nameEl = formWrap.querySelector('#cc-f-name');
     if (!nameEl) return;
     draft.name = nameEl.value.trim();
+    draft.shipType = formWrap.querySelector('#cc-f-shiptype').value.trim() || '驱逐舰';
     draft.roleTag = formWrap.querySelector('#cc-f-role').value.trim();
     draft.personality = formWrap.querySelector('#cc-f-personality').value.trim();
     draft.speechHabit = formWrap.querySelector('#cc-f-speech').value.trim();
-    for (const def of CORE_STAT_DEFS) {
+    for (const def of NAVAL_EIGHT_STAT_DEFS) {
       const v = Number(formWrap.querySelector(`#cc-f-stat-${def.key}`).value);
-      draft.stats[def.key] = clamp(Number.isFinite(v) ? v : def.defaultValue, rulesCfg.statMin, rulesCfg.statMax);
+      const minB = def.isVital ? 20 : rulesCfg.statMin;
+      const maxB = def.isVital ? 500 : rulesCfg.statMax;
+      draft.stats[def.key] = clamp(Number.isFinite(v) ? v : def.defaultValue, minB, maxB);
     }
     draft.stats.affinity = clamp(Number(formWrap.querySelector('#cc-f-affinity').value) || 0, 0, 100);
     const hpVal = clamp(Number(formWrap.querySelector('#cc-f-hp').value) || 0, 0, 999);
     const apVal = clamp(Number(formWrap.querySelector('#cc-f-ap').value) || 0, 0, 999);
-    draft.stats.hp = hpVal;
-    draft.stats.maxHp = Math.max(Number(draft.stats.maxHp || 100), hpVal);
+    draft.stats.hp = Math.min(hpVal, draft.stats.maxHp);
     draft.stats.morale = clamp(Number(formWrap.querySelector('#cc-f-morale').value) || 0, 0, 100);
     draft.stats.ap = apVal;
     draft.stats.maxAp = Math.max(Number(draft.stats.maxAp || 100), apVal);
@@ -499,7 +573,7 @@ function openCharacterEditorSheet(existingChar = null) {
   const renderForm = async () => {
     const avatarRes = await assets.getAssetUrl(draft.avatarAssetId, {
       fallbackSeed: existingChar?.id || draft.name || 'new-char',
-      fallbackLabel: (draft.name || 'NEW').slice(0, 6),
+      fallbackLabel: (draft.name || 'SHIP').slice(0, 6),
     });
 
     formWrap.innerHTML = `
@@ -517,41 +591,52 @@ function openCharacterEditorSheet(existingChar = null) {
 
       <div class="lab-kv-grid">
         <div class="form-group">
-          <label class="form-label" for="cc-f-name">角色名称 *</label>
-          <input id="cc-f-name" class="form-input" type="text" value="${escapeHtml(draft.name)}" placeholder="例如：测试角色 03">
+          <label class="form-label" for="cc-f-name">舰娘名称 *</label>
+          <input id="cc-f-name" class="form-input" type="text" value="${escapeHtml(draft.name)}" placeholder="例如：示范重巡 · 四号舰">
         </div>
         <div class="form-group">
-          <label class="form-label" for="cc-f-role">定位简称</label>
-          <input id="cc-f-role" class="form-input" type="text" value="${escapeHtml(draft.roleTag)}" placeholder="例如：突击支援型">
+          <label class="form-label" for="cc-f-shiptype">舰种（可自由输入自定义舰种）*</label>
+          <input id="cc-f-shiptype" class="form-input" type="text" value="${escapeHtml(draft.shipType)}" placeholder="驱逐舰 / 轻巡 / 自定义">
         </div>
+      </div>
+
+      <div class="chip-row" id="cc-shiptype-presets">
+        ${SHIP_TYPE_PRESETS.map(
+          (st) => `<button type="button" class="preset-chip" data-shiptype-preset="${escapeHtml(st)}">${escapeHtml(st)}</button>`
+        ).join('')}
       </div>
 
       <div class="form-group">
-        <span class="form-label">基础五维属性（${rulesCfg.statMin} ~ ${rulesCfg.statMax}）</span>
+        <label class="form-label" for="cc-f-role">定位简称</label>
+        <input id="cc-f-role" class="form-input" type="text" value="${escapeHtml(draft.roleTag)}" placeholder="例如：防空护航型 / 夜战突击型">
+      </div>
+
+      <div class="form-group">
+        <span class="form-label">舰娘白值八维属性（不含装备/模块加成）</span>
         <div class="lab-kv-grid">
-          ${CORE_STAT_DEFS.map(
+          ${NAVAL_EIGHT_STAT_DEFS.map(
             (def) => `
             <div class="form-group">
               <label class="form-label" for="cc-f-stat-${def.key}">${escapeHtml(def.label)}</label>
-              <input id="cc-f-stat-${def.key}" class="form-input" type="number" min="${rulesCfg.statMin}" max="${rulesCfg.statMax}" value="${Number(draft.stats[def.key] ?? def.defaultValue)}">
+              <input id="cc-f-stat-${def.key}" class="form-input" type="number" min="${def.isVital ? 20 : rulesCfg.statMin}" max="${def.isVital ? 500 : rulesCfg.statMax}" value="${Number(draft.stats[def.key] ?? def.defaultValue)}">
             </div>
           `
           ).join('')}
-          <div class="form-group">
-            <label class="form-label" for="cc-f-affinity">好感度（0~100）</label>
-            <input id="cc-f-affinity" class="form-input" type="number" min="0" max="100" value="${Number(draft.stats.affinity ?? 20)}">
-          </div>
         </div>
       </div>
 
-      <div class="lab-kv-grid-3">
+      <div class="lab-kv-grid">
         <div class="form-group">
-          <label class="form-label" for="cc-f-hp">生命 HP</label>
-          <input id="cc-f-hp" class="form-input" type="number" min="0" max="999" value="${Number(draft.stats.hp ?? 100)}">
+          <label class="form-label" for="cc-f-hp">当前耐久 HP</label>
+          <input id="cc-f-hp" class="form-input" type="number" min="0" max="999" value="${Number(draft.stats.hp ?? draft.stats.maxHp ?? 90)}">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="cc-f-affinity">好感度（0~100${!isEdit && initialAffBonus > 0 ? `，含魅力+${initialAffBonus}` : ''}）</label>
+          <input id="cc-f-affinity" class="form-input" type="number" min="0" max="100" value="${Number(draft.stats.affinity ?? 20)}">
         </div>
         <div class="form-group">
           <label class="form-label" for="cc-f-morale">士气 (0~100)</label>
-          <input id="cc-f-morale" class="form-input" type="number" min="0" max="100" value="${Number(draft.stats.morale ?? 70)}">
+          <input id="cc-f-morale" class="form-input" type="number" min="0" max="100" value="${Number(draft.stats.morale ?? 75)}">
         </div>
         <div class="form-group">
           <label class="form-label" for="cc-f-ap">行动点 AP</label>
@@ -569,6 +654,14 @@ function openCharacterEditorSheet(existingChar = null) {
         <input id="cc-f-speech" class="form-input" type="text" value="${escapeHtml(draft.speechHabit)}" placeholder="例如：「了解，马上处理。」">
       </div>
     `;
+
+    formWrap.querySelectorAll('[data-shiptype-preset]').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        const val = chip.getAttribute('data-shiptype-preset');
+        formWrap.querySelector('#cc-f-shiptype').value = val;
+        draft.shipType = val;
+      });
+    });
 
     formWrap.querySelector('#btn-cc-upload-avatar').addEventListener('click', async () => {
       syncInputsToDraft();
@@ -602,8 +695,8 @@ function openCharacterEditorSheet(existingChar = null) {
   renderForm();
 
   uiKit.openBottomSheet({
-    title: isEdit ? `编辑角色 · ${existingChar.name}` : '新建自定义角色',
-    subtitle: '新建角色默认拥有「引擎 / 装甲 / 核心」三个必装槽位',
+    title: isEdit ? `编辑舰娘 · ${existingChar.name}` : '新建自定义舰娘角色',
+    subtitle: '默认配置「引擎 / 装甲 / 核心」三个必装槽位，可自由扩展自定义模块槽',
     content: formWrap,
     actions: [
       { id: 'cancel', label: '取消', tone: 'secondary' },
@@ -626,17 +719,18 @@ function openCharacterEditorSheet(existingChar = null) {
             id: charId,
             kind: 'character',
             name: draft.name,
-            tags: [draft.roleTag || '自定义'],
+            tags: [draft.shipType, draft.roleTag || '自定义'].filter(Boolean),
             stats: { ...draft.stats },
             statBounds: {
-              hp: { min: 0, max: draft.stats.maxHp },
+              hp: { min: 0, max: 500 },
               morale: { min: 0, max: 100 },
               ap: { min: 0, max: draft.stats.maxAp },
               affinity: { min: 0, max: 100 },
             },
             modifiers: nonInvMods,
             meta: {
-              roleTag: draft.roleTag || '通用型',
+              shipType: draft.shipType,
+              roleTag: draft.roleTag || draft.shipType,
               avatarAssetId: draft.avatarAssetId,
               personality: draft.personality,
               speechHabit: draft.speechHabit,
@@ -645,6 +739,8 @@ function openCharacterEditorSheet(existingChar = null) {
 
           if (!isEdit) {
             await equipStarterCorePartsIfPresent(inventory, charId, false);
+            const effMaxHp = Math.round(entities.getEffectiveStat(charId, 'maxHp', { round: 'round' }).final);
+            entities.setStat(charId, 'hp', effMaxHp, { min: 0, max: effMaxHp });
           } else {
             inventory.syncCharacterModifiers(charId);
           }
@@ -657,11 +753,11 @@ function openCharacterEditorSheet(existingChar = null) {
             category: LOG_CATEGORIES.CHARACTER,
             actorId: charId,
             actorName: draft.name,
-            title: isEdit ? `更新角色「${draft.name}」资料` : `新建角色「${draft.name}」`,
-            detail: `五维：攻${draft.stats.attack}/爆${draft.stats.burst}/机${draft.stats.agility}/战${draft.stats.tactics}/幸${draft.stats.luck}`,
+            title: isEdit ? `更新角色「${draft.name}」资料` : `新建舰娘「${draft.name}」(${draft.shipType})`,
+            detail: `八维：耐${draft.stats.maxHp}/火${draft.stats.firepower}/甲${draft.stats.armor}/雷${draft.stats.torpedo}/机${draft.stats.evasion}/侦${draft.stats.recon}/防${draft.stats.aa}/潜${draft.stats.asw}`,
           });
           bus.emit('character:saved', { characterId: charId, name: draft.name, isEdit });
-          uiKit.showToast(isEdit ? `已保存角色：${draft.name}` : `已创建角色：${draft.name}`, 'ok');
+          uiKit.showToast(isEdit ? `已保存角色：${draft.name}` : `已创建舰娘：${draft.name}（${draft.shipType}）`, 'ok');
           await renderConsole();
           return true;
         },
@@ -673,6 +769,7 @@ function openCharacterEditorSheet(existingChar = null) {
 function openItemEditorSheet(existingItem = null) {
   const { inventory, uiKit, logs } = consoleState.context;
   const isEdit = Boolean(existingItem);
+  const standardKeys = new Set(BONUS_STAT_OPTIONS.map((o) => o.key));
 
   const draft = existingItem
     ? {
@@ -681,7 +778,10 @@ function openItemEditorSheet(existingItem = null) {
         tags: (existingItem.tags || []).join(', '),
         description: existingItem.description || '',
         quantity: existingItem.quantity ?? 1,
-        bonuses: (existingItem.baseBonuses || existingItem.bonuses || []).map((b) => ({ ...b })),
+        bonuses: (existingItem.baseBonuses || existingItem.bonuses || []).map((b) => ({
+          ...b,
+          isCustomKey: !standardKeys.has(b.stat),
+        })),
       }
     : {
         name: '',
@@ -690,8 +790,8 @@ function openItemEditorSheet(existingItem = null) {
         description: '',
         quantity: 1,
         bonuses: [
-          { stat: 'attack', layer: 'baseAdd', value: 10 },
-          { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
+          { stat: 'firepower', layer: 'baseAdd', value: 10, isCustomKey: false },
+          { stat: '夜战修正', layer: 'baseAdd', value: 6, isCustomKey: true },
         ],
       };
 
@@ -701,11 +801,14 @@ function openItemEditorSheet(existingItem = null) {
   const readBonusRows = () => {
     const rows = [];
     wrap.querySelectorAll('[data-bonus-row]').forEach((row) => {
-      const stat = row.querySelector('[data-b-stat]').value;
+      const selVal = row.querySelector('[data-b-stat]').value;
+      const customInput = row.querySelector('[data-b-custom-stat]');
+      const isCustom = selVal === '__custom__';
+      const stat = isCustom ? String(customInput?.value || '').trim() : selVal;
       const layer = row.querySelector('[data-b-layer]').value;
       const val = Number(row.querySelector('[data-b-val]').value);
       if (stat && Number.isFinite(val)) {
-        rows.push({ stat, layer, value: val });
+        rows.push({ stat, layer, value: val, isCustomKey: isCustom || !standardKeys.has(stat) });
       }
     });
     draft.bonuses = rows;
@@ -725,8 +828,8 @@ function openItemEditorSheet(existingItem = null) {
   const renderForm = () => {
     wrap.innerHTML = `
       <div class="form-group">
-        <label class="form-label" for="cc-item-name">物品名称 *</label>
-        <input id="cc-item-name" class="form-input" type="text" value="${escapeHtml(draft.name)}" placeholder="例如：高出力引擎 / 扩展模块 / 礼服">
+        <label class="form-label" for="cc-item-name">物品 / 模块名称 *</label>
+        <input id="cc-item-name" class="form-input" type="text" value="${escapeHtml(draft.name)}" placeholder="例如：高出力引擎 / 夜战观瞄模块 / 礼服">
       </div>
 
       <div class="lab-kv-grid">
@@ -758,36 +861,68 @@ function openItemEditorSheet(existingItem = null) {
       </div>
 
       <div class="form-group">
-        <span class="form-label">可视化属性加减词条（支持随时微调，保存后实时重算面板）</span>
+        <span class="form-label">属性词条（支持标准八维或任意自定义动态属性名）</span>
         <div id="cc-bonus-list" class="lab-stack-sm">
           ${draft.bonuses
-            .map(
-              (b, idx) => `
-            <div class="cc-bonus-row" data-bonus-row="${idx}">
-              <select class="form-select" data-b-stat aria-label="目标属性">
-                ${BONUS_STAT_OPTIONS.map(
-                  (o) => `<option value="${o.key}" ${b.stat === o.key ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
-                ).join('')}
-              </select>
-              <select class="form-select" data-b-layer aria-label="词条类型">
-                <option value="baseAdd" ${b.layer === 'baseAdd' || !b.layer ? 'selected' : ''}>固定值</option>
-                <option value="percentAdd" ${b.layer === 'percentAdd' ? 'selected' : ''}>百分比</option>
-                <option value="flatFinal" ${b.layer === 'flatFinal' ? 'selected' : ''}>终值</option>
-              </select>
-              <input class="form-input" type="number" step="any" data-b-val value="${Number(b.value ?? 0)}" aria-label="词条数值">
-              <button type="button" class="btn-danger uikit-touch-target" data-remove-bonus="${idx}" style="padding:0 10px;">×</button>
-            </div>
-          `
-            )
+            .map((b, idx) => {
+              const isCustom = b.isCustomKey || !standardKeys.has(b.stat);
+              return `
+              <div class="lab-stack-sm" style="padding:8px; border:1px solid var(--border); border-radius:10px;" data-bonus-row="${idx}">
+                <div class="cc-bonus-row">
+                  <select class="form-select" data-b-stat aria-label="目标属性">
+                    ${BONUS_STAT_OPTIONS.map(
+                      (o) => `<option value="${o.key}" ${!isCustom && b.stat === o.key ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
+                    ).join('')}
+                    <option value="__custom__" ${isCustom ? 'selected' : ''}>自定义动态属性…</option>
+                  </select>
+                  <select class="form-select" data-b-layer aria-label="词条类型">
+                    <option value="baseAdd" ${b.layer === 'baseAdd' || !b.layer ? 'selected' : ''}>固定值</option>
+                    <option value="percentAdd" ${b.layer === 'percentAdd' ? 'selected' : ''}>百分比</option>
+                    <option value="flatFinal" ${b.layer === 'flatFinal' ? 'selected' : ''}>终值</option>
+                  </select>
+                  <input class="form-input" type="number" step="any" data-b-val value="${Number(b.value ?? 0)}" aria-label="词条数值">
+                  <button type="button" class="btn-danger uikit-touch-target" data-remove-bonus="${idx}" style="padding:0 10px;">×</button>
+                </div>
+                ${
+                  isCustom
+                    ? `<input class="form-input" type="text" data-b-custom-stat value="${escapeHtml(isCustom && b.stat !== '__custom__' ? b.stat : '')}" placeholder="输入自定义属性名，如：夜战修正 / 电子干扰 / 航速">`
+                    : ''
+                }
+              </div>
+            `;
+            })
             .join('')}
         </div>
-        <button type="button" id="btn-cc-add-bonus" class="btn-secondary uikit-touch-target" style="margin-top:4px;">+ 添加属性词条</button>
+        <div class="lab-btn-grid" style="margin-top:6px;">
+          <button type="button" id="btn-cc-add-bonus" class="btn-secondary uikit-touch-target">+ 标准八维词条</button>
+          <button type="button" id="btn-cc-add-custom-bonus" class="btn-secondary uikit-touch-target">+ 自定义动态属性</button>
+        </div>
       </div>
     `;
 
+    wrap.querySelectorAll('[data-b-stat]').forEach((sel, idx) => {
+      sel.addEventListener('change', () => {
+        const nextVal = sel.value;
+        readMainFields();
+        if (draft.bonuses[idx]) {
+          draft.bonuses[idx].isCustomKey = nextVal === '__custom__';
+          if (nextVal === '__custom__' && standardKeys.has(draft.bonuses[idx].stat)) {
+            draft.bonuses[idx].stat = '自定义属性';
+          }
+        }
+        renderForm();
+      });
+    });
+
     wrap.querySelector('#btn-cc-add-bonus').addEventListener('click', () => {
       readMainFields();
-      draft.bonuses.push({ stat: 'agility', layer: 'baseAdd', value: 5 });
+      draft.bonuses.push({ stat: 'aa', layer: 'baseAdd', value: 8, isCustomKey: false });
+      renderForm();
+    });
+
+    wrap.querySelector('#btn-cc-add-custom-bonus').addEventListener('click', () => {
+      readMainFields();
+      draft.bonuses.push({ stat: '夜战修正', layer: 'baseAdd', value: 6, isCustomKey: true });
       renderForm();
     });
 
@@ -804,8 +939,8 @@ function openItemEditorSheet(existingItem = null) {
   renderForm();
 
   uiKit.openBottomSheet({
-    title: isEdit ? `编辑词条与资料 · ${existingItem.name}` : '新建核心部件 / 扩展装备 / 服装',
-    subtitle: '通用扩展装备可装入任意自定义名称槽位，无分类限制',
+    title: isEdit ? `编辑词条与资料 · ${existingItem.name}` : '新建核心部件 / 扩展模块 / 服装',
+    subtitle: '通用扩展模块装入自定义槽位后，附带的新增属性将自动动态显示在角色卡面板上',
     content: wrap,
     actions: [
       { id: 'cancel', label: '取消', tone: 'secondary' },
@@ -819,20 +954,24 @@ function openItemEditorSheet(existingItem = null) {
             uiKit.showToast('请输入物品名称', 'warn');
             return false;
           }
+          const cleanPayload = {
+            ...draft,
+            bonuses: draft.bonuses.map(({ stat, layer, value }) => ({ stat, layer, value })),
+          };
           if (isEdit) {
-            await inventory.updateItem(existingItem.id, draft);
+            await inventory.updateItem(existingItem.id, cleanPayload);
             logs.add({
               category: LOG_CATEGORIES.EQUIPMENT,
               title: `调整物品词条「${draft.name}」`,
-              detail: draft.bonuses.map(formatBonusChip).join('、') || '无词条',
+              detail: cleanPayload.bonuses.map(formatBonusChip).join('、') || '无词条',
             });
             uiKit.showToast(`已更新「${draft.name}」并实时重算属性`, 'ok');
           } else {
-            await inventory.createItem(draft);
+            await inventory.createItem(cleanPayload);
             logs.add({
               category: LOG_CATEGORIES.EQUIPMENT,
               title: `新建${ITEM_CATEGORY_LABELS[draft.category]}「${draft.name}」`,
-              detail: draft.bonuses.map(formatBonusChip).join('、') || '无词条',
+              detail: cleanPayload.bonuses.map(formatBonusChip).join('、') || '无词条',
             });
             uiKit.showToast(`已新建入库：${draft.name}`, 'ok');
           }
@@ -938,8 +1077,8 @@ function openStatRulesSheet() {
 
 function openCheckSimulatorSheet(char) {
   if (!char) return;
-  const { entities, inventory, statRules, uiKit } = consoleState.context;
-  let selectedStat = 'attack';
+  const { entities, inventory, statRules, commander, uiKit } = consoleState.context;
+  let selectedStat = 'firepower';
   let dcValue = 15;
   let extraMod = 0;
   let lastResult = null;
@@ -1292,44 +1431,96 @@ function createSlotsSection(char, { compact = false } = {}) {
 // ============================================================
 
 function renderOverviewTab(host, char) {
-  const { entities, inventory, statRules, resources, uiKit, logs } = consoleState.context;
-  const eqBonuses = inventory.getCharacterEquipmentBonuses(char.id);
+  const { entities, inventory, statRules, resources, commander, uiKit, logs } = consoleState.context;
+  const breakdown = inventory.getCharacterStatBreakdown(char.id);
+  const coreAmpPct = Math.round((breakdown.coreAmplifier - 1) * 100);
+  const affThresholdRed = commander ? commander.getAffinityThresholdReduction() : 0;
+  const affGainMult = commander ? commander.getAffinityGainMultiplier() : 1.0;
 
-  // 1. Core 5 Stats Panel
+  // 1. Naval 8-Stat Panel (strictly separating Base 白值 vs Equipment/Module Bonus 装备加成)
   const statCard = document.createElement('section');
   statCard.className = 'surface-card lab-stack-sm';
+  statCard.id = 'cc-naval-stats-card';
   statCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">五维面板属性（全槽位实时累加）</h2>
-      <span class="status-badge badge-ok" id="cc-equip-check-badge">装备检定 ${formatSigned(eqBonuses.checkBonus)}</span>
+      <h2 class="section-title">海战八维属性（白值 + 装备/模块加成）</h2>
+      <span class="status-badge badge-ok" id="cc-equip-check-badge">装备检定 ${formatSigned(breakdown.checkBonus)}</span>
     </div>
+    ${
+      coreAmpPct > 0
+        ? `<p class="muted-text" style="font-size:12px;">指挥官「整备」生效中：引擎/装甲/核心三核心部件效能 +${coreAmpPct}%</p>`
+        : ''
+    }
     <div class="cc-stat-grid" id="cc-stat-grid">
-      ${CORE_STAT_DEFS.map((def) => {
-        const baseVal = Number(char.stats[def.key] ?? def.defaultValue);
-        const stacked = entities.getEffectiveStat(char.id, def.key, { round: 'round' });
-        const delta = Number((stacked.final - baseVal).toFixed(1));
-        const mod = statRules.getStatModifier(stacked.final);
-        return `
-          <div class="cc-stat-tile" data-stat-tile="${def.key}">
+      ${breakdown.standardStats
+        .map((st) => {
+          const isVital = st.key === 'maxHp';
+          const mod = isVital ? null : statRules.getStatModifier(st.total);
+          return `
+          <div class="cc-stat-tile" data-stat-tile="${st.key}">
             <div class="cc-stat-tile-top">
-              <span class="cc-stat-name">${escapeHtml(def.label)}</span>
-              <span class="status-badge badge-muted">检定 ${formatSigned(mod)}</span>
+              <span class="cc-stat-name">${escapeHtml(st.label)}</span>
+              ${
+                isVital
+                  ? '<span class="status-badge badge-muted">生存上限</span>'
+                  : `<span class="status-badge badge-muted">检定 ${formatSigned(mod)}</span>`
+              }
             </div>
             <div class="cc-stat-val-row">
-              <span class="cc-stat-final" data-stat-final="${def.key}">${stacked.final}</span>
+              <span class="cc-stat-final" data-stat-final="${st.key}">${st.total}</span>
               ${
-                delta !== 0
-                  ? `<span class="cc-stat-delta ${delta < 0 ? 'is-neg' : ''}" data-stat-delta="${def.key}">${formatSigned(delta)}</span>`
+                st.bonus !== 0
+                  ? `<span class="cc-stat-delta ${st.bonus < 0 ? 'is-neg' : ''}" data-stat-delta="${st.key}">${formatSigned(st.bonus)}</span>`
                   : ''
               }
             </div>
-            <span class="cc-stat-sub">基础 ${baseVal}${delta !== 0 ? ` · 全槽位 ${formatSigned(delta)}` : ''}</span>
+            <span class="cc-stat-sub">白值 ${st.base}${st.bonus !== 0 ? ` · 模块 ${formatSigned(st.bonus)}` : ' · 无加成'}</span>
           </div>
         `;
-      }).join('')}
+        })
+        .join('')}
     </div>
   `;
   host.appendChild(statCard);
+
+  // 1B. Dynamic Module-Extended Attributes Panel (automatically expands from equipped modules/custom slots)
+  const dynCard = document.createElement('section');
+  dynCard.className = 'surface-card lab-stack-sm';
+  dynCard.id = 'cc-dynamic-stats-card';
+  dynCard.innerHTML = `
+    <div class="section-header-row" style="margin-bottom:0;">
+      <h2 class="section-title">动态模块扩展属性（随自定义槽位自动扩展）</h2>
+      <span class="status-badge ${breakdown.dynamicStats.length > 0 ? 'badge-ok' : 'badge-muted'}" id="cc-dynamic-stats-count">
+        ${breakdown.dynamicStats.length} 项扩展
+      </span>
+    </div>
+    ${
+      breakdown.dynamicStats.length > 0
+        ? `
+      <div class="cc-stat-grid" id="cc-dynamic-stats-grid">
+        ${breakdown.dynamicStats
+          .map(
+            (ds) => `
+          <div class="cc-stat-tile is-dynamic" data-dynamic-stat="${escapeHtml(ds.key)}">
+            <div class="cc-stat-tile-top">
+              <span class="cc-stat-name">${escapeHtml(ds.label)}</span>
+              <span class="status-badge badge-ok">模块扩展</span>
+            </div>
+            <div class="cc-stat-val-row">
+              <span class="cc-stat-final">${ds.total}</span>
+              <span class="cc-stat-delta">${formatSigned(ds.bonus)}</span>
+            </div>
+            <span class="cc-stat-sub">白值 ${ds.base} · 来源：${escapeHtml((ds.sources || []).join('、') || '自定义模块')}</span>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+    `
+        : '<p class="muted-text" style="font-size:12.5px;">当前未装备带自定义扩展词条的模块。在「背包与装备」新建/编辑带自定义属性名的模块并装入自定义槽位后，此处将自动扩展显示。</p>'
+    }
+  `;
+  host.appendChild(dynCard);
 
   // 2. Direct Core & Custom Slots Builder right on Character Overview Card
   host.appendChild(createSlotsSection(char, { compact: true }));
@@ -1337,17 +1528,24 @@ function renderOverviewTab(host, char) {
   // 3. Character Persona & Quick Status Adjust
   const personaCard = document.createElement('section');
   personaCard.className = 'surface-card lab-stack-sm';
-  const affStage = statRules.getAffinityStage(char.stats.affinity ?? 0);
+  const affStage = statRules.getAffinityStage(char.stats.affinity ?? 0, { thresholdReduction: affThresholdRed });
+  const interactProfile = commander ? commander.getInteractionProfile() : null;
   personaCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">角色设定与状态微调</h2>
+      <h2 class="section-title">舰娘设定与状态微调</h2>
       <span class="status-badge badge-ok">好感 ${affStage.label} (${affStage.value}/100)</span>
     </div>
+    <p class="muted-text"><strong>舰种 / 定位：</strong>${escapeHtml(char.meta?.shipType || '驱逐舰')} · ${escapeHtml(char.meta?.roleTag || '通用型')}</p>
     <p class="muted-text"><strong>性格设定：</strong>${escapeHtml(char.meta?.personality || '未填写性格设定')}</p>
     <p class="muted-text"><strong>对话口癖：</strong>${escapeHtml(char.meta?.speechHabit || '未填写对话口癖')}</p>
+    ${
+      interactProfile
+        ? `<p class="muted-text" style="font-size:12px;"><strong>魅力互动倾向：</strong>${escapeHtml(interactProfile.toneLabel)}（解锁：${escapeHtml(interactProfile.unlockedOptions.join(' / '))}）</p>`
+        : ''
+    }
     <div class="lab-divider"></div>
     <div class="cc-btn-3col">
-      <button type="button" id="btn-cc-aff-inc" class="btn-secondary uikit-touch-target">好感 +5</button>
+      <button type="button" id="btn-cc-aff-inc" class="btn-secondary uikit-touch-target">好感 +${Math.round(5 * affGainMult)}</button>
       <button type="button" id="btn-cc-morale-inc" class="btn-secondary uikit-touch-target">士气 +10</button>
       <button type="button" id="btn-cc-ap-dec" class="btn-secondary uikit-touch-target">消耗 15 AP</button>
     </div>
@@ -1358,14 +1556,15 @@ function renderOverviewTab(host, char) {
   `;
 
   personaCard.querySelector('#btn-cc-aff-inc').addEventListener('click', async () => {
-    const after = entities.adjustStat(char.id, 'affinity', 5, { min: 0, max: 100 });
+    const delta = Math.max(1, Math.round(5 * affGainMult));
+    const after = entities.adjustStat(char.id, 'affinity', delta, { min: 0, max: 100 });
     await saveRosterNow();
-    const st = statRules.getAffinityStage(after);
+    const st = statRules.getAffinityStage(after, { thresholdReduction: affThresholdRed });
     logs.add({
       category: LOG_CATEGORIES.STAT,
       actorId: char.id,
       actorName: char.name,
-      title: `[${char.name}] 好感度 +5`,
+      title: `[${char.name}] 好感度 +${delta}`,
       detail: `当前好感度 ${after}/100（阶段：${st.label}）`,
     });
     uiKit.showToast(`好感度提升至 ${after}（${st.label}）`, 'ok');
@@ -1734,7 +1933,7 @@ function renderLogsTab(host) {
 
 async function renderConsole() {
   if (!consoleState.container || !consoleState.context) return;
-  const { entities, inventory, resources, statRules, uiKit } = consoleState.context;
+  const { entities, inventory, resources, statRules, commander, expeditions, uiKit } = consoleState.context;
   const roster = getCharacters();
   const char = getActiveCharacter();
   if (!char) return;
@@ -1743,9 +1942,11 @@ async function renderConsole() {
   const effStats = entities.getEffectiveStats(char.id, { round: 'round' });
   const eqBonuses = inventory.getCharacterEquipmentBonuses(char.id);
   const overallScore = statRules.computeOverallScore(effStats, eqBonuses.checkBonus);
-  const affStage = statRules.getAffinityStage(char.stats.affinity ?? 0);
+  const affThresholdRed = commander ? commander.getAffinityThresholdReduction() : 0;
+  const affStage = statRules.getAffinityStage(char.stats.affinity ?? 0, { thresholdReduction: affThresholdRed });
   const moraleMod = statRules.getMoraleModifier(char.stats.morale ?? 50);
   const seaworthyInfo = statRules.evaluateSeaworthiness(inventory, char.id);
+  const isDispatched = expeditions ? expeditions.isCharacterDispatched(char.id) : false;
 
   consoleState.container.innerHTML = '';
   const root = document.createElement('div');
@@ -1760,11 +1961,17 @@ async function renderConsole() {
   rosterStrip.id = 'cc-roster-strip';
   for (const c of roster) {
     const sw = inventory.checkSeaworthiness(c.id);
+    const disp = expeditions ? expeditions.isCharacterDispatched(c.id) : false;
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = `cc-roster-chip ${c.id === char.id ? 'is-active' : ''}`;
     chip.dataset.selectChar = c.id;
-    chip.textContent = sw.seaworthy ? c.name : `${c.name} (未适航)`;
+    const typeTag = c.meta?.shipType ? `[${c.meta.shipType}] ` : '';
+    chip.textContent = disp
+      ? `${typeTag}${c.name} (远征中)`
+      : sw.seaworthy
+      ? `${typeTag}${c.name}`
+      : `${typeTag}${c.name} (未适航)`;
     chip.addEventListener('click', async () => {
       consoleState.activeCharacterId = c.id;
       await saveRosterNow();
@@ -1777,7 +1984,7 @@ async function renderConsole() {
   addCharBtn.type = 'button';
   addCharBtn.id = 'btn-cc-new-char';
   addCharBtn.className = 'cc-roster-chip is-add';
-  addCharBtn.textContent = '+ 新建角色';
+  addCharBtn.textContent = '+ 新建舰娘';
   addCharBtn.addEventListener('click', () => openCharacterEditorSheet(null));
   rosterStrip.appendChild(addCharBtn);
   root.appendChild(rosterStrip);
@@ -1795,10 +2002,11 @@ async function renderConsole() {
           <span class="status-badge badge-ok" id="cc-overall-score">评分 ${overallScore}</span>
         </div>
         <div class="cc-badge-row">
+          <span class="status-badge badge-ok" id="cc-ship-type-badge">${escapeHtml(char.meta?.shipType || '驱逐舰')}</span>
           <span class="status-badge ${seaworthyInfo.seaworthy ? 'badge-ok' : 'badge-danger'}" id="cc-seaworthy-badge">
             ${seaworthyInfo.seaworthy ? '适航' : '未适航（缺少核心部件）'}
           </span>
-          <span class="status-badge badge-muted">${escapeHtml(char.meta?.roleTag || '通用型')}</span>
+          ${isDispatched ? '<span class="status-badge badge-warn">远征派遣中</span>' : ''}
           <span class="status-badge badge-ok" id="cc-affinity-badge">好感 ${escapeHtml(affStage.label)}(${affStage.value})</span>
         </div>
       </div>
@@ -1816,19 +2024,19 @@ async function renderConsole() {
       <button type="button" id="btn-cc-goto-action" class="btn-primary uikit-touch-target">前往行动台</button>
       <button type="button" id="btn-cc-goto-workshop" class="btn-secondary uikit-touch-target">物资与工坊台</button>
       <button type="button" id="btn-cc-open-check" class="btn-secondary uikit-touch-target">模拟检定</button>
-      <button type="button" id="btn-cc-edit-char" class="btn-secondary uikit-touch-target">编辑角色</button>
+      <button type="button" id="btn-cc-edit-char" class="btn-secondary uikit-touch-target">编辑舰娘</button>
     </div>
   `;
 
   const barsMount = heroCard.querySelector('#cc-dynamic-bars');
-  const maxHp = Number(char.stats.maxHp ?? 100);
+  const maxHp = Math.max(1, Math.round(Number(effStats.maxHp ?? char.stats.maxHp ?? 100)));
   const maxAp = Number(char.stats.maxAp ?? 100);
   barsMount.appendChild(
     uiKit.createProgressBar({
-      label: '生命 / 耐久 (HP)',
-      value: char.stats.hp ?? 100,
+      label: '耐久 (HP)',
+      value: Math.min(maxHp, Math.round(Number(char.stats.hp ?? maxHp))),
       max: maxHp,
-      tone: (char.stats.hp ?? 100) / maxHp < 0.3 ? 'danger' : 'accent',
+      tone: (char.stats.hp ?? maxHp) / maxHp < 0.3 ? 'danger' : 'accent',
     }).element
   );
   barsMount.appendChild(
@@ -1963,7 +2171,12 @@ export default {
     consoleState.unsubs = [
       context.bus.on('stat-rules:changed', () => renderConsole()),
       context.bus.on('action:settled', () => renderConsole()),
+      context.bus.on('inventory:equipped', () => renderConsole()),
+      context.bus.on('inventory:unequipped', () => renderConsole()),
+      context.bus.on('inventory:slot-added', () => renderConsole()),
+      context.bus.on('inventory:slot-removed', () => renderConsole()),
       context.bus.on('inventory:enhanced', () => renderConsole()),
+      context.bus.on('commander:updated', () => renderConsole()),
       context.bus.on('storage:changed', (detail) => {
         if (detail?.action === 'resetAll' || detail?.action === 'import') {
           renderConsole();

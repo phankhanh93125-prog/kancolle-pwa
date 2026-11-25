@@ -2585,8 +2585,55 @@ textarea:focus-visible {
   border-color: rgba(20, 184, 166, 0.45);
 }
 
+/* ============================================================
+   Commander Character Card & Dynamic Module Stat Extensions
+   ============================================================ */
+.cmd-six-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
 
+.cmd-stat-pill {
+  padding: 8px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 
+.cmd-stat-group {
+  font-size: 10px;
+  color: var(--text-muted);
+}
 
+.cmd-stat-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 560;
+}
 
+.cmd-stat-val {
+  font-family: var(--font-mono);
+  font-size: 17px;
+  font-weight: 720;
+  color: var(--text-primary);
+}
 
+.cmd-alloc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+}
+
+.cc-stat-tile.is-dynamic {
+  border-color: rgba(20, 184, 166, 0.45);
+  background: rgba(20, 184, 166, 0.06);
+}

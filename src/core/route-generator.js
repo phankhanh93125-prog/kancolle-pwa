@@ -135,14 +135,34 @@ function pickRandom(arr, rng = Math.random) {
 export function buildEnemyTemplate(type, tierCfg, rng = Math.random) {
   const isBoss = type === NODE_TYPES.BOSS;
   const isElite = type === NODE_TYPES.ELITE;
-  const hpMult = isBoss ? 1.45 : isElite ? 1.18 : 0.88;
+  const hpMult = isBoss ? 1.55 : isElite ? 1.25 : 0.95;
   const atkMult = isBoss ? 1.3 : isElite ? 1.12 : 0.9;
-  const armorBonus = isBoss ? 4 : isElite ? 2 : 0;
+  const armorBonus = isBoss ? 5 : isElite ? 3 : 0;
 
   const maxHp = Math.round(randInt(tierCfg.enemyHpRange[0], tierCfg.enemyHpRange[1], rng) * hpMult);
   const armor = randInt(tierCfg.enemyArmorRange[0], tierCfg.enemyArmorRange[1], rng) + armorBonus;
   const attackPower = Math.round(randInt(tierCfg.enemyAtkRange[0], tierCfg.enemyAtkRange[1], rng) * atkMult);
   const weakness = rng() < 0.5 ? 'shelling' : 'torpedo';
+
+  // Aerial & Submarine threat tiers so fleet AA (防空) and ASW (反潜) actively matter
+  const threatRoll = rng();
+  const baseThreat = isBoss ? 24 : isElite ? 18 : 12;
+  let airThreat = 0;
+  let subThreat = 0;
+  let threatLabel = '水面主力编队';
+  if (isBoss) {
+    airThreat = Math.round(baseThreat * (0.7 + rng() * 0.5));
+    subThreat = rng() < 0.5 ? Math.round(baseThreat * 0.65) : 0;
+    threatLabel = subThreat > 0 ? '海空潜立体主力' : '舰载机编队威胁';
+  } else if (threatRoll < 0.38) {
+    airThreat = Math.round(baseThreat * (0.8 + rng() * 0.4));
+    threatLabel = '敌方航空威胁';
+  } else if (threatRoll < 0.72) {
+    subThreat = Math.round(baseThreat * (0.8 + rng() * 0.4));
+    threatLabel = '敌方水下潜艇威胁';
+  } else {
+    threatLabel = '常规水面炮雷编队';
+  }
 
   return {
     name: pickRandom(NODE_NAMES[type] || NODE_NAMES[NODE_TYPES.ENCOUNTER], rng),
@@ -152,6 +172,9 @@ export function buildEnemyTemplate(type, tierCfg, rng = Math.random) {
     maxHp,
     armor,
     attackPower,
+    airThreat,
+    subThreat,
+    threatLabel,
     scanDc: tierCfg.baseDc + (isBoss ? 2 : isElite ? 1 : 0),
     evadeDc: tierCfg.baseDc + (isBoss ? 3 : isElite ? 2 : 0),
     shellingDc: tierCfg.baseDc + (isBoss ? 2 : isElite ? 1 : 0),
@@ -397,8 +420,9 @@ export class RouteGenerator {
 
   /**
    * Procedurally generate a standardized sortie route (3~6 nodes) for the given difficulty.
+   * Accepts optional `commander` so Commander `tactics` reveals ahead-of-time node types (`intelRevealed`).
    */
-  generateRoute({ difficulty = 'low', nodeCount = null, rng = Math.random } = {}) {
+  generateRoute({ difficulty = 'low', nodeCount = null, commander = null, rng = Math.random } = {}) {
     const tier = SEA_DIFFICULTIES[difficulty] || SEA_DIFFICULTIES.low;
     const totalNodes = nodeCount
       ? clamp(Math.floor(nodeCount), 3, 6)
@@ -407,6 +431,9 @@ export class RouteGenerator {
     const seaCondition = deepClone(pickRandom(SEA_CONDITIONS, rng));
     const stepFuel = Math.max(10, tier.stepCost.fuel + (seaCondition.mods.fuelDelta || 0));
     const stepAmmo = tier.stepCost.ammo;
+    const revealChance = commander && typeof commander.getRouteRevealChance === 'function'
+      ? commander.getRouteRevealChance()
+      : 0.25;
 
     // Ensure at least one early combat node and always end on a Boss node
     const middleTypeWeights = [
@@ -418,6 +445,7 @@ export class RouteGenerator {
 
     const nodes = [];
     let hasCombatBeforeBoss = false;
+    let revealedCount = 0;
 
     for (let i = 0; i < totalNodes; i++) {
       const code = String.fromCharCode(65 + i);
@@ -426,7 +454,6 @@ export class RouteGenerator {
 
       if (!isLast) {
         if (i === 0) {
-          // First node: 65% encounter (so tactical combat is immediately testable!) or 35% resource/weather
           type = rng() < 0.65 ? NODE_TYPES.ENCOUNTER : rng() < 0.5 ? NODE_TYPES.RESOURCE : NODE_TYPES.WEATHER;
         } else if (i === totalNodes - 2 && !hasCombatBeforeBoss) {
           type = difficulty === 'low' ? NODE_TYPES.ENCOUNTER : NODE_TYPES.ELITE;
@@ -442,6 +469,8 @@ export class RouteGenerator {
       const isCombat = type === NODE_TYPES.ENCOUNTER || type === NODE_TYPES.ELITE || type === NODE_TYPES.BOSS;
       const enemyTemplate = isCombat ? buildEnemyTemplate(type, tier, rng) : null;
       const name = isCombat ? enemyTemplate.name : pickRandom(NODE_NAMES[type], rng);
+      const intelRevealed = i === 0 || isLast || rng() < revealChance;
+      if (intelRevealed) revealedCount += 1;
 
       const scale = tier.lootScale * (type === NODE_TYPES.BOSS ? 1.8 : type === NODE_TYPES.ELITE ? 1.3 : 1.0);
       const loot =
@@ -476,14 +505,15 @@ export class RouteGenerator {
         name,
         type,
         typeLabel: NODE_TYPE_LABELS[type] || type,
+        intelRevealed,
         statKey:
           type === NODE_TYPES.RESOURCE
-            ? 'luck'
+            ? 'recon'
             : type === NODE_TYPES.WEATHER
-            ? 'tactics'
+            ? 'recon'
             : type === NODE_TYPES.ELITE
-            ? 'burst'
-            : 'attack',
+            ? 'torpedo'
+            : 'firepower',
         dc: tier.baseDc + (type === NODE_TYPES.BOSS ? 3 : type === NODE_TYPES.ELITE ? 2 : 0),
         loot,
         failDamage: {
@@ -500,12 +530,13 @@ export class RouteGenerator {
     const route = {
       id: `route_gen_${Date.now().toString(36)}_${serial}`,
       name: `${prefix} ${serial}号航线（${tier.label}）`,
-      description: `程序化随机生成 · ${totalNodes} 节点 · 海况「${seaCondition.label}」：${seaCondition.description}`,
+      description: `程序化随机生成 · ${totalNodes} 节点（战术预侦察 ${revealedCount}/${totalNodes}）· 海况「${seaCondition.label}」：${seaCondition.description}`,
       difficulty: tier.id,
       difficultyLabel: tier.label,
       builtIn: false,
       generated: true,
       seaCondition,
+      revealChance,
       minFuel: stepFuel * 2,
       minAmmo: stepAmmo * 2,
       apCost: tier.apCost,

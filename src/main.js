@@ -16,6 +16,9 @@ import { LogSystem } from './core/log-system.js';
 import { FxStage } from './core/fx-stage.js';
 import { RouteGenerator } from './core/route-generator.js';
 import { TacticalCombatEngine } from './core/tactical-combat.js';
+import { CommanderSystem } from './core/commander-system.js';
+import { FormationSystem } from './core/formation-system.js';
+import { ExpeditionSystem } from './core/expedition-system.js';
 import { createUIKit, showToast } from './core/ui-kit.js';
 import { REGISTERED_MODULES } from './modules/index.js';
 import { hydrateCharacterRoster } from './modules/character-console.js';
@@ -53,17 +56,33 @@ const turnStepper = new TurnStepper({ bus });
 const narrative = new PromptPipeline({ api, storage, bus });
 const assets = new AssetManager({ storage, bus });
 const statRules = new StatRulesEngine({ storage, bus });
-const inventory = new InventorySystem({ storage, entities, bus });
+const commander = new CommanderSystem({ storage, bus });
+const inventory = new InventorySystem({ storage, entities, commander, bus });
 const resources = new ResourceManager({ storage, bus });
 const logs = new LogSystem({ storage, bus });
 const fxStage = new FxStage({ bus, storage });
 const routeGenerator = new RouteGenerator({ storage, bus });
+const formation = new FormationSystem({ storage, entities, inventory, commander, bus });
+const expeditions = new ExpeditionSystem({
+  storage,
+  entities,
+  inventory,
+  resources,
+  commander,
+  logs,
+  formation,
+  bus,
+});
+formation.setExpeditions(expeditions);
+
 const combat = new TacticalCombatEngine({
   entities,
   inventory,
   statRules,
   resources,
   narrative,
+  commander,
+  formation,
   bus,
 });
 const uiKit = createUIKit();
@@ -196,6 +215,9 @@ const moduleManager = new ModuleManager({
     fxStage,
     routeGenerator,
     combat,
+    commander,
+    formation,
+    expeditions,
     uiKit,
   },
 });
@@ -550,8 +572,11 @@ els.btnData.addEventListener('click', openDataSheet);
 // ------------------------------------------------------------
 async function bootApplication() {
   try {
+    await commander.init();
     await Promise.all([inventory.init(), resources.init(), logs.init()]);
-    await hydrateCharacterRoster({ storage, entities, inventory, statRules });
+    await hydrateCharacterRoster({ storage, entities, inventory, statRules, commander });
+    await expeditions.init();
+    await formation.init();
     await Promise.all([
       hydrateActionConsole({ storage, rules }),
       hydrateSortieConsole({ storage, routeGenerator, combat }),
@@ -563,9 +588,14 @@ async function bootApplication() {
   logs.attachBusListeners();
   fxStage.attachBusListeners();
 
-  // Trigger Auto-Save snapshot whenever equipment, slots, characters, port service, sortie, combat, actions, resources, or rules mutate
+  // Trigger Auto-Save snapshot whenever commander, formation, expeditions, equipment, characters, sortie, combat, or resources mutate
   saves.bindAutoSaveEvents(
     [
+      'commander:updated',
+      'formation:changed',
+      'expedition:dispatched',
+      'expedition:claimed',
+      'expedition:recalled',
       'inventory:equipped',
       'inventory:unequipped',
       'inventory:consumed',
@@ -590,6 +620,9 @@ async function bootApplication() {
     (eventName) => ({
       name: '系统自动存档快照',
       data: {
+        commander: commander.serialize(),
+        formation: formation.serialize(),
+        expeditions: expeditions.serialize(),
         entities: entities.serialize(),
         inventory: inventory.serialize(),
         resources: resources.serialize(),
@@ -597,6 +630,8 @@ async function bootApplication() {
       },
       summary: {
         trigger: eventName,
+        commanderLevel: commander.getProfile().level,
+        fleetCount: formation.getMemberIds().length,
         characters: entities.list({ kind: 'character' }).length,
         items: inventory.listItems().length,
       },
@@ -644,6 +679,9 @@ window.__APP_BASE__ = {
   fxStage,
   routeGenerator,
   combat,
+  commander,
+  formation,
+  expeditions,
   uiKit,
   modules: moduleManager,
 };
