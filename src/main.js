@@ -9,8 +9,13 @@ import { RuleEngine } from './core/rule-engine.js';
 import { StateMachine, TurnStepper } from './core/state-machine.js';
 import { PromptPipeline } from './core/prompt-pipeline.js';
 import { AssetManager } from './core/asset-manager.js';
+import { StatRulesEngine } from './core/stat-rules.js';
+import { InventorySystem } from './core/inventory-system.js';
+import { ResourceManager } from './core/resource-manager.js';
+import { LogSystem } from './core/log-system.js';
 import { createUIKit, showToast } from './core/ui-kit.js';
 import { REGISTERED_MODULES } from './modules/index.js';
+import { hydrateCharacterRoster } from './modules/character-console.js';
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -42,6 +47,10 @@ const stateMachine = new StateMachine({ bus });
 const turnStepper = new TurnStepper({ bus });
 const narrative = new PromptPipeline({ api, storage, bus });
 const assets = new AssetManager({ storage, bus });
+const statRules = new StatRulesEngine({ storage, bus });
+const inventory = new InventorySystem({ storage, entities, bus });
+const resources = new ResourceManager({ storage, bus });
+const logs = new LogSystem({ storage, bus });
 const uiKit = createUIKit();
 
 const els = {
@@ -165,6 +174,10 @@ const moduleManager = new ModuleManager({
     turnStepper,
     narrative,
     assets,
+    statRules,
+    inventory,
+    resources,
+    logs,
     uiKit,
   },
 });
@@ -515,9 +528,57 @@ els.btnApi.addEventListener('click', openApiSheet);
 els.btnData.addEventListener('click', openDataSheet);
 
 // ------------------------------------------------------------
-// 6. Boot Initial Module & Register Service Worker
+// 6. Hydrate Persisted Core Data, Bind Auto-Save & Boot Home
 // ------------------------------------------------------------
-moduleManager.mountInitial();
+async function bootApplication() {
+  try {
+    await Promise.all([inventory.init(), resources.init(), logs.init()]);
+    await hydrateCharacterRoster({ storage, entities, inventory, statRules });
+  } catch (err) {
+    console.error('[App] Persistence hydration failed:', err);
+  }
+
+  logs.attachBusListeners();
+
+  // Trigger Auto-Save snapshot whenever equipment, characters, resources, or rules mutate
+  saves.bindAutoSaveEvents(
+    [
+      'inventory:equipped',
+      'inventory:unequipped',
+      'inventory:consumed',
+      'character:saved',
+      'character:deleted',
+      'resource:changed',
+      'stat-rules:changed',
+    ],
+    (eventName) => ({
+      name: '系统自动存档快照',
+      data: {
+        entities: entities.serialize(),
+        inventory: inventory.serialize(),
+        resources: resources.serialize(),
+        statRules: statRules.getConfig(),
+      },
+      summary: {
+        trigger: eventName,
+        characters: entities.list({ kind: 'character' }).length,
+        items: inventory.listItems().length,
+      },
+    }),
+    { debounceMs: 180 }
+  );
+
+  // One-time default home migration so Character Console opens as default home screen
+  const shellStore = storage.namespace('core-shell');
+  if (shellStore.get('homeVersion', null) !== 'character-console-v1') {
+    shellStore.set('homeVersion', 'character-console-v1');
+    shellStore.set('activeModuleId', 'character-console');
+  }
+
+  moduleManager.mountInitial();
+}
+
+bootApplication();
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
   window.addEventListener('load', () => {
@@ -540,6 +601,10 @@ window.__APP_BASE__ = {
   turnStepper,
   narrative,
   assets,
+  statRules,
+  inventory,
+  resources,
+  logs,
   uiKit,
   modules: moduleManager,
 };
