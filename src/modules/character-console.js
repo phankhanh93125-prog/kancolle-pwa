@@ -73,6 +73,9 @@ export const DEFAULT_CHARACTER_TEMPLATES = [
       ap: 90,
       maxAp: 100,
       affinity: 52,
+      level: 1,
+      exp: 0,
+      maxExp: 100,
     },
     statBounds: {
       hp: { min: 0, max: 300 },
@@ -107,6 +110,9 @@ export const DEFAULT_CHARACTER_TEMPLATES = [
       ap: 90,
       maxAp: 100,
       affinity: 42,
+      level: 1,
+      exp: 0,
+      maxExp: 100,
     },
     statBounds: {
       hp: { min: 0, max: 300 },
@@ -141,6 +147,9 @@ export const DEFAULT_CHARACTER_TEMPLATES = [
       ap: 90,
       maxAp: 100,
       affinity: 38,
+      level: 1,
+      exp: 0,
+      maxExp: 100,
     },
     statBounds: {
       hp: { min: 0, max: 300 },
@@ -220,7 +229,10 @@ export async function hydrateCharacterRoster({ storage, entities, inventory, sta
   if (saved && Array.isArray(saved.characters) && saved.characters.length > 0) {
     for (const ch of saved.characters) {
       if (ch && ch.id) {
-        entities.register({ ...ch, kind: 'character' });
+        const reg = entities.register({ ...ch, kind: 'character' });
+        if (statRules && typeof statRules.ensureShipProgression === 'function') {
+          statRules.ensureShipProgression(reg);
+        }
       }
     }
     inventory.syncAllCharacters();
@@ -245,7 +257,10 @@ export async function hydrateCharacterRoster({ storage, entities, inventory, sta
 
   // First boot: seed 3 seaworthy starter shipgirls equipped with engine/armor/core + 1 sample custom module
   for (const tpl of DEFAULT_CHARACTER_TEMPLATES) {
-    entities.register(tpl);
+    const reg = entities.register(tpl);
+    if (statRules && typeof statRules.ensureShipProgression === 'function') {
+      statRules.ensureShipProgression(reg);
+    }
   }
   await equipStarterCorePartsIfPresent(inventory, 'char_template_01', true);
   await equipStarterCorePartsIfPresent(inventory, 'char_template_02', false);
@@ -509,6 +524,10 @@ function openCharacterEditorSheet(existingChar = null) {
   const isEdit = Boolean(existingChar);
   const rulesCfg = statRules.getConfig();
   const initialAffBonus = commander ? commander.getInitialAffinityBonus() : 0;
+  const initialProg = existingChar
+    ? statRules.ensureShipProgression(existingChar)
+    : { level: 1, exp: 0, maxExp: statRules.getShipMaxExp(1) };
+  let originalLevel = initialProg.level;
 
   const draft = existingChar
     ? {
@@ -518,7 +537,12 @@ function openCharacterEditorSheet(existingChar = null) {
         avatarAssetId: existingChar.meta?.avatarAssetId || null,
         personality: existingChar.meta?.personality || '',
         speechHabit: existingChar.meta?.speechHabit || '',
-        stats: { ...existingChar.stats },
+        stats: {
+          ...existingChar.stats,
+          level: initialProg.level,
+          exp: initialProg.exp,
+          maxExp: initialProg.maxExp,
+        },
       }
     : {
         name: '',
@@ -541,6 +565,9 @@ function openCharacterEditorSheet(existingChar = null) {
           ap: 100,
           maxAp: 100,
           affinity: clamp(20 + initialAffBonus, 0, 100),
+          level: 1,
+          exp: 0,
+          maxExp: statRules.getShipMaxExp(1),
         },
       };
 
@@ -558,9 +585,16 @@ function openCharacterEditorSheet(existingChar = null) {
     for (const def of NAVAL_EIGHT_STAT_DEFS) {
       const v = Number(formWrap.querySelector(`#cc-f-stat-${def.key}`).value);
       const minB = def.isVital ? 20 : rulesCfg.statMin;
-      const maxB = def.isVital ? 500 : rulesCfg.statMax;
+      const maxB = def.isVital ? 999 : rulesCfg.statMax;
       draft.stats[def.key] = clamp(Number.isFinite(v) ? v : def.defaultValue, minB, maxB);
     }
+    const lvInput = formWrap.querySelector('#cc-f-level');
+    const expInput = formWrap.querySelector('#cc-f-exp');
+    const lvVal = clamp(Math.floor(Number(lvInput?.value) || 1), 1, rulesCfg.shipLevelMax);
+    draft.stats.level = lvVal;
+    draft.stats.maxExp = statRules.getShipMaxExp(lvVal);
+    draft.stats.exp = clamp(Math.floor(Number(expInput?.value) || 0), 0, Math.max(0, draft.stats.maxExp - 1));
+
     draft.stats.affinity = clamp(Number(formWrap.querySelector('#cc-f-affinity').value) || 0, 0, 100);
     const hpVal = clamp(Number(formWrap.querySelector('#cc-f-hp').value) || 0, 0, 999);
     const apVal = clamp(Number(formWrap.querySelector('#cc-f-ap').value) || 0, 0, 999);
@@ -611,6 +645,28 @@ function openCharacterEditorSheet(existingChar = null) {
         <input id="cc-f-role" class="form-input" type="text" value="${escapeHtml(draft.roleTag)}" placeholder="例如：防空护航型 / 夜战突击型">
       </div>
 
+      <div class="surface-card lab-stack-sm" style="padding:10px;">
+        <div class="section-header-row" style="margin-bottom:0;">
+          <strong style="font-size:13px;">等级与经验调试（自动按成长曲线结算白值）</strong>
+          <span class="status-badge ship-lv-badge">Lv.${draft.stats.level}</span>
+        </div>
+        <div class="lab-kv-grid">
+          <div class="form-group">
+            <label class="form-label" for="cc-f-level">舰娘等级 (1~${rulesCfg.shipLevelMax})</label>
+            <input id="cc-f-level" class="form-input" type="number" min="1" max="${rulesCfg.shipLevelMax}" value="${draft.stats.level}">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="cc-f-exp">当前经验 (上限 ${draft.stats.maxExp})</label>
+            <input id="cc-f-exp" class="form-input" type="number" min="0" max="${Math.max(0, draft.stats.maxExp - 1)}" value="${draft.stats.exp}">
+          </div>
+        </div>
+        ${
+          isEdit
+            ? `<button type="button" id="btn-cc-debug-grant-exp" class="btn-secondary uikit-touch-target">调试注入 +120 经验（立即结算升级成长）</button>`
+            : ''
+        }
+      </div>
+
       <div class="form-group">
         <span class="form-label">舰娘白值八维属性（不含装备/模块加成）</span>
         <div class="lab-kv-grid">
@@ -618,7 +674,7 @@ function openCharacterEditorSheet(existingChar = null) {
             (def) => `
             <div class="form-group">
               <label class="form-label" for="cc-f-stat-${def.key}">${escapeHtml(def.label)}</label>
-              <input id="cc-f-stat-${def.key}" class="form-input" type="number" min="${def.isVital ? 20 : rulesCfg.statMin}" max="${def.isVital ? 500 : rulesCfg.statMax}" value="${Number(draft.stats[def.key] ?? def.defaultValue)}">
+              <input id="cc-f-stat-${def.key}" class="form-input" type="number" min="${def.isVital ? 20 : rulesCfg.statMin}" max="${def.isVital ? 999 : rulesCfg.statMax}" value="${Number(draft.stats[def.key] ?? def.defaultValue)}">
             </div>
           `
           ).join('')}
@@ -663,6 +719,30 @@ function openCharacterEditorSheet(existingChar = null) {
       });
     });
 
+    const dbgExpBtn = formWrap.querySelector('#btn-cc-debug-grant-exp');
+    if (dbgExpBtn && isEdit) {
+      dbgExpBtn.addEventListener('click', async () => {
+        const res = statRules.grantShipExp(entities, existingChar.id, 120, {
+          reason: '角色编辑调试经验注入',
+          inventory,
+        });
+        if (res) {
+          const fresh = entities.get(existingChar.id);
+          draft.stats = { ...fresh.stats };
+          originalLevel = fresh.stats.level;
+          await saveRosterNow();
+          uiKit.showToast(
+            res.leveledUp
+              ? `★ ${res.characterName} 升级至 Lv.${res.afterLevel}！白值已自动成长`
+              : `${res.characterName} 获得 +${res.amount} EXP (${res.exp}/${res.maxExp})`,
+            'ok'
+          );
+          await renderForm();
+          await renderConsole();
+        }
+      });
+    }
+
     formWrap.querySelector('#btn-cc-upload-avatar').addEventListener('click', async () => {
       syncInputsToDraft();
       const file = await assets.pickImageFromDevice();
@@ -696,7 +776,7 @@ function openCharacterEditorSheet(existingChar = null) {
 
   uiKit.openBottomSheet({
     title: isEdit ? `编辑舰娘 · ${existingChar.name}` : '新建自定义舰娘角色',
-    subtitle: '默认配置「引擎 / 装甲 / 核心」三个必装槽位，可自由扩展自定义模块槽',
+    subtitle: '默认配置「引擎 / 装甲 / 核心」三个必装槽位，可自由扩展自定义模块槽并调试等级',
     content: formWrap,
     actions: [
       { id: 'cancel', label: '取消', tone: 'secondary' },
@@ -715,14 +795,23 @@ function openCharacterEditorSheet(existingChar = null) {
             ? (existingChar.modifiers || []).filter((m) => !String(m.id || '').startsWith('inv_eq_'))
             : [];
 
+          const targetLv = draft.stats.level;
+          const targetExp = draft.stats.exp;
+          const baseStatsForReg = { ...draft.stats };
+          if (isEdit && targetLv !== originalLevel) {
+            // Let setShipLevelManual compute clean growth delta from originalLevel -> targetLv
+            baseStatsForReg.level = originalLevel;
+            baseStatsForReg.maxExp = statRules.getShipMaxExp(originalLevel);
+          }
+
           entities.register({
             id: charId,
             kind: 'character',
             name: draft.name,
             tags: [draft.shipType, draft.roleTag || '自定义'].filter(Boolean),
-            stats: { ...draft.stats },
+            stats: baseStatsForReg,
             statBounds: {
-              hp: { min: 0, max: 500 },
+              hp: { min: 0, max: 999 },
               morale: { min: 0, max: 100 },
               ap: { min: 0, max: draft.stats.maxAp },
               affinity: { min: 0, max: 100 },
@@ -739,25 +828,46 @@ function openCharacterEditorSheet(existingChar = null) {
 
           if (!isEdit) {
             await equipStarterCorePartsIfPresent(inventory, charId, false);
+            if (targetLv > 1) {
+              statRules.setShipLevelManual(entities, charId, targetLv, {
+                exp: targetExp,
+                inventory,
+                applyGrowthDelta: true,
+              });
+            }
             const effMaxHp = Math.round(entities.getEffectiveStat(charId, 'maxHp', { round: 'round' }).final);
             entities.setStat(charId, 'hp', effMaxHp, { min: 0, max: effMaxHp });
           } else {
-            inventory.syncCharacterModifiers(charId);
+            if (targetLv !== originalLevel) {
+              statRules.setShipLevelManual(entities, charId, targetLv, {
+                exp: targetExp,
+                inventory,
+                applyGrowthDelta: true,
+              });
+            } else {
+              inventory.syncCharacterModifiers(charId);
+            }
           }
 
           consoleState.activeCharacterId = charId;
           consoleState.avatarUrlCache.clear();
           await saveRosterNow();
 
+          const savedEntity = entities.get(charId);
           logs.add({
             category: LOG_CATEGORIES.CHARACTER,
             actorId: charId,
             actorName: draft.name,
-            title: isEdit ? `更新角色「${draft.name}」资料` : `新建舰娘「${draft.name}」(${draft.shipType})`,
-            detail: `八维：耐${draft.stats.maxHp}/火${draft.stats.firepower}/甲${draft.stats.armor}/雷${draft.stats.torpedo}/机${draft.stats.evasion}/侦${draft.stats.recon}/防${draft.stats.aa}/潜${draft.stats.asw}`,
+            title: isEdit ? `更新角色「${draft.name}」资料 (Lv.${savedEntity.stats.level})` : `新建舰娘「${draft.name}」(${draft.shipType})`,
+            detail: `Lv.${savedEntity.stats.level} · 八维：耐${savedEntity.stats.maxHp}/火${savedEntity.stats.firepower}/甲${savedEntity.stats.armor}/雷${savedEntity.stats.torpedo}/机${savedEntity.stats.evasion}/侦${savedEntity.stats.recon}/防${savedEntity.stats.aa}/潜${savedEntity.stats.asw}`,
           });
           bus.emit('character:saved', { characterId: charId, name: draft.name, isEdit });
-          uiKit.showToast(isEdit ? `已保存角色：${draft.name}` : `已创建舰娘：${draft.name}（${draft.shipType}）`, 'ok');
+          uiKit.showToast(
+            isEdit
+              ? `已保存角色：${draft.name}（Lv.${savedEntity.stats.level}）`
+              : `已创建舰娘：${draft.name}（${draft.shipType} · Lv.${savedEntity.stats.level}）`,
+            'ok'
+          );
           await renderConsole();
           return true;
         },
@@ -1032,11 +1142,34 @@ function openStatRulesSheet() {
         <input id="rule-rec-ap" class="form-input" type="number" step="0.1" min="0" value="${cfg.offlineRecoveryPerMin.ap}">
       </div>
     </div>
+
+    <div class="lab-divider"></div>
+    <strong style="font-size:13px;">舰娘等级经验曲线与每级白值成长（可配置）</strong>
+    <div class="lab-kv-grid">
+      <div class="form-group">
+        <label class="form-label" for="rule-exp-base">Lv.1 升级基础经验</label>
+        <input id="rule-exp-base" class="form-input" type="number" min="10" max="5000" value="${cfg.shipExpBase}">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="rule-exp-step">每级递增经验步长</label>
+        <input id="rule-exp-step" class="form-input" type="number" min="0" max="2000" value="${cfg.shipExpStep}">
+      </div>
+    </div>
+    <div class="lab-kv-grid">
+      ${NAVAL_EIGHT_STAT_DEFS.map(
+        (d) => `
+        <div class="form-group">
+          <label class="form-label" for="rule-grow-${d.key}">每级 ${escapeHtml(d.label)} +</label>
+          <input id="rule-grow-${d.key}" class="form-input" type="number" min="0" max="30" step="1" value="${Number(cfg.shipGrowthPerLevel?.[d.key] ?? 1)}">
+        </div>
+      `
+      ).join('')}
+    </div>
   `;
 
   uiKit.openBottomSheet({
     title: '数值规则设置',
-    subtitle: '通用 1D20 检定公式与离线恢复参数',
+    subtitle: '通用 1D20 检定公式、离线恢复与舰娘升级成长曲线参数',
     content: wrap,
     actions: [
       {
@@ -1054,6 +1187,10 @@ function openStatRulesSheet() {
         label: '保存规则',
         tone: 'primary',
         onClick: async () => {
+          const shipGrowthPerLevel = {};
+          for (const d of NAVAL_EIGHT_STAT_DEFS) {
+            shipGrowthPerLevel[d.key] = Number(wrap.querySelector(`#rule-grow-${d.key}`).value);
+          }
           statRules.updateConfig({
             statModifierStep: Number(wrap.querySelector('#rule-step').value),
             critMarginThreshold: Number(wrap.querySelector('#rule-crit-margin').value),
@@ -1066,8 +1203,11 @@ function openStatRulesSheet() {
               morale: Number(wrap.querySelector('#rule-rec-morale').value),
               ap: Number(wrap.querySelector('#rule-rec-ap').value),
             },
+            shipExpBase: Number(wrap.querySelector('#rule-exp-base').value),
+            shipExpStep: Number(wrap.querySelector('#rule-exp-step').value),
+            shipGrowthPerLevel,
           });
-          uiKit.showToast('数值规则系数已更新并保存', 'ok');
+          uiKit.showToast('数值规则与舰娘成长曲线已更新并保存', 'ok');
           await renderConsole();
         },
       },
@@ -1939,6 +2079,7 @@ async function renderConsole() {
   if (!char) return;
 
   const avatarUrl = await resolveAvatarUrl(char);
+  const prog = statRules.ensureShipProgression(char);
   const effStats = entities.getEffectiveStats(char.id, { round: 'round' });
   const eqBonuses = inventory.getCharacterEquipmentBonuses(char.id);
   const overallScore = statRules.computeOverallScore(effStats, eqBonuses.checkBonus);
@@ -1962,16 +2103,17 @@ async function renderConsole() {
   for (const c of roster) {
     const sw = inventory.checkSeaworthiness(c.id);
     const disp = expeditions ? expeditions.isCharacterDispatched(c.id) : false;
+    const cProg = statRules.ensureShipProgression(c);
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = `cc-roster-chip ${c.id === char.id ? 'is-active' : ''}`;
     chip.dataset.selectChar = c.id;
     const typeTag = c.meta?.shipType ? `[${c.meta.shipType}] ` : '';
     chip.textContent = disp
-      ? `${typeTag}${c.name} (远征中)`
+      ? `${typeTag}${c.name} Lv.${cProg.level} (远征中)`
       : sw.seaworthy
-      ? `${typeTag}${c.name}`
-      : `${typeTag}${c.name} (未适航)`;
+      ? `${typeTag}${c.name} Lv.${cProg.level}`
+      : `${typeTag}${c.name} Lv.${cProg.level} (未适航)`;
     chip.addEventListener('click', async () => {
       consoleState.activeCharacterId = c.id;
       await saveRosterNow();
@@ -1999,6 +2141,7 @@ async function renderConsole() {
       <div class="cc-hero-info">
         <div class="cc-hero-name-row">
           <h2 class="cc-hero-name" id="cc-active-name">${escapeHtml(char.name)}</h2>
+          <span class="status-badge ship-lv-badge" id="cc-level-badge">Lv.${prog.level}</span>
           <span class="status-badge badge-ok" id="cc-overall-score">评分 ${overallScore}</span>
         </div>
         <div class="cc-badge-row">
@@ -2031,6 +2174,14 @@ async function renderConsole() {
   const barsMount = heroCard.querySelector('#cc-dynamic-bars');
   const maxHp = Math.max(1, Math.round(Number(effStats.maxHp ?? char.stats.maxHp ?? 100)));
   const maxAp = Number(char.stats.maxAp ?? 100);
+  const expBar = uiKit.createProgressBar({
+    label: `等级经验 (Lv.${prog.level} · EXP ${prog.exp}/${prog.maxExp})`,
+    value: prog.exp,
+    max: prog.maxExp,
+    tone: 'ok',
+  });
+  expBar.element.id = 'cc-exp-bar';
+  barsMount.appendChild(expBar.element);
   barsMount.appendChild(
     uiKit.createProgressBar({
       label: '耐久 (HP)',
@@ -2115,7 +2266,7 @@ async function renderConsole() {
 export default {
   id: 'character-console',
   name: '角色控制台',
-  description: '角色管理、三核心必装槽适航校验、完全自由的自定义槽位建造器、五维面板、1D20 检定、六项资源与行动日志控制台。',
+  description: '角色管理、舰娘等级经验成长、三核心必装槽适航校验、完全自由自定义槽位、八维面板与 1D20 检定控制台。',
 
   mount(container, context) {
     consoleState.container = container;
@@ -2171,6 +2322,8 @@ export default {
     consoleState.unsubs = [
       context.bus.on('stat-rules:changed', () => renderConsole()),
       context.bus.on('action:settled', () => renderConsole()),
+      context.bus.on('character:exp-gained', () => renderConsole()),
+      context.bus.on('character:leveled-up', () => renderConsole()),
       context.bus.on('inventory:equipped', () => renderConsole()),
       context.bus.on('inventory:unequipped', () => renderConsole()),
       context.bus.on('inventory:slot-added', () => renderConsole()),

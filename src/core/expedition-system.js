@@ -81,13 +81,24 @@ export class ExpeditionSystem {
    *   bus?: import('./event-bus.js').EventBus | null
    * }} deps
    */
-  constructor({ storage, entities, inventory, resources, commander, logs = null, formation = null, bus = null }) {
+  constructor({
+    storage,
+    entities,
+    inventory,
+    resources,
+    commander,
+    statRules = null,
+    logs = null,
+    formation = null,
+    bus = null,
+  }) {
     this._storage = storage;
     this._scope = storage.namespace(STORAGE_NS);
     this._entities = entities;
     this._inventory = inventory;
     this._resources = resources;
     this._commander = commander;
+    this._statRules = statRules;
     this._logs = logs;
     this._formation = formation;
     this._bus = bus;
@@ -283,11 +294,20 @@ export class ExpeditionSystem {
       grantedRewards[resId] = amount;
     }
 
-    // Grant Shipgirl affinity (scaled by Commander `affinity`)
+    // Grant Shipgirl affinity (scaled by Commander `affinity`) and Shipgirl EXP
     const affDelta = Math.max(1, Math.round((run.affinityGain || 2) * affMult));
+    const shipExpGain = Math.max(20, Math.round((run.commanderExp || 25) * 1.4));
+    const shipExpResults = [];
     for (const cid of run.characterIds || []) {
       if (this._entities?.has(cid)) {
         this._entities.adjustStat(cid, 'affinity', affDelta, { min: 0, max: 100 });
+        if (this._statRules && typeof this._statRules.grantShipExp === 'function') {
+          const res = this._statRules.grantShipExp(this._entities, cid, shipExpGain, {
+            reason: `远征完成：${run.missionName}`,
+            inventory: this._inventory,
+          });
+          if (res) shipExpResults.push(res);
+        }
       }
     }
 
@@ -305,12 +325,16 @@ export class ExpeditionSystem {
     const rewardSummary = Object.entries(grantedRewards)
       .map(([k, v]) => `${this._resources.get(k)?.name || k} +${v}`)
       .join('、');
+    const levelUpText = shipExpResults
+      .filter((r) => r.leveledUp)
+      .map((r) => `${r.characterName} Lv.${r.afterLevel}`)
+      .join('、');
 
     if (this._logs) {
       this._logs.add({
         category: LOG_CATEGORIES.RESOURCE,
         title: `远征归港领取：${run.missionName}`,
-        detail: `调度加成 x${dispatchMult.toFixed(2)} | 获得：${rewardSummary} | 指挥官经验 +${run.commanderExp}`,
+        detail: `调度加成 x${dispatchMult.toFixed(2)} | 获得：${rewardSummary} | 指挥官经验 +${run.commanderExp} | 舰娘经验 +${shipExpGain}${levelUpText ? `（升级：${levelUpText}）` : ''}`,
       });
     }
 
@@ -320,6 +344,8 @@ export class ExpeditionSystem {
       dispatchMultiplier: dispatchMult,
       affinityGain: affDelta,
       commanderExp: run.commanderExp,
+      shipExpGain,
+      shipExpResults,
       leveledUp: Boolean(expResult?.leveledUp),
       timestamp: Date.now(),
     };

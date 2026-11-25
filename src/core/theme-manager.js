@@ -27,8 +27,9 @@ export const THEME_PRESETS = Object.freeze([
     vars: {
       '--bg-canvas': '#080b10',
       '--bg-app': '#0d121a',
-      '--bg-surface': 'rgba(21, 28, 39, 0.88)',
-      '--bg-surface-elevated': 'rgba(30, 40, 56, 0.94)',
+      '--bg-surface': 'rgba(21, 28, 39, 0.92)',
+      '--bg-surface-elevated': 'rgba(30, 40, 56, 0.96)',
+      '--surface-elevated': '#1e2838',
       '--bg-input': '#101620',
       '--border-subtle': 'rgba(148, 163, 184, 0.16)',
       '--border-strong': 'rgba(148, 163, 184, 0.30)',
@@ -43,6 +44,15 @@ export const THEME_PRESETS = Object.freeze([
       '--warn-soft': 'rgba(245, 158, 11, 0.15)',
       '--danger': '#f87171',
       '--danger-soft': 'rgba(239, 68, 68, 0.16)',
+      '--banner-bg': '#172233',
+      '--banner-text': '#f8fafc',
+      '--banner-border': 'rgba(45, 212, 191, 0.48)',
+      '--banner-shadow': '0 10px 28px rgba(0, 0, 0, 0.42)',
+      '--overlay-pill-bg': '#131c2a',
+      '--overlay-pill-text': '#f8fafc',
+      '--status-ok-text': '#2dd4bf',
+      '--status-warn-text': '#fbbf24',
+      '--status-danger-text': '#fca5a5',
     },
     defaultTexture: 'grid',
     themeColor: '#0d121a',
@@ -55,22 +65,32 @@ export const THEME_PRESETS = Object.freeze([
     vars: {
       '--bg-canvas': '#dbeafe',
       '--bg-app': '#f0f7ff',
-      '--bg-surface': 'rgba(255, 255, 255, 0.92)',
-      '--bg-surface-elevated': 'rgba(241, 247, 255, 0.98)',
+      '--bg-surface': 'rgba(255, 255, 255, 0.95)',
+      '--bg-surface-elevated': '#eef6ff',
+      '--surface-elevated': '#ffffff',
       '--bg-input': '#f8fbff',
-      '--border-subtle': 'rgba(15, 23, 42, 0.10)',
-      '--border-strong': 'rgba(2, 132, 199, 0.28)',
+      '--border-subtle': 'rgba(15, 23, 42, 0.12)',
+      '--border-strong': 'rgba(2, 132, 199, 0.34)',
       '--text-primary': '#0f172a',
       '--text-secondary': '#334155',
-      '--text-muted': '#64748b',
+      '--text-muted': '#475569',
       '--accent': '#0284c7',
       '--accent-hover': '#0369a1',
       '--accent-ink': '#ffffff',
       '--accent-soft': 'rgba(2, 132, 199, 0.13)',
-      '--warn': '#d97706',
-      '--warn-soft': 'rgba(217, 119, 6, 0.13)',
+      '--warn': '#b45309',
+      '--warn-soft': 'rgba(217, 119, 6, 0.15)',
       '--danger': '#dc2626',
-      '--danger-soft': 'rgba(220, 38, 38, 0.12)',
+      '--danger-soft': 'rgba(220, 38, 38, 0.13)',
+      '--banner-bg': '#ffffff',
+      '--banner-text': '#0f172a',
+      '--banner-border': 'rgba(2, 132, 199, 0.55)',
+      '--banner-shadow': '0 10px 26px rgba(15, 23, 42, 0.16)',
+      '--overlay-pill-bg': '#ffffff',
+      '--overlay-pill-text': '#0f172a',
+      '--status-ok-text': '#0369a1',
+      '--status-warn-text': '#b45309',
+      '--status-danger-text': '#b91c1c',
     },
     defaultTexture: 'waves',
     themeColor: '#f0f7ff',
@@ -83,22 +103,32 @@ export const THEME_PRESETS = Object.freeze([
     vars: {
       '--bg-canvas': '#f3e5d0',
       '--bg-app': '#fdf7ee',
-      '--bg-surface': 'rgba(255, 252, 246, 0.94)',
-      '--bg-surface-elevated': 'rgba(253, 243, 227, 0.98)',
+      '--bg-surface': 'rgba(255, 252, 246, 0.96)',
+      '--bg-surface-elevated': '#fcf1df',
+      '--surface-elevated': '#fffdf9',
       '--bg-input': '#fffaf2',
-      '--border-subtle': 'rgba(120, 53, 15, 0.12)',
-      '--border-strong': 'rgba(217, 119, 6, 0.30)',
-      '--text-primary': '#291c12',
-      '--text-secondary': '#5c4330',
-      '--text-muted': '#8a6d56',
-      '--accent': '#d97706',
-      '--accent-hover': '#b45309',
+      '--border-subtle': 'rgba(120, 53, 15, 0.14)',
+      '--border-strong': 'rgba(180, 83, 9, 0.34)',
+      '--text-primary': '#23170d',
+      '--text-secondary': '#533b28',
+      '--text-muted': '#70553e',
+      '--accent': '#c2610c',
+      '--accent-hover': '#9a3412',
       '--accent-ink': '#ffffff',
-      '--accent-soft': 'rgba(217, 119, 6, 0.14)',
-      '--warn': '#ea580c',
-      '--warn-soft': 'rgba(234, 88, 12, 0.14)',
-      '--danger': '#dc2626',
-      '--danger-soft': 'rgba(220, 38, 38, 0.12)',
+      '--accent-soft': 'rgba(217, 119, 6, 0.15)',
+      '--warn': '#b45309',
+      '--warn-soft': 'rgba(234, 88, 12, 0.15)',
+      '--danger': '#b91c1c',
+      '--danger-soft': 'rgba(220, 38, 38, 0.13)',
+      '--banner-bg': '#fffdf9',
+      '--banner-text': '#23170d',
+      '--banner-border': 'rgba(194, 97, 12, 0.55)',
+      '--banner-shadow': '0 10px 26px rgba(120, 53, 15, 0.16)',
+      '--overlay-pill-bg': '#fffdf9',
+      '--overlay-pill-text': '#23170d',
+      '--status-ok-text': '#9a3412',
+      '--status-warn-text': '#b45309',
+      '--status-danger-text': '#b91c1c',
     },
     defaultTexture: 'dots',
     themeColor: '#fdf7ee',
@@ -111,14 +141,15 @@ export const THEME_PRESETS = Object.freeze([
     vars: {
       '--bg-canvas': '#090806',
       '--bg-app': '#110e0b',
-      '--bg-surface': 'rgba(27, 22, 17, 0.90)',
-      '--bg-surface-elevated': 'rgba(38, 31, 23, 0.96)',
+      '--bg-surface': 'rgba(27, 22, 17, 0.93)',
+      '--bg-surface-elevated': 'rgba(38, 31, 23, 0.97)',
+      '--surface-elevated': '#261f17',
       '--bg-input': '#15110d',
-      '--border-subtle': 'rgba(234, 179, 8, 0.16)',
-      '--border-strong': 'rgba(234, 179, 8, 0.34)',
+      '--border-subtle': 'rgba(234, 179, 8, 0.18)',
+      '--border-strong': 'rgba(234, 179, 8, 0.36)',
       '--text-primary': '#faf5e8',
       '--text-secondary': '#c6b698',
-      '--text-muted': '#8b7b60',
+      '--text-muted': '#968466',
       '--accent': '#eab308',
       '--accent-hover': '#facc15',
       '--accent-ink': '#1c1505',
@@ -127,6 +158,15 @@ export const THEME_PRESETS = Object.freeze([
       '--warn-soft': 'rgba(251, 146, 60, 0.16)',
       '--danger': '#f87171',
       '--danger-soft': 'rgba(239, 68, 68, 0.16)',
+      '--banner-bg': '#261f16',
+      '--banner-text': '#fdf7ea',
+      '--banner-border': 'rgba(234, 179, 8, 0.55)',
+      '--banner-shadow': '0 10px 28px rgba(0, 0, 0, 0.45)',
+      '--overlay-pill-bg': '#221b13',
+      '--overlay-pill-text': '#fdf7ea',
+      '--status-ok-text': '#facc15',
+      '--status-warn-text': '#fb923c',
+      '--status-danger-text': '#fca5a5',
     },
     defaultTexture: 'grid',
     themeColor: '#110e0b',
@@ -144,13 +184,34 @@ function deepClone(v) {
   return JSON.parse(JSON.stringify(v ?? null));
 }
 
-function hexToRgba(hex, alpha = 0.16) {
+function hexToRgb(hex) {
   const clean = String(hex || '').replace('#', '').trim();
-  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return `rgba(20, 184, 166, ${alpha})`;
-  const r = parseInt(clean.slice(0, 2), 16);
-  const g = parseInt(clean.slice(2, 4), 16);
-  const b = parseInt(clean.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return null;
+  return {
+    r: parseInt(clean.slice(0, 2), 16),
+    g: parseInt(clean.slice(2, 4), 16),
+    b: parseInt(clean.slice(4, 6), 16),
+  };
+}
+
+function hexToRgba(hex, alpha = 0.16) {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return `rgba(20, 184, 166, ${alpha})`;
+  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
+}
+
+/**
+ * Pick readable ink color (#0f172a vs #ffffff) for any custom accent hex color using WCAG relative luminance.
+ */
+function pickContrastInk(hex) {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return '#ffffff';
+  const toLin = (c) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const lum = 0.2126 * toLin(rgb.r) + 0.7152 * toLin(rgb.g) + 0.0722 * toLin(rgb.b);
+  return lum > 0.42 ? '#0f172a' : '#ffffff';
 }
 
 function createDefaultThemeState() {
@@ -266,6 +327,8 @@ export class ThemeManager {
     if (this._state.customAccent) {
       root.style.setProperty('--accent', this._state.customAccent);
       root.style.setProperty('--accent-soft', hexToRgba(this._state.customAccent, 0.15));
+      root.style.setProperty('--accent-ink', pickContrastInk(this._state.customAccent));
+      root.style.setProperty('--banner-border', hexToRgba(this._state.customAccent, 0.55));
     }
     if (this._state.customHighlight) {
       root.style.setProperty('--accent-hover', this._state.customHighlight);

@@ -151,8 +151,9 @@ export class ModuleManager {
   /**
    * Mount and activate a registered module by id.
    * @param {string} id
+   * @param {{ transition?: 'left' | 'right' | null }} [options]
    */
-  mount(id) {
+  mount(id, { transition = null } = {}) {
     const mod = this._registry.get(id);
     if (!mod) {
       throw new Error(`Module "${id}" is not registered`);
@@ -174,6 +175,13 @@ export class ModuleManager {
     this._activeModule = mod;
     this._shellStore.set('activeModuleId', mod.id);
 
+    this._stage.classList.remove('stage-slide-left', 'stage-slide-right');
+    if (transition === 'left' || transition === 'right') {
+      void this._stage.offsetWidth;
+      this._stage.classList.add(transition === 'left' ? 'stage-slide-left' : 'stage-slide-right');
+    }
+    this._stage.scrollTop = 0;
+
     try {
       mod.mount(this._stage, context);
     } catch (err) {
@@ -191,21 +199,21 @@ export class ModuleManager {
       id: mod.id,
       name: mod.name,
       description: mod.description,
+      transition,
     });
     return mod;
   }
 
   /**
-   * Mount the previously active module (or pinned default module), falling back to the first registered module.
+   * Mount the user-pinned default module if set, otherwise strictly boot into Port Hub (first registered module).
    */
   mountInitial() {
     const defaultId = this.getDefaultModuleId();
     if (defaultId && this._registry.has(defaultId)) {
       return this.mount(defaultId);
     }
-    const savedId = this.getSavedModuleId();
-    if (savedId && this._registry.has(savedId)) {
-      return this.mount(savedId);
+    if (this._registry.has('port-hub')) {
+      return this.mount('port-hub');
     }
     const first = this._registry.values().next().value;
     if (first) {

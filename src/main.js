@@ -83,6 +83,7 @@ const expeditions = new ExpeditionSystem({
   inventory,
   resources,
   commander,
+  statRules,
   logs,
   formation,
   bus,
@@ -151,6 +152,7 @@ const uiKit = createUIKit();
 
 const els = {
   activeModuleName: document.getElementById('active-module-name'),
+  moduleNavStrip: document.getElementById('module-nav-strip'),
   stage: document.getElementById('app-stage'),
   quickActionsSlot: document.getElementById('quick-actions-slot'),
   inputForm: document.getElementById('universal-input-form'),
@@ -291,11 +293,169 @@ const moduleManager = new ModuleManager({
   },
 });
 
+function isAnyModalOpen() {
+  if (els.sheetBackdrop && !els.sheetBackdrop.hidden) return true;
+  const uiBackdrops = document.querySelectorAll('.uikit-sheet-backdrop');
+  for (const bd of uiBackdrops) {
+    if (!bd.hidden && !bd.closest('[hidden]') && window.getComputedStyle(bd).display !== 'none') {
+      return true;
+    }
+  }
+  const dialogs = document.querySelectorAll('[role="dialog"]');
+  for (const dlg of dialogs) {
+    if (!dlg.hidden && !dlg.closest('[hidden]') && window.getComputedStyle(dlg).display !== 'none') {
+      return true;
+    }
+  }
+  return false;
+}
+
+function renderModuleNavStrip(activeId = null) {
+  if (!els.moduleNavStrip) return;
+  const list = moduleManager.list();
+  const curId = activeId || moduleManager.getActive()?.id || list[0]?.id;
+  els.moduleNavStrip.innerHTML = '';
+
+  for (const mod of list) {
+    const isAct = mod.id === curId;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `module-nav-pill ${isAct ? 'is-active' : ''}`.trim();
+    btn.dataset.navModule = mod.id;
+    btn.textContent = mod.name;
+    if (isAct) btn.setAttribute('aria-current', 'page');
+    btn.addEventListener('click', () => {
+      if (mod.id === moduleManager.getActive()?.id) return;
+      const curIdx = list.findIndex((m) => m.id === moduleManager.getActive()?.id);
+      const nextIdx = list.findIndex((m) => m.id === mod.id);
+      const dir = curIdx >= 0 && nextIdx >= 0 ? (nextIdx > curIdx ? 'left' : 'right') : null;
+      moduleManager.mount(mod.id, { transition: dir });
+    });
+    els.moduleNavStrip.appendChild(btn);
+  }
+
+  const activePill = els.moduleNavStrip.querySelector('.module-nav-pill.is-active');
+  if (activePill && typeof activePill.scrollIntoView === 'function') {
+    activePill.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+  }
+}
+
+function hasHorizontallyScrollableAncestor(target, boundary) {
+  let node = target instanceof Element ? target : null;
+  while (node && node !== boundary && node !== document.body) {
+    if (node.dataset?.noSwipe === 'true') return true;
+    const tag = node.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'OPTION') return true;
+    const style = window.getComputedStyle(node);
+    const ox = style.overflowX;
+    if ((ox === 'auto' || ox === 'scroll') && node.scrollWidth > node.clientWidth + 4) {
+      return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
+}
+
+function attachStageSwipeNavigation() {
+  if (!els.stage) return;
+  let touchState = null;
+
+  els.stage.addEventListener(
+    'touchstart',
+    (e) => {
+      if (isAnyModalOpen()) {
+        touchState = null;
+        return;
+      }
+      if (!e.touches || e.touches.length !== 1) {
+        touchState = null;
+        return;
+      }
+      if (hasHorizontallyScrollableAncestor(e.target, els.stage)) {
+        touchState = null;
+        return;
+      }
+      const t = e.touches[0];
+      touchState = {
+        startX: t.clientX,
+        startY: t.clientY,
+        lastX: t.clientX,
+        lastY: t.clientY,
+        startedAt: Date.now(),
+        cancelled: false,
+      };
+    },
+    { passive: true }
+  );
+
+  els.stage.addEventListener(
+    'touchmove',
+    (e) => {
+      if (!touchState || touchState.cancelled) return;
+      if (isAnyModalOpen() || !e.touches || e.touches.length !== 1) {
+        touchState.cancelled = true;
+        return;
+      }
+      const t = e.touches[0];
+      touchState.lastX = t.clientX;
+      touchState.lastY = t.clientY;
+    },
+    { passive: true }
+  );
+
+  els.stage.addEventListener(
+    'touchcancel',
+    () => {
+      touchState = null;
+    },
+    { passive: true }
+  );
+
+  els.stage.addEventListener(
+    'touchend',
+    (e) => {
+      if (!touchState || touchState.cancelled || isAnyModalOpen()) {
+        touchState = null;
+        return;
+      }
+      const changed = e.changedTouches && e.changedTouches[0];
+      const endX = changed ? changed.clientX : touchState.lastX;
+      const endY = changed ? changed.clientY : touchState.lastY;
+      const dx = endX - touchState.startX;
+      const dy = endY - touchState.startY;
+      touchState = null;
+
+      // Strict anti-mistouch guards:
+      // 1) Vertical scroll dominant (|deltaY| >= |deltaX|) -> ignore
+      // 2) Horizontal distance < 60px -> ignore
+      if (Math.abs(dy) >= Math.abs(dx)) return;
+      if (Math.abs(dx) < 60) return;
+
+      const list = moduleManager.list();
+      const curId = moduleManager.getActive()?.id;
+      const curIdx = list.findIndex((m) => m.id === curId);
+      if (curIdx < 0) return;
+
+      if (dx <= -60 && curIdx < list.length - 1) {
+        // Swipe left -> Next module
+        moduleManager.mount(list[curIdx + 1].id, { transition: 'left' });
+      } else if (dx >= 60 && curIdx > 0) {
+        // Swipe right -> Previous module
+        moduleManager.mount(list[curIdx - 1].id, { transition: 'right' });
+      }
+    },
+    { passive: true }
+  );
+}
+
 bus.on('module:changed', (mod) => {
   els.activeModuleName.textContent = mod.name;
+  renderModuleNavStrip(mod.id);
 });
 
 moduleManager.registerAll(REGISTERED_MODULES);
+renderModuleNavStrip();
+attachStageSwipeNavigation();
 
 // ------------------------------------------------------------
 // 5. Bottom Sheet Modal Controller
@@ -889,7 +1049,7 @@ function openThemeSheet() {
         fxStage.setHapticsEnabled(e.target.checked);
       });
       body.querySelector('#btn-fx-test-sfx').addEventListener('click', () => {
-        fxStage.playEffect('dice-roll', { roll: 18, total: 22, dc: 14, outcome: 'success', outcomeLabel: '成功' });
+        fxStage.playEffect('dice-roll', { naturalRoll: 18, total: 22, dc: 14, outcome: 'success', outcomeLabel: '成功' });
       });
 
       body.querySelectorAll('[data-layout-toggle]').forEach((chk) => {
@@ -1206,6 +1366,13 @@ async function bootApplication() {
   logs.attachBusListeners();
   fxStage.attachBusListeners();
 
+  // Auto-persist character roster whenever any shipgirl gains EXP or levels up (combat / sortie / expedition / debug)
+  const syncRosterOnProgression = () => {
+    persistCharacterRoster({ storage, entities }).catch(() => {});
+  };
+  bus.on('character:exp-gained', syncRosterOnProgression);
+  bus.on('character:leveled-up', syncRosterOnProgression);
+
   // Trigger Auto-Save snapshot whenever core engines, story packs, flags, theme, or resources mutate
   saves.bindAutoSaveEvents(
     [
@@ -1234,6 +1401,8 @@ async function bootApplication() {
       'inventory:slot-removed',
       'character:saved',
       'character:deleted',
+      'character:exp-gained',
+      'character:leveled-up',
       'resource:changed',
       'stat-rules:changed',
       'action:settled',
@@ -1254,13 +1423,7 @@ async function bootApplication() {
     { debounceMs: 180 }
   );
 
-  // One-time default home migration so Port Hub opens as default home screen
-  const shellStore = storage.namespace('core-shell');
-  if (shellStore.get('homeVersion', null) !== 'port-hub-v1') {
-    shellStore.set('homeVersion', 'port-hub-v1');
-    shellStore.set('activeModuleId', 'port-hub');
-  }
-
+  // Boot strictly into Port Hub by default (unless user explicitly pinned a custom default module)
   moduleManager.mountInitial();
 }
 

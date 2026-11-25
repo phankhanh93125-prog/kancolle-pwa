@@ -599,6 +599,29 @@ export class TacticalCombatEngine {
       }
     }
 
+    // 2.5 Award Shipgirl EXP on Combat Victory (with +20% flagship bonus)
+    const shipExpResults = [];
+    if (session.status === 'victory' && this._statRules && typeof this._statRules.grantShipExp === 'function') {
+      const baseShipExp =
+        session.nodeType === 'boss' ? 85 : session.nodeType === 'elite' ? 55 : 35;
+      for (const m of aliveMembers) {
+        const gain = m.isFlagship ? Math.round(baseShipExp * 1.2) : baseShipExp;
+        const expRes = this._statRules.grantShipExp(this._entities, m.id, gain, {
+          reason: `战术交战胜利：${enemy.name}`,
+          inventory: this._inventory,
+        });
+        if (expRes) {
+          shipExpResults.push(expRes);
+          if (expRes.leveledUp) {
+            chips.push({ text: `★ ${expRes.characterName} 升至 Lv.${expRes.afterLevel}`, negative: false });
+          }
+        }
+      }
+      if (shipExpResults.length > 0) {
+        chips.push({ text: `编队舰娘 EXP +${baseShipExp}`, negative: false });
+      }
+    }
+
     // 3. Render dual-track tactical report via PromptPipeline
     const extraText = extraEvents.length > 0 ? `（${extraEvents.join('；')}）` : '';
     const rendered = await this._narrative.run({

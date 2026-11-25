@@ -1506,6 +1506,7 @@ async function renderPortHub() {
     }
 
     const eqMap = inventory.getCharacterEquipment(secretary.id);
+    const secProg = statRules.ensureShipProgression(secretary);
     const outfitName = eqMap.outfit?.name || '日常港区便装';
     const seaworthyInfo = statRules.evaluateSeaworthiness(inventory, secretary.id);
     const isOathed = interaction.isOathed(secretary.id);
@@ -1539,6 +1540,7 @@ async function renderPortHub() {
         <div class="cc-hero-info">
           <div class="cc-hero-name-row">
             <h3 class="cc-hero-name" id="port-sec-name">${isOathed ? '★ ' : ''}${escapeHtml(secretary.name)}</h3>
+            <span class="status-badge ship-lv-badge" id="port-sec-level-badge">Lv.${secProg.level}</span>
             <span class="status-badge ${seaworthyInfo.seaworthy ? 'badge-ok' : 'badge-danger'}" id="port-seaworthy-badge">
               ${seaworthyInfo.seaworthy ? '适航' : '未适航'}
             </span>
@@ -1571,6 +1573,14 @@ async function renderPortHub() {
     `;
 
     const secBars = secCard.querySelector('#port-sec-bars');
+    const secExpBar = uiKit.createProgressBar({
+      label: `旗舰经验 (Lv.${secProg.level} · EXP ${secProg.exp}/${secProg.maxExp})`,
+      value: secProg.exp,
+      max: secProg.maxExp,
+      tone: 'ok',
+    });
+    secExpBar.element.id = 'port-sec-exp-bar';
+    secBars.appendChild(secExpBar.element);
     secBars.appendChild(
       uiKit.createProgressBar({
         label: isOathed ? `誓约好感度 (${curAff}/${maxAff})` : `好感阶段 · ${affStage.label} (${curAff}/${maxAff})`,
@@ -1864,6 +1874,8 @@ export default {
       context.bus.on('interaction:talked', () => renderPortHub()),
       context.bus.on('interaction:gifted', () => renderPortHub()),
       context.bus.on('interaction:oathed', () => renderPortHub()),
+      context.bus.on('character:exp-gained', () => renderPortHub()),
+      context.bus.on('character:leveled-up', () => renderPortHub()),
       context.bus.on('theme:layout-changed', () => renderPortHub()),
       context.bus.on('storage:changed', (detail) => {
         if (detail?.action === 'resetAll' || detail?.action === 'import') {

@@ -376,6 +376,26 @@ async function advanceNextNode() {
       chips.push({ text: `指挥官 EXP +${expGain}`, negative: false });
     }
 
+    if (statRules && typeof statRules.grantShipExp === 'function') {
+      const shipNodeExp = 25;
+      let anyShipExp = false;
+      for (const m of aliveMembers) {
+        const sr = statRules.grantShipExp(entities, m.id, shipNodeExp, {
+          reason: `出征推进节点 ${node.code}`,
+          inventory: sortieState.context.inventory,
+        });
+        if (sr) {
+          anyShipExp = true;
+          if (sr.leveledUp) {
+            chips.push({ text: `★ ${sr.characterName} 升至 Lv.${sr.afterLevel}`, negative: false });
+          }
+        }
+      }
+      if (anyShipExp) {
+        chips.push({ text: `编队舰娘 EXP +${shipNodeExp}`, negative: false });
+      }
+    }
+
     await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
     const lootText = formatLootSummary(gained, resources);
 

@@ -69,6 +69,26 @@ export function migrateSavePayload(rawData = {}) {
     migrated = true;
   }
 
+  // Losslessly backfill Shipgirl level/exp/maxExp on all character entities
+  const entityList = Array.isArray(data.entities?.entities) ? data.entities.entities : [];
+  for (const ent of entityList) {
+    if (!ent || ent.kind !== 'character') continue;
+    if (!ent.stats || typeof ent.stats !== 'object') ent.stats = {};
+    if (ent.stats.level === undefined || !Number.isFinite(Number(ent.stats.level))) {
+      ent.stats.level = 1;
+      migrated = true;
+    }
+    if (ent.stats.exp === undefined || !Number.isFinite(Number(ent.stats.exp))) {
+      ent.stats.exp = 0;
+      migrated = true;
+    }
+    if (ent.stats.maxExp === undefined || !Number.isFinite(Number(ent.stats.maxExp))) {
+      const lv = Math.max(1, Math.floor(Number(ent.stats.level) || 1));
+      ent.stats.maxExp = 100 + (lv - 1) * 50;
+      migrated = true;
+    }
+  }
+
   return { data, migrated };
 }
 

@@ -375,6 +375,21 @@ export class FxStage {
           tone: ev.delta > 0 ? 'accent' : 'muted',
         });
       }),
+      this._bus.on('character:exp-gained', (ev) => {
+        if (!ev || !ev.amount || ev.leveledUp) return;
+        this.playEffect(FX_TYPES.FLOAT_TEXT, {
+          text: `${ev.characterName} EXP +${ev.amount}`,
+          tone: 'accent',
+        });
+      }),
+      this._bus.on('character:leveled-up', (ev) => {
+        if (!ev) return;
+        this.playEffect(FX_TYPES.CRIT_FLASH, {});
+        this.playEffect(FX_TYPES.FLOAT_TEXT, {
+          text: `★ ${ev.characterName} 升级至 Lv.${ev.afterLevel}！`,
+          tone: 'ok',
+        });
+      }),
     ];
   }
 

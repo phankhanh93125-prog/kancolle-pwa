@@ -2,16 +2,16 @@
 
 本仓库是一个**零依赖、免编译、可直接部署到 GitHub Pages** 的移动端 PWA 通用游戏大框架，支持**纯本地离线确定性规则运行**与**多模型 AI 增强双轨切换**，核心由三层组成：
 
-1. **移动端外壳层**（`index.html`、`styles/main.css`、`src/main.js`）：负责 `100dvh` 全面屏安全区域布局、顶部 5 键快捷导航栏（模块 / 主题 / 存档 / API / 数据）、中央动态挂载容器 `#app-stage`、底部快捷按钮插槽与通用输入栏，以及「模块管理 / 主题换肤与桌面布局 / 多槽位存档保险箱 / API 设置 / 数据管理（混合存储）」底部抽屉。
+1. **移动端外壳层**（`index.html`、`styles/main.css`、`src/main.js`）：负责 `100dvh` 全面屏安全区域布局、顶部 5 键快捷导航栏（模块 / 主题 / 存档 / API / 数据）、顶部横向**模块导航指示栏**（`#module-nav-strip`）、中央动态挂载容器 `#app-stage`（支持移动端防误触左右触摸滑动切换模块，启动默认首屏严格进入港区 `port-hub`）、底部快捷按钮插槽与通用输入栏，以及「模块管理 / 主题换肤与桌面布局 / 多槽位存档保险箱 / API 设置 / 数据管理（混合存储）」底部抽屉。
 2. **核心底层引擎层（`src/core/`）**：
    - `event-bus.js`：轻量级发布/订阅事件总线（`on` / `once` / `off` / `emit`）。
    - `storage.js`：混合大容量存储引擎，同时封装同步 `localStorage`（轻量配置）与异步浏览器原生 `IndexedDB`（大容量存档、事件库、本地图片 Blob），支持命名空间隔离、混合占用统计与含 Blob 的 JSON 备份导出/导入。
-   - `save-manager.js`：四分区多槽位存读档引擎（全局设置区、事件驱动自动存档快照区、独立手动存档槽位、自定义模组数据区），内置 Schema v2 无损迁移函数（`migrateSavePayload`），支持单槽位与全量存档 JSON 备份导出/导入。
-   - `theme-manager.js`：可自定义切换的 UI 主题与模块化布局引擎，内置 4 套精选 CSS Variable 皮肤（深海战术终端 / 清爽海风白蓝 / 暖光日常港区 / 暗夜鎏金指挥室），支持手机端实时调色、圆角、背景纹理（grid/dots/waves/none）、打字机速度调节以及港区主页卡片顺序与显隐控制。
+   - `save-manager.js`：四分区多槽位存读档引擎（全局设置区、事件驱动自动存档快照区、独立手动存档槽位、自定义模组数据区），内置 Schema v2 无损迁移函数（`migrateSavePayload`，自动补齐指挥官、剧情 Flags、主题以及舰娘 `level/exp/maxExp` 默认值），支持单槽位与全量存档 JSON 备份导出/导入。
+   - `theme-manager.js`：可自定义切换的 UI 主题与模块化布局引擎，内置 4 套精选 CSS Variable 皮肤（深海战术终端 / 清爽海风白蓝 / 暖光日常港区 / 暗夜鎏金指挥室），提供成对自适应高对比度表面与文字变量（`--banner-bg` / `--banner-text`、`--surface-elevated` / `--text-primary`、`--overlay-pill-bg` / `--overlay-pill-text`），支持手机端实时调色、圆角、背景纹理（grid/dots/waves/none）、打字机速度调节以及港区主页卡片顺序与显隐控制。
    - `story-pack-engine.js`：可热插拔本地事件包与多章节剧情包引擎，维护持久化全局剧情变量（Flags：布尔/计数/字符串）与前置条件锁校验（Flag、好感度、持有道具、指挥官六维与独立运气），支持多包并行开关、可视化节点编辑、单包 `.json` 导出/导入，并内置 2 套开箱即用示例包（港区日常扩展包 + 3 章节海域调查剧情包）。
    - `calc-engine.js`：零 `eval` 安全公式解析器（递归下降解析，拦截原型链访问）、多面骰/概率检定（`roll` / `rollNotation` / `chanceCheck` / `weightedPick`）、数值钳制（`clamp`）与多层属性叠算器（`baseAdd → percentAdd → percentMult → flatFinal`）。
    - `entity-system.js`：通用实体（角色/道具/状态）注册表、属性与修饰器系统、倒计时任务注册以及**离线时间差结算器**（`settleOfflineTime`）。
-   - `stat-rules.js`：新版海战舰娘数值与检定规则引擎，内置舰种预设（驱逐/轻巡/重巡/战列/航母等+自由自定义）、海战八维属性（`maxHp` 耐久、`firepower` 火力、`armor` 装甲、`torpedo` 雷击、`evasion` 机动、`recon` 侦查、`aa` 防空、`asw` 反潜）、动态状态条（`hp / morale / ap`）、四阶段好感度（支持指挥官魅力门槛减免）以及支持指挥官独立运气微调的 `1D20` 检定函数。
+   - `stat-rules.js`：新版海战舰娘数值、**等级经验成长**与检定规则引擎，内置舰种预设（驱逐/轻巡/重巡/战列/航母等+自由自定义）、海战八维属性（`maxHp` 耐久、`firepower` 火力、`armor` 装甲、`torpedo` 雷击、`evasion` 机动、`recon` 侦查、`aa` 防空、`asw` 反潜）、动态状态条（`hp / morale / ap`）、舰娘 `level / exp / maxExp` 升级成长曲线（`grantShipExp` / `setShipLevelManual`，可在数值规则设置中自定义每级经验与白值成长）、四阶段好感度（支持指挥官魅力门槛减免）以及支持指挥官独立运气微调的 `1D20` 检定函数。
    - `inventory-system.js`：三核心必装槽（引擎 / 装甲 / 核心，受指挥官「整备」效能放大，全部装齐判定为适航）+ 可选服装槽 + 每角色完全自由命名的自定义选装槽位；自动区分「白值」与「装备/模块加成」，并随自定义槽位模块词条自动动态扩展任意新增属性（`getCharacterStatBreakdown`）。
    - `commander-system.js`：指挥官角色卡与成长引擎，管理姓名/头像/称号/等级经验与自由加点，构建「2 战斗（统率/战术）+ 2 舰娘（魅力/亲和）+ 2 后勤（调度/整备）」六维属性与独立初值为 `0` 的特殊属性「运气（luck）」，动态控制 3~12 人编队上限及全站战备系数。
    - `formation-system.js`：3~12 人动态上限编队与协同引擎，受指挥官「统率」实时限制席位、校验适航与非远征状态，提供 5 种可自定义系数的海战阵型（单纵/复纵/轮形/警戒/梯形）并聚合全队八维战斗属性。

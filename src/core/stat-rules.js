@@ -117,6 +117,19 @@ export const DEFAULT_STAT_RULES_CONFIG = Object.freeze({
     aa: 0.9,
     asw: 0.9,
   },
+  shipLevelMax: 100,
+  shipExpBase: 100,
+  shipExpStep: 50,
+  shipGrowthPerLevel: {
+    maxHp: 3,
+    firepower: 1,
+    armor: 1,
+    torpedo: 1,
+    evasion: 1,
+    recon: 1,
+    aa: 1,
+    asw: 1,
+  },
 });
 
 function formatSigned(n) {
@@ -147,6 +160,7 @@ export class StatRulesEngine {
     const base = DEFAULT_STAT_RULES_CONFIG;
     const rec = raw.offlineRecoveryPerMin || {};
     const weights = raw.scoreWeights || {};
+    const growth = raw.shipGrowthPerLevel || {};
     return {
       statMin: clamp(Number(raw.statMin ?? base.statMin), 0, 50),
       statMax: clamp(Number(raw.statMax ?? base.statMax), 20, 999),
@@ -176,6 +190,19 @@ export class StatRulesEngine {
         aa: clamp(Number(weights.aa ?? base.scoreWeights.aa), 0.1, 5),
         asw: clamp(Number(weights.asw ?? base.scoreWeights.asw), 0.1, 5),
       },
+      shipLevelMax: clamp(Math.floor(Number(raw.shipLevelMax ?? base.shipLevelMax)), 10, 200),
+      shipExpBase: clamp(Math.floor(Number(raw.shipExpBase ?? base.shipExpBase)), 10, 5000),
+      shipExpStep: clamp(Math.floor(Number(raw.shipExpStep ?? base.shipExpStep)), 0, 2000),
+      shipGrowthPerLevel: {
+        maxHp: clamp(Number(growth.maxHp ?? base.shipGrowthPerLevel.maxHp), 0, 30),
+        firepower: clamp(Number(growth.firepower ?? base.shipGrowthPerLevel.firepower), 0, 20),
+        armor: clamp(Number(growth.armor ?? base.shipGrowthPerLevel.armor), 0, 20),
+        torpedo: clamp(Number(growth.torpedo ?? base.shipGrowthPerLevel.torpedo), 0, 20),
+        evasion: clamp(Number(growth.evasion ?? base.shipGrowthPerLevel.evasion), 0, 20),
+        recon: clamp(Number(growth.recon ?? base.shipGrowthPerLevel.recon), 0, 20),
+        aa: clamp(Number(growth.aa ?? base.shipGrowthPerLevel.aa), 0, 20),
+        asw: clamp(Number(growth.asw ?? base.shipGrowthPerLevel.asw), 0, 20),
+      },
     };
   }
 
@@ -201,6 +228,10 @@ export class StatRulesEngine {
         ...this._config.scoreWeights,
         ...(partial.scoreWeights || {}),
       },
+      shipGrowthPerLevel: {
+        ...this._config.shipGrowthPerLevel,
+        ...(partial.shipGrowthPerLevel || {}),
+      },
     };
     this._config = this._sanitizeConfig(merged);
     if (this._store) {
@@ -217,6 +248,160 @@ export class StatRulesEngine {
     }
     this._emit('stat-rules:changed', this.getConfig());
     return this.getConfig();
+  }
+
+  // ------------------------------------------------------------
+  // Shipgirl Level & Experience Progression
+  // ------------------------------------------------------------
+
+  getShipMaxExp(level = 1) {
+    const lv = Math.max(1, Math.floor(Number(level) || 1));
+    return Math.max(10, Math.round(this._config.shipExpBase + (lv - 1) * this._config.shipExpStep));
+  }
+
+  /**
+   * Ensure a character entity has valid level / exp / maxExp fields without overwriting existing stats.
+   */
+  ensureShipProgression(entity) {
+    if (!entity || typeof entity !== 'object') return { level: 1, exp: 0, maxExp: this.getShipMaxExp(1) };
+    if (!entity.stats || typeof entity.stats !== 'object') entity.stats = {};
+    const lv = clamp(Math.floor(Number(entity.stats.level ?? 1) || 1), 1, this._config.shipLevelMax);
+    const maxExp = this.getShipMaxExp(lv);
+    const exp = clamp(Math.floor(Number(entity.stats.exp ?? 0) || 0), 0, Math.max(maxExp, 999999));
+    entity.stats.level = lv;
+    entity.stats.exp = exp;
+    entity.stats.maxExp = maxExp;
+    return { level: lv, exp, maxExp };
+  }
+
+  /**
+   * Grant experience to a shipgirl character, automatically handling multi-level-up growth & stat refresh.
+   */
+  grantShipExp(entities, characterId, rawAmount, { reason = '', inventory = null, emitEvent = true } = {}) {
+    if (!entities || !entities.has(characterId)) return null;
+    const amount = Math.max(0, Math.round(Number(rawAmount) || 0));
+    const entity = entities.get(characterId);
+    const prog = this.ensureShipProgression(entity);
+    const beforeLevel = prog.level;
+    let level = prog.level;
+    let exp = prog.exp + amount;
+    let maxExp = prog.maxExp;
+    let levelsGained = 0;
+    const statGains = {};
+
+    while (exp >= maxExp && level < this._config.shipLevelMax) {
+      exp -= maxExp;
+      level += 1;
+      levelsGained += 1;
+      maxExp = this.getShipMaxExp(level);
+    }
+    if (level >= this._config.shipLevelMax) {
+      exp = Math.min(exp, maxExp);
+    }
+
+    if (levelsGained > 0) {
+      const growth = this._config.shipGrowthPerLevel;
+      for (const def of NAVAL_EIGHT_STAT_DEFS) {
+        const delta = Math.round((Number(growth[def.key]) || 0) * levelsGained);
+        if (delta <= 0) continue;
+        const curBase = Number(entity.stats[def.key] ?? def.defaultValue);
+        const cap = def.isVital ? 999 : this._config.statMax;
+        const nextBase = clamp(curBase + delta, def.min, cap);
+        const applied = nextBase - curBase;
+        if (applied > 0) {
+          entities.setStat(characterId, def.key, nextBase, { min: def.min, max: cap });
+          statGains[def.key] = applied;
+        }
+      }
+      if (statGains.maxHp > 0) {
+        const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(characterId, 'maxHp', { round: 'round' }).final));
+        entities.adjustStat(characterId, 'hp', statGains.maxHp, { min: 0, max: effMaxHp });
+      }
+    }
+
+    entities.setStat(characterId, 'level', level, { min: 1, max: this._config.shipLevelMax });
+    entities.setStat(characterId, 'exp', exp, { min: 0, max: 9999999 });
+    entities.setStat(characterId, 'maxExp', maxExp, { min: 10, max: 9999999 });
+
+    if (inventory && typeof inventory.syncCharacterModifiers === 'function') {
+      inventory.syncCharacterModifiers(characterId);
+    }
+
+    const result = {
+      characterId,
+      characterName: entity.name,
+      amount,
+      reason,
+      beforeLevel,
+      afterLevel: level,
+      levelsGained,
+      leveledUp: levelsGained > 0,
+      exp,
+      maxExp,
+      statGains,
+      timestamp: Date.now(),
+    };
+
+    if (emitEvent) {
+      if (amount > 0) this._emit('character:exp-gained', result);
+      if (levelsGained > 0) this._emit('character:leveled-up', result);
+    }
+    return result;
+  }
+
+  /**
+   * Manually adjust a shipgirl's level (for testing / debugging), applying proportional growth delta if requested.
+   */
+  setShipLevelManual(entities, characterId, targetLevel, { exp = 0, inventory = null, applyGrowthDelta = true } = {}) {
+    if (!entities || !entities.has(characterId)) return null;
+    const entity = entities.get(characterId);
+    const prog = this.ensureShipProgression(entity);
+    const beforeLevel = prog.level;
+    const nextLevel = clamp(Math.floor(Number(targetLevel) || 1), 1, this._config.shipLevelMax);
+    const levelDelta = nextLevel - beforeLevel;
+    const maxExp = this.getShipMaxExp(nextLevel);
+    const nextExp = clamp(Math.floor(Number(exp) || 0), 0, Math.max(0, maxExp - 1));
+    const statGains = {};
+
+    if (applyGrowthDelta && levelDelta !== 0) {
+      const growth = this._config.shipGrowthPerLevel;
+      for (const def of NAVAL_EIGHT_STAT_DEFS) {
+        const delta = Math.round((Number(growth[def.key]) || 0) * levelDelta);
+        if (delta === 0) continue;
+        const curBase = Number(entity.stats[def.key] ?? def.defaultValue);
+        const cap = def.isVital ? 999 : this._config.statMax;
+        const nextBase = clamp(curBase + delta, def.min, cap);
+        entities.setStat(characterId, def.key, nextBase, { min: def.min, max: cap });
+        statGains[def.key] = nextBase - curBase;
+      }
+      if (statGains.maxHp) {
+        const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(characterId, 'maxHp', { round: 'round' }).final));
+        entities.adjustStat(characterId, 'hp', statGains.maxHp, { min: 1, max: effMaxHp });
+      }
+    }
+
+    entities.setStat(characterId, 'level', nextLevel, { min: 1, max: this._config.shipLevelMax });
+    entities.setStat(characterId, 'exp', nextExp, { min: 0, max: 9999999 });
+    entities.setStat(characterId, 'maxExp', maxExp, { min: 10, max: 9999999 });
+
+    if (inventory && typeof inventory.syncCharacterModifiers === 'function') {
+      inventory.syncCharacterModifiers(characterId);
+    }
+
+    const result = {
+      characterId,
+      characterName: entity.name,
+      beforeLevel,
+      afterLevel: nextLevel,
+      levelsGained: Math.max(0, levelDelta),
+      leveledUp: levelDelta > 0,
+      exp: nextExp,
+      maxExp,
+      statGains,
+      timestamp: Date.now(),
+    };
+    if (levelDelta > 0) this._emit('character:leveled-up', result);
+    return result;
   }
 
   // ------------------------------------------------------------
