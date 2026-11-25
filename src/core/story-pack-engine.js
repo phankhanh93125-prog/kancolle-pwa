@@ -1178,6 +1178,51 @@ export class StoryPackEngine {
     return deepClone(this._playHistory);
   }
 
+  /**
+   * Central Story Theatre handoff state so launching any Story/Event Pack from Compendium
+   * or Port Hub immediately plays it full-stage in the unified Central Story Theatre.
+   */
+  setActiveTheatreSession(packId, nodeId = null) {
+    const pack = this.getPack(packId);
+    if (!pack) return null;
+    const targetNodeId =
+      nodeId && pack.nodes.some((n) => n.id === nodeId)
+        ? String(nodeId)
+        : pack.entryNodeId || pack.nodes[0]?.id || null;
+    this._theatreSession = {
+      packId: pack.id,
+      nodeId: targetNodeId,
+      lastOutcome: null,
+      startedAt: Date.now(),
+    };
+    this._emit('story:theatre-updated', deepClone(this._theatreSession));
+    return deepClone(this._theatreSession);
+  }
+
+  getActiveTheatreSession() {
+    if (!this._theatreSession) return null;
+    const pack = this.getPack(this._theatreSession.packId);
+    if (!pack) {
+      this._theatreSession = null;
+      return null;
+    }
+    return deepClone(this._theatreSession);
+  }
+
+  updateActiveTheatreOutcome(outcome = null, nextNodeId = null) {
+    if (!this._theatreSession) return null;
+    this._theatreSession.lastOutcome = outcome ? deepClone(outcome) : null;
+    if (nextNodeId) {
+      this._theatreSession.nodeId = String(nextNodeId);
+    }
+    return deepClone(this._theatreSession);
+  }
+
+  clearActiveTheatreSession() {
+    this._theatreSession = null;
+    this._emit('story:theatre-updated', null);
+  }
+
   serialize() {
     return {
       version: 1,

@@ -164,7 +164,13 @@ const uiKit = createUIKit();
 
 const els = {
   activeModuleName: document.getElementById('active-module-name'),
+  topCmdBtn: document.getElementById('btn-top-commander'),
+  topCmdAvatar: document.getElementById('top-cmd-avatar'),
+  topCmdFallback: document.getElementById('top-cmd-fallback'),
+  topCmdSummary: document.getElementById('top-cmd-summary'),
+  topResourceStrip: document.getElementById('top-resource-strip'),
   moduleNavStrip: document.getElementById('module-nav-strip'),
+  bottomTabBar: document.getElementById('bottom-tab-bar'),
   stage: document.getElementById('app-stage'),
   quickActionsSlot: document.getElementById('quick-actions-slot'),
   inputForm: document.getElementById('universal-input-form'),
@@ -173,6 +179,7 @@ const els = {
   btnModules: document.getElementById('btn-open-modules'),
   btnTheme: document.getElementById('btn-open-theme'),
   btnVault: document.getElementById('btn-open-vault'),
+  btnReturnTitle: document.getElementById('btn-return-title'),
   btnApi: document.getElementById('btn-open-api'),
   btnData: document.getElementById('btn-open-data'),
   sheetBackdrop: document.getElementById('sheet-backdrop'),
@@ -188,6 +195,67 @@ const els = {
 let activeInputHandler = null;
 let inputBusy = false;
 let swipeLockedByModule = false;
+let currentStageMode = 'theatre';
+
+const TOP_RESOURCE_META = [
+  { key: 'fuel', label: '油', cls: 'res-fuel' },
+  { key: 'ammo', label: '弹', cls: 'res-ammo' },
+  { key: 'steel', label: '钢', cls: 'res-steel' },
+  { key: 'bauxite', label: '铝', cls: 'res-bauxite' },
+  { key: 'silver', label: '银', cls: 'res-silver' },
+  { key: 'gold', label: '金', cls: 'res-gold' },
+];
+
+let topCmdAvatarAssetCache = { assetId: '__init__', url: '' };
+
+async function renderTopStatusBar() {
+  if (els.topCmdSummary && commander) {
+    const p = commander.getProfile();
+    els.topCmdSummary.textContent = `${p.name || '指挥官'} Lv.${p.level || 1}`;
+    const assetId = p.avatarAssetId || null;
+    if (els.topCmdAvatar && els.topCmdFallback) {
+      if (assetId) {
+        if (topCmdAvatarAssetCache.assetId !== assetId) {
+          try {
+            const res = await assets.getAssetUrl(assetId, {
+              fallbackSeed: 'commander-profile',
+              fallbackLabel: (p.name || 'CMD').slice(0, 4),
+            });
+            topCmdAvatarAssetCache = { assetId, url: res.url };
+          } catch {
+            topCmdAvatarAssetCache = { assetId, url: '' };
+          }
+        }
+        if (topCmdAvatarAssetCache.url) {
+          els.topCmdAvatar.src = topCmdAvatarAssetCache.url;
+          els.topCmdAvatar.hidden = false;
+          els.topCmdFallback.hidden = true;
+        }
+      } else {
+        els.topCmdAvatar.hidden = true;
+        els.topCmdFallback.hidden = false;
+      }
+    }
+  }
+
+  if (els.topResourceStrip && resources) {
+    els.topResourceStrip.innerHTML = TOP_RESOURCE_META.map((item) => {
+      const r = resources.get(item.key);
+      const val = Math.round(Number(r?.amount ?? 0));
+      return `<span class="top-res-chip ${item.cls}" data-top-res="${item.key}" title="${escapeHtml(r?.name || item.label)}">
+        <span class="top-res-k">${item.label}</span>
+        <strong class="top-res-v">${val}</strong>
+      </span>`;
+    }).join('');
+  }
+}
+
+function resolveDefaultStageMode(moduleId) {
+  if (moduleId === 'port-hub') return 'theatre';
+  if (moduleId === 'sortie-console') return combat?.isInBattleScreen?.() ? 'battle' : 'chart';
+  if (moduleId === 'title-screen') return 'title';
+  return 'facility';
+}
 
 function autoResizeInput() {
   const el = els.inputField;
@@ -207,12 +275,32 @@ const ui = {
     return swipeLockedByModule;
   },
 
+  setStageMode(mode = 'theatre') {
+    const normalized = ['theatre', 'chart', 'battle', 'facility', 'title'].includes(mode)
+      ? mode
+      : 'facility';
+    currentStageMode = normalized;
+    if (els.stage) {
+      els.stage.dataset.stageMode = normalized;
+    }
+    document.body.dataset.stageMode = normalized;
+  },
+
+  getStageMode() {
+    return currentStageMode;
+  },
+
   setImmersiveBattle(active) {
     const flag = Boolean(active);
     document.body.classList.toggle('is-immersive-battle', flag);
     ui.setSwipeLocked(flag);
+    if (flag) {
+      ui.setStageMode('battle');
+    } else if (currentStageMode === 'battle') {
+      ui.setStageMode('chart');
+    }
     if (els.moduleNavStrip) {
-      els.moduleNavStrip.hidden = flag;
+      els.moduleNavStrip.hidden = true;
     }
   },
 
@@ -220,8 +308,11 @@ const ui = {
     const flag = Boolean(active);
     document.body.classList.toggle('is-title-screen', flag);
     ui.setSwipeLocked(flag);
+    if (flag) {
+      ui.setStageMode('title');
+    }
     if (els.moduleNavStrip) {
-      els.moduleNavStrip.hidden = flag;
+      els.moduleNavStrip.hidden = true;
     }
   },
 
@@ -241,6 +332,7 @@ const ui = {
 
   setQuickActions(actions = []) {
     els.quickActionsSlot.innerHTML = '';
+    els.quickActionsSlot.hidden = true;
     for (const action of actions) {
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -261,8 +353,9 @@ const ui = {
     ui.setInputBusy(false);
     ui.setImmersiveBattle(false);
     ui.setTitleScreenMode(false);
-    ui.setPlaceholder('输入指令或消息...');
+    ui.setPlaceholder('和秘书舰聊聊或输入指令...');
     els.quickActionsSlot.innerHTML = '';
+    els.quickActionsSlot.hidden = true;
   },
 };
 
@@ -306,6 +399,14 @@ const appActions = {
   openSaveVault: () => openSaveVaultSheet(),
   openSettings: () => openThemeSheet(),
   returnToTitle: () => moduleManager.mount('title-screen'),
+  launchStoryPackInTheatre: (packId, nodeId = null) => {
+    const sess = storyPacks.setActiveTheatreSession(packId, nodeId);
+    if (!sess) return null;
+    if (moduleManager.getActive()?.id !== 'port-hub') {
+      moduleManager.mount('port-hub', { transition: 'right' });
+    }
+    return sess;
+  },
 };
 
 const moduleManager = new ModuleManager({
@@ -387,41 +488,53 @@ function isSwipeBlockedNow() {
   return false;
 }
 
-function renderModuleNavStrip(activeId = null) {
-  if (!els.moduleNavStrip) return;
-  const activeMod = moduleManager.getActive();
-  const curId = activeId || activeMod?.id || null;
-  const isSubpage = Boolean(activeMod?.isSubpage) || document.body.classList.contains('is-immersive-battle');
+const BOTTOM_NAV_ORDER = [
+  'port-hub',
+  'sortie-console',
+  'port-formation',
+  'port-dormitory',
+  'port-dockyard',
+  'supply-workshop',
+  'compendium-studio',
+];
 
-  // Dedicated full-screen facility pages & immersive battle use their own `← 返回港区` header
-  els.moduleNavStrip.hidden = isSubpage;
-  if (isSubpage) return;
+function syncBottomTabBar(activeId = null) {
+  if (!els.bottomTabBar) return;
+  const curId = activeId || moduleManager.getActive()?.id || 'port-hub';
+  const mappedId = curId === 'character-console' ? 'port-dormitory' : curId === 'port-expedition' ? 'port-hub' : curId;
+  els.bottomTabBar.querySelectorAll('[data-bottom-nav]').forEach((btn) => {
+    const targetId = btn.getAttribute('data-bottom-nav');
+    const isAct = targetId === mappedId;
+    btn.classList.toggle('is-active', isAct);
+    if (isAct) {
+      btn.setAttribute('aria-current', 'page');
+    } else {
+      btn.removeAttribute('aria-current');
+    }
+  });
+}
 
-  const list = getTopLevelModules();
-  els.moduleNavStrip.innerHTML = '';
-
-  for (const mod of list) {
-    const isAct = mod.id === curId;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = `module-nav-pill ${isAct ? 'is-active' : ''}`.trim();
-    btn.dataset.navModule = mod.id;
-    btn.textContent = mod.name;
-    if (isAct) btn.setAttribute('aria-current', 'page');
+function attachBottomTabNavigation() {
+  if (!els.bottomTabBar) return;
+  els.bottomTabBar.querySelectorAll('[data-bottom-nav]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      if (mod.id === moduleManager.getActive()?.id) return;
-      const curIdx = list.findIndex((m) => m.id === moduleManager.getActive()?.id);
-      const nextIdx = list.findIndex((m) => m.id === mod.id);
+      const targetId = btn.getAttribute('data-bottom-nav');
+      if (!targetId || !moduleManager.has(targetId)) return;
+      const curId = moduleManager.getActive()?.id;
+      if (targetId === curId) return;
+      const curIdx = BOTTOM_NAV_ORDER.indexOf(curId);
+      const nextIdx = BOTTOM_NAV_ORDER.indexOf(targetId);
       const dir = curIdx >= 0 && nextIdx >= 0 ? (nextIdx > curIdx ? 'left' : 'right') : null;
-      moduleManager.mount(mod.id, { transition: dir });
+      moduleManager.mount(targetId, { transition: dir });
     });
-    els.moduleNavStrip.appendChild(btn);
-  }
+  });
+}
 
-  const activePill = els.moduleNavStrip.querySelector('.module-nav-pill.is-active');
-  if (activePill && typeof activePill.scrollIntoView === 'function') {
-    activePill.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+function renderModuleNavStrip(activeId = null) {
+  if (els.moduleNavStrip) {
+    els.moduleNavStrip.hidden = true;
   }
+  syncBottomTabBar(activeId);
 }
 
 function hasHorizontallyScrollableAncestor(target, boundary) {
@@ -533,13 +646,18 @@ function attachStageSwipeNavigation() {
 }
 
 bus.on('module:changed', (mod) => {
-  els.activeModuleName.textContent = mod.name;
+  if (els.activeModuleName) {
+    els.activeModuleName.textContent = mod.name;
+  }
   document.body.dataset.activeModule = mod.id;
   document.body.dataset.swipeLocked = isSwipeBlockedNow() ? 'true' : 'false';
+  ui.setStageMode(resolveDefaultStageMode(mod.id));
   renderModuleNavStrip(mod.id);
+  renderTopStatusBar();
 });
 
 moduleManager.registerAll(REGISTERED_MODULES);
+attachBottomTabNavigation();
 renderModuleNavStrip();
 attachStageSwipeNavigation();
 
@@ -568,13 +686,17 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// --- Sheet 1: Module Management ---
+// --- Sheet 1: System Tools & Module Management ---
 function openModulesSheet() {
-  openSheet('模块管理', (body) => {
+  openSheet('系统工具与模块管理', (body) => {
     const modules = moduleManager.list();
 
     body.innerHTML = `
-      <p class="muted-text">点击任意已注册模块即可实时切换挂载到主容器，每个模块拥有独立的数据命名空间（支持 localStorage 与 IndexedDB 双层存储）。</p>
+      <div class="lab-btn-grid" style="margin-bottom:10px;">
+        <button type="button" id="btn-sys-open-api" class="btn-secondary uikit-touch-target">多模型 API 设置</button>
+        <button type="button" id="btn-sys-open-data" class="btn-secondary uikit-touch-target">存储与数据管理</button>
+      </div>
+      <p class="muted-text">点击任意已注册模块即可实时切换挂载到中央主舞台，每个模块拥有独立的数据命名空间（支持 localStorage 与 IndexedDB 双层存储）。</p>
       <div class="module-list" id="module-manager-list">
         ${modules
           .map(
@@ -599,6 +721,9 @@ function openModulesSheet() {
         <p class="muted-text">扩展提示：按照根目录 <code>ARCHITECTURE.md</code> 的 3 步规范新建模块文件并注册到 <code>src/modules/index.js</code>，即可自动出现在此列表。</p>
       </div>
     `;
+
+    body.querySelector('#btn-sys-open-api')?.addEventListener('click', () => openApiSheet());
+    body.querySelector('#btn-sys-open-data')?.addEventListener('click', () => openDataSheet());
 
     body.querySelectorAll('[data-module-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1797,11 +1922,20 @@ function openSaveVaultSheet() {
   });
 }
 
-els.btnModules.addEventListener('click', openModulesSheet);
-els.btnTheme.addEventListener('click', openThemeSheet);
-els.btnVault.addEventListener('click', openSaveVaultSheet);
-els.btnApi.addEventListener('click', openApiSheet);
-els.btnData.addEventListener('click', openDataSheet);
+els.btnModules?.addEventListener('click', openModulesSheet);
+els.btnTheme?.addEventListener('click', openThemeSheet);
+els.btnVault?.addEventListener('click', openSaveVaultSheet);
+els.btnReturnTitle?.addEventListener('click', () => {
+  moduleManager.mount('title-screen');
+});
+els.topCmdBtn?.addEventListener('click', () => {
+  if (moduleManager.getActive()?.id !== 'port-hub') {
+    moduleManager.mount('port-hub', { transition: 'right' });
+  }
+  setTimeout(() => bus.emit('port:open-commander', {}), 40);
+});
+els.btnApi?.addEventListener('click', openApiSheet);
+els.btnData?.addEventListener('click', openDataSheet);
 
 // ------------------------------------------------------------
 // 6. Hydrate Persisted Core Data, Bind Auto-Save & Boot Home
@@ -1849,6 +1983,15 @@ async function bootApplication() {
 
   logs.attachBusListeners();
   fxStage.attachBusListeners();
+
+  // Keep the fixed top status bar (Commander summary + 6 resources) live-synced
+  await renderTopStatusBar();
+  bus.on('resource:changed', () => renderTopStatusBar());
+  bus.on('commander:updated', () => {
+    topCmdAvatarAssetCache = { assetId: '__refresh__', url: '' };
+    renderTopStatusBar();
+  });
+  bus.on('storage:changed', () => renderTopStatusBar());
 
   // Auto-persist character roster whenever any shipgirl gains EXP, levels up, or rerolls personality
   const syncRosterOnProgression = () => {

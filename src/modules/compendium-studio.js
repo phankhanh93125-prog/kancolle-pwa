@@ -1501,10 +1501,23 @@ async function renderStoryPacksTab(host) {
       const id = btn.getAttribute('data-play-pack');
       const target = storyPacks.getPack(id);
       if (!target) return;
+      const entryNode = target.entryNodeId || target.nodes[0]?.id || null;
       csState.activePackId = target.id;
-      csState.activeNodeId = target.entryNodeId || target.nodes[0]?.id || null;
+      csState.activeNodeId = entryNode;
       csState.lastStoryOutcome = null;
       csState.lastRenderedNodeKey = null;
+
+      if (csState.context?.appActions && typeof csState.context.appActions.launchStoryPackInTheatre === 'function') {
+        csState.context.appActions.launchStoryPackInTheatre(target.id, entryNode);
+        uiKit.showToast(`已在中央主舞台开启剧场：「${target.name}」`, 'ok');
+        return;
+      }
+      if (typeof storyPacks.setActiveTheatreSession === 'function' && csState.context?.modules?.has('port-hub')) {
+        storyPacks.setActiveTheatreSession(target.id, entryNode);
+        csState.context.modules.mount('port-hub', { transition: 'right' });
+        uiKit.showToast(`已在中央主舞台开启剧场：「${target.name}」`, 'ok');
+        return;
+      }
       renderCompendiumStudio();
     });
   });

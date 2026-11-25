@@ -16,96 +16,114 @@
 </head>
 <body>
   <div id="app-shell" class="app-shell">
-    <!-- Top Header Bar -->
-    <header class="app-header">
-      <div class="brand-group">
-        <span class="brand-mark" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-            <rect x="2.5" y="2.5" width="8" height="8" rx="2.2" fill="#14b8a6"/>
-            <rect x="13.5" y="2.5" width="8" height="8" rx="2.2" stroke="#cbd5e1" stroke-width="1.8"/>
-            <rect x="2.5" y="13.5" width="8" height="8" rx="2.2" fill="#232c3a" stroke="#64748b" stroke-width="1.4"/>
-            <circle cx="17.5" cy="17.5" r="4.1" fill="#2dd4bf"/>
-            <circle cx="17.5" cy="17.5" r="1.7" fill="#0f1319"/>
-          </svg>
-        </span>
-        <div class="brand-titles">
-          <h1 class="app-title">PWA Base</h1>
-          <span id="active-module-name" class="active-module-name">加载中...</span>
-        </div>
+    <!-- Section 1: Top Fixed Status Bar (Commander + Quick Actions + 6-Resource Strip) -->
+    <header class="app-header" id="app-top-header">
+      <div class="top-header-row">
+        <button type="button" id="btn-top-commander" class="top-cmd-pill" aria-label="指挥官资料">
+          <img id="top-cmd-avatar" class="top-cmd-avatar" src="" alt="指挥官" hidden>
+          <span id="top-cmd-fallback" class="brand-mark" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="9" stroke="#14b8a6" stroke-width="2"/>
+              <path d="M12 6V17M8.5 10H15.5M7 14C7 16.8 9.2 18.5 12 18.5C14.8 18.5 17 16.8 17 14" stroke="#2dd4bf" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <div class="brand-titles">
+            <span id="top-cmd-summary" class="app-title">港区指挥官 Lv.1</span>
+            <span id="active-module-name" class="active-module-name">加载中...</span>
+          </div>
+        </button>
+
+        <nav class="header-actions" aria-label="系统入口">
+          <button type="button" id="btn-open-theme" class="header-btn" aria-label="主题与倍率">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/>
+              <circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/>
+              <circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/>
+              <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.43-.18-.83-.44-1.12-.29-.29-.44-.65-.44-1.12a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.56-2.5 5.56-5.55C21.97 6.01 17.46 2 12 2Z"/>
+            </svg>
+            <span>主题</span>
+          </button>
+          <button type="button" id="btn-open-vault" class="header-btn" aria-label="存档保险箱">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+              <polyline points="17 21 17 13 7 13 7 21"/>
+              <polyline points="7 3 7 8 15 8"/>
+            </svg>
+            <span>存档</span>
+          </button>
+          <button type="button" id="btn-return-title" class="header-btn" aria-label="返回封面">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 10.5 12 3l9 7.5"/>
+              <path d="M5 10v10h14V10"/>
+            </svg>
+            <span>封面</span>
+          </button>
+          <button type="button" id="btn-open-modules" class="header-btn is-icon-compact" aria-label="系统工具" title="模块/API/数据">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+          <button type="button" id="btn-open-api" hidden aria-hidden="true"></button>
+          <button type="button" id="btn-open-data" hidden aria-hidden="true"></button>
+        </nav>
       </div>
 
-      <nav class="header-actions" aria-label="系统入口">
-        <button type="button" id="btn-open-modules" class="header-btn" aria-label="模块管理">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="3" width="7" height="7" rx="1.5"/>
-            <rect x="14" y="3" width="7" height="7" rx="1.5"/>
-            <rect x="3" y="14" width="7" height="7" rx="1.5"/>
-            <rect x="14" y="14" width="7" height="7" rx="1.5"/>
-          </svg>
-          <span>模块</span>
-        </button>
-        <button type="button" id="btn-open-theme" class="header-btn" aria-label="主题与布局">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/>
-            <circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/>
-            <circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/>
-            <circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/>
-            <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.43-.18-.83-.44-1.12-.29-.29-.44-.65-.44-1.12a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.56-2.5 5.56-5.55C21.97 6.01 17.46 2 12 2Z"/>
-          </svg>
-          <span>主题</span>
-        </button>
-        <button type="button" id="btn-open-vault" class="header-btn" aria-label="存档保险箱">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-            <polyline points="17 21 17 13 7 13 7 21"/>
-            <polyline points="7 3 7 8 15 8"/>
-          </svg>
-          <span>存档</span>
-        </button>
-        <button type="button" id="btn-open-api" class="header-btn" aria-label="API 设置">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 2v4"/>
-            <path d="M12 18v4"/>
-            <path d="m4.93 4.93 2.83 2.83"/>
-            <path d="m16.24 16.24 2.83 2.83"/>
-            <path d="M2 12h4"/>
-            <path d="M18 12h4"/>
-            <circle cx="12" cy="12" r="4"/>
-          </svg>
-          <span>API</span>
-        </button>
-        <button type="button" id="btn-open-data" class="header-btn" aria-label="数据管理">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <ellipse cx="12" cy="5" rx="8" ry="3"/>
-            <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/>
-            <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>
-          </svg>
-          <span>数据</span>
-        </button>
-      </nav>
+      <!-- Compact 6-Resource Live Status Bar (油/弹/钢/铝/银条/金条) -->
+      <div id="top-resource-strip" class="top-resource-strip" aria-label="港区资源概览"></div>
     </header>
 
-    <!-- Top Module Indicator Bar (Tap or Swipe Stage to Navigate) -->
-    <nav id="module-nav-strip" class="module-nav-strip" aria-label="模块导航指示栏" data-no-swipe="true"></nav>
+    <!-- Hidden legacy nav strip placeholder kept for graceful backward compatibility -->
+    <nav id="module-nav-strip" class="module-nav-strip" hidden aria-hidden="true"></nav>
 
-    <!-- Dynamic Central Stage -->
-    <main id="app-stage" class="app-stage" aria-live="polite"></main>
+    <!-- Section 2: Unified Central Immersive Main Stage (65%~75% viewport height) -->
+    <main id="app-stage" class="app-stage is-unified-stage" data-stage-mode="theatre" aria-live="polite"></main>
 
-    <!-- Bottom Universal Interaction Bar -->
-    <footer class="app-footer">
-      <div id="quick-actions-slot" class="quick-actions-slot" role="toolbar" aria-label="模块快捷按钮"></div>
+    <!-- Section 3: Bottom Fixed Thumb-Friendly Navigation Bar + Compact Optional Input -->
+    <footer class="app-footer" id="app-bottom-footer">
+      <div id="quick-actions-slot" class="quick-actions-slot" role="toolbar" aria-label="模块快捷按钮" hidden></div>
       <form id="universal-input-form" class="input-bar" autocomplete="off">
         <textarea
           id="universal-input"
           class="universal-input"
           rows="1"
-          placeholder="输入指令或消息..."
+          placeholder="和秘书舰聊聊或输入指令..."
           aria-label="通用输入框"
         ></textarea>
         <button type="submit" id="btn-universal-send" class="btn-send" aria-label="发送消息">
           <span>发送</span>
         </button>
       </form>
+      <nav id="bottom-tab-bar" class="bottom-tab-bar" aria-label="底部主导航" data-no-swipe="true">
+        <button type="button" class="bottom-tab-btn is-active" data-bottom-nav="port-hub">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
+          <span>剧场港区</span>
+        </button>
+        <button type="button" class="bottom-tab-btn" data-bottom-nav="sortie-console">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+          <span>出征战斗</span>
+        </button>
+        <button type="button" class="bottom-tab-btn" data-bottom-nav="port-formation">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span>编队</span>
+        </button>
+        <button type="button" class="bottom-tab-btn" data-bottom-nav="port-dormitory">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>
+          <span>宿舍</span>
+        </button>
+        <button type="button" class="bottom-tab-btn" data-bottom-nav="port-dockyard">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+          <span>船坞</span>
+        </button>
+        <button type="button" class="bottom-tab-btn" data-bottom-nav="supply-workshop">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+          <span>仓库</span>
+        </button>
+        <button type="button" class="bottom-tab-btn" data-bottom-nav="compendium-studio">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+          <span>图鉴</span>
+        </button>
+      </nav>
     </footer>
   </div>
 

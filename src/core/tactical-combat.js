@@ -312,6 +312,11 @@ export class TacticalCombatEngine {
     return Boolean(this._session);
   }
 
+  getStageMode() {
+    if (!this._session) return 'chart';
+    return 'battle';
+  }
+
   getSession() {
     return this._session ? deepClone(this._session) : null;
   }

@@ -4858,6 +4858,467 @@ body.is-title-screen .module-nav-strip {
   overscroll-behavior: contain;
 }
 
+/* ============================================================
+   v20: 3-Section Mobile Layout + Unified Central Main Stage
+   ============================================================ */
+
+.app-header {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  padding: calc(6px + var(--safe-top)) calc(10px + var(--safe-right)) 6px calc(10px + var(--safe-left));
+  min-height: auto;
+}
+
+.top-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.top-cmd-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 52%;
+  padding: 3px 8px 3px 4px;
+  border-radius: 99px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.top-cmd-pill:active {
+  transform: scale(0.97);
+}
+
+.top-cmd-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--accent);
+  flex-shrink: 0;
+}
+
+.top-cmd-pill .brand-mark {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.top-cmd-pill .brand-titles {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.top-cmd-pill .app-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.top-cmd-pill .active-module-name {
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.header-btn {
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  gap: 4px;
+}
+
+.header-btn.is-icon-compact {
+  padding: 0 8px;
+  min-width: 34px;
+  justify-content: center;
+}
+
+/* Compact Live 6-Resource Status Bar in Fixed Header */
+.top-resource-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 4px;
+  width: 100%;
+}
+
+.top-res-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 3px 4px;
+  border-radius: 7px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  font-size: 11px;
+  line-height: 1.15;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.top-res-k {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.top-res-v {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.top-res-chip.res-fuel .top-res-k { color: #38bdf8; }
+.top-res-chip.res-ammo .top-res-k { color: #f59e0b; }
+.top-res-chip.res-steel .top-res-k { color: #94a3b8; }
+.top-res-chip.res-bauxite .top-res-k { color: #34d399; }
+.top-res-chip.res-silver .top-res-k { color: #cbd5e1; }
+.top-res-chip.res-gold .top-res-k { color: #fbbf24; }
+
+html[data-theme-mode="light"] .top-res-chip.res-fuel .top-res-k { color: #0284c7; }
+html[data-theme-mode="light"] .top-res-chip.res-ammo .top-res-k { color: #b45309; }
+html[data-theme-mode="light"] .top-res-chip.res-steel .top-res-k { color: #475569; }
+html[data-theme-mode="light"] .top-res-chip.res-bauxite .top-res-k { color: #047857; }
+html[data-theme-mode="light"] .top-res-chip.res-silver .top-res-k { color: #475569; }
+html[data-theme-mode="light"] .top-res-chip.res-gold .top-res-k { color: #b45309; }
+
+/* Section 2: Spacious Unified Central Main Stage */
+.app-stage.is-unified-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 10px calc(10px + var(--safe-right)) 14px calc(10px + var(--safe-left));
+}
+
+/* Hide universal input bar on non-chat views and during battle to maximize central stage height */
+body:not([data-active-module="port-hub"]):not([data-active-module="ai-console"]):not([data-active-module="action-console"]) #universal-input-form,
+body.is-immersive-battle #universal-input-form,
+body.is-title-screen #universal-input-form,
+body.is-title-screen #top-resource-strip,
+body.is-title-screen #app-bottom-footer {
+  display: none !important;
+}
+
+/* Section 3: Bottom Fixed Thumb-Friendly 7-Tab Navigation Bar */
+.app-footer {
+  padding: 0;
+  gap: 0;
+}
+
+.app-footer .input-bar {
+  padding: 6px calc(10px + var(--safe-right)) 6px calc(10px + var(--safe-left));
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.bottom-tab-bar {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+  padding: 4px calc(4px + var(--safe-right)) calc(4px + var(--safe-bottom)) calc(4px + var(--safe-left));
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.bottom-tab-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 48px;
+  padding: 4px 2px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+
+.bottom-tab-btn svg {
+  flex-shrink: 0;
+}
+
+.bottom-tab-btn span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.bottom-tab-btn.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.bottom-tab-btn.is-active::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 22%;
+  right: 22%;
+  height: 2.5px;
+  border-radius: 99px;
+  background: var(--accent);
+}
+
+.bottom-tab-btn:active {
+  transform: scale(0.95);
+}
+
+/* ============================================================
+   Visual Novel / Galgame Central Story Theatre
+   ============================================================ */
+
+.theatre-stage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1.5px solid var(--border-strong);
+  background:
+    radial-gradient(circle at 88% 12%, var(--accent-soft) 0%, transparent 56%),
+    var(--bg-surface);
+}
+
+.theatre-stage-card.is-story-pack-active,
+.theatre-stage-card.is-sea-encounter {
+  border-color: var(--accent);
+}
+
+.theatre-toolbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.theatre-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.theatre-mini-btn {
+  min-height: 30px;
+  padding: 0 9px;
+  border-radius: 99px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.theatre-mini-btn.is-active {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+.theatre-hero-stage {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.theatre-portrait-frame {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.theatre-portrait-img {
+  width: 92px;
+  height: 92px;
+  border-radius: 16px;
+  object-fit: cover;
+  border: 2px solid var(--accent);
+  background: var(--bg-input);
+  display: block;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+}
+
+.theatre-lv-pill {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 10.5px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
+}
+
+.theatre-hero-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.badge-accent-soft {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.theatre-dialogue-box {
+  padding: 14px 14px 16px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  border: 1.5px solid var(--border-strong);
+  min-height: 118px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.theatre-speaker-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.theatre-speaker-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 99px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.theatre-dialogue-text {
+  font-size: 15px;
+  line-height: 1.72;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  letter-spacing: 0.01em;
+}
+
+.theatre-choices-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.theatre-choice-btn {
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.1s ease, background 0.15s ease;
+}
+
+.theatre-choice-btn:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.theatre-choice-btn.is-locked,
+.theatre-choice-btn:disabled {
+  opacity: 0.55;
+  border-color: var(--border-subtle);
+  background: var(--bg-input);
+  cursor: not-allowed;
+}
+
+.theatre-choice-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.theatre-mini-bars {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.theatre-history-item {
+  gap: 6px;
+}
+
+.theatre-history-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+/* Light-theme contrast safeguards for v20 theatre & navigation */
+html[data-theme-mode="light"] .theatre-dialogue-box {
+  background: var(--surface-elevated);
+  border-color: var(--border-strong);
+}
+
+html[data-theme-mode="light"] .theatre-choice-btn {
+  color: var(--text-primary);
+}
+
+html[data-theme-mode="light"] .bottom-tab-bar {
+  background: var(--surface-elevated);
+}
+
+
 
 
 

@@ -69,6 +69,7 @@ let sortieState = {
   generatedRoute: null,
   selectedRouteId: null,
   activeRun: null,
+  activeNodeStory: null,
   postBattleSettlement: null,
   autoRunning: false,
   busy: false,
@@ -104,6 +105,7 @@ export async function hydrateSortieConsole({ storage, routeGenerator, combat }) 
 
 export async function clearActiveSortieState({ storage, combat }) {
   sortieState.activeRun = null;
+  sortieState.activeNodeStory = null;
   sortieState.postBattleSettlement = null;
   sortieState.autoRunning = false;
   sortieState.busy = false;
@@ -436,7 +438,14 @@ async function advanceNextNode() {
     uiKit,
   } = sortieState.context;
 
-  if (combat.isActive() || run.completed || run.awaitingBranchChoices || run.pendingAnchorage || run.nextNodeIndex >= run.nodes.length) {
+  if (
+    combat.isActive() ||
+    sortieState.activeNodeStory ||
+    run.completed ||
+    run.awaitingBranchChoices ||
+    run.pendingAnchorage ||
+    run.nextNodeIndex >= run.nodes.length
+  ) {
     return;
   }
 
@@ -567,9 +576,107 @@ async function advanceNextNode() {
     return;
   }
 
-  // Branch C: Non-combat Resource / Weather-Recon Node -> Auto Salvage & Settlement
+  // Branch C: Non-combat Resource / Weather-Recon Node -> Open In-Place Sea Encounter Story Theatre!
+  const isWeather = node.type === NODE_TYPES.WEATHER;
+  const seaName = run.seaCondition?.name || '常规海况';
+  const baseDc = Number(node.dc) || 12;
+  const statKey = node.statKey || (isWeather ? 'recon' : 'tactics');
+  const statLabel = CORE_STAT_DEFS.find((d) => d.key === statKey)?.label || '侦查';
+
+  sortieState.activeNodeStory = {
+    nodeIndex: nodeIdx,
+    node: deepClone(node),
+    stepCost: deepClone(stepCost),
+    flagshipId: char.id,
+    memberIds: [...memberIds],
+    title: isWeather
+      ? `气象遭遇 · 节点 ${node.code}「${node.name}」`
+      : `海域打捞 · 节点 ${node.code}「${node.name}」`,
+    badge: isWeather ? '海域气象事件' : '海域物资打捞',
+    prompt: isWeather
+      ? `舰队驶入节点 ${node.code}「${node.name}」（当前海况：${seaName}）。前方海雾翻涌、雷达回波剧烈波动，旗舰「${char.name}」转过身向你请示应对方案：`
+      : `声呐在节点 ${node.code}「${node.name}」的漂流带发现了一批旧时代补给箱与漂浮资材（海况：${seaName}）。旗舰「${char.name}」已带队就位，请指挥官下达打捞策略：`,
+    choices: isWeather
+      ? [
+          {
+            id: 'weather_brave',
+            label: `迎浪破雾强行抵近侦察（${statLabel} DC ${baseDc} · 高额奖励与全队好感）`,
+            dcDelta: 0,
+            lootMult: 1.28,
+            crateBonus: 0.16,
+            safeWeather: false,
+            tag: '高收益',
+          },
+          {
+            id: 'weather_safe',
+            label: `规避风眼稳健绕行测绘（${statLabel} DC ${Math.max(8, baseDc - 2)} · 规避海况损伤）`,
+            dcDelta: -2,
+            lootMult: 0.9,
+            crateBonus: 0.0,
+            safeWeather: true,
+            tag: '稳健保船',
+          },
+        ]
+      : [
+          {
+            id: 'res_deep',
+            label: `精密勘探与深层打捞（${statLabel} DC ${baseDc} · 资源 x1.25 + 更高装备箱概率）`,
+            dcDelta: 0,
+            lootMult: 1.25,
+            crateBonus: 0.2,
+            safeWeather: false,
+            tag: '深层打捞',
+          },
+          {
+            id: 'res_quick',
+            label: `快速扫掠并保持警戒队形（${statLabel} DC ${Math.max(8, baseDc - 2)} · 稳拿基础补给）`,
+            dcDelta: -2,
+            lootMult: 0.92,
+            crateBonus: 0.05,
+            safeWeather: true,
+            tag: '快速稳妥',
+          },
+        ],
+    outcome: null,
+  };
+
+  await renderSortieConsole();
+}
+
+async function resolveActiveNodeStoryChoice(choiceIdx) {
+  if (sortieState.busy || !sortieState.activeRun || !sortieState.activeNodeStory) return;
+  const story = sortieState.activeNodeStory;
+  if (story.outcome) return;
+  const choice = story.choices[Number(choiceIdx)] || story.choices[0];
+  if (!choice) return;
+
+  const run = sortieState.activeRun;
+  const nodeIdx = story.nodeIndex;
+  const node = run.nodes[nodeIdx] || story.node;
+  const stepCost = story.stepCost || { fuel: 0, ammo: 0 };
+  const {
+    entities,
+    statRules,
+    resources,
+    narrative,
+    formation,
+    commander,
+    inventory,
+    rootStorage,
+    logs,
+    bus,
+    uiKit,
+  } = sortieState.context;
+
+  const memberIds = story.memberIds || run.fleetMemberIds || [run.characterId];
+  const fleetMembers = memberIds.map((id) => entities.get(id)).filter(Boolean);
+  const char = fleetMembers[0] || getFlagship();
+  const aliveMembers = fleetMembers.filter((m) => Number(m.stats.hp ?? 0) > 0);
+  if (!char) return;
+
   sortieState.busy = true;
   await renderSortieConsole();
+
   try {
     const fleetSum = formation
       ? formation.computeFleetSummary(memberIds, run.formationId)
@@ -586,6 +693,7 @@ async function advanceNextNode() {
     const seaBonus = run.seaCondition?.mods?.checkBonus || 0;
     const cmdLuck = commander ? commander.getLuck() : 0;
     const luckDropBonus = commander ? commander.getLuckEffects().rareDropBonus : 0;
+    const effectiveDc = Math.max(6, (Number(node.dc) || 12) + (Number(choice.dcDelta) || 0));
 
     const checkResult = statRules.performCheck({
       actorId: char.id,
@@ -595,15 +703,17 @@ async function advanceNextNode() {
       effectiveStatValue: effVal,
       equipmentCheckBonus: eqCheckBonus,
       moraleValue: avgMorale,
-      dc: Number(node.dc) || 12,
+      dc: effectiveDc,
       extraModifier: seaBonus,
       commanderLuck: cmdLuck,
     });
 
     const isSuccess = checkResult.outcome === 'crit-success' || checkResult.outcome === 'success';
     const dropMult = typeof resources.getDropMultiplier === 'function' ? resources.getDropMultiplier() : 1.0;
+    const choiceLootMult = Number(choice.lootMult) || 1.0;
     const mult =
-      (checkResult.outcome === 'crit-success' ? 1.45 : isSuccess ? 1.0 : 0.5) *
+      (checkResult.outcome === 'crit-success' ? 1.45 : isSuccess ? 1.0 : 0.55) *
+      choiceLootMult *
       dropMult *
       (1 + Math.max(-0.2, luckDropBonus));
     const chips = [
@@ -621,9 +731,8 @@ async function advanceNextNode() {
       chips.push({ text: `${resources.get(rk)?.name || rk} +${val}`, negative: false });
     }
 
-    // High-probability equipment / outfit crate drop on resource salvage nodes
-    const { inventory } = sortieState.context;
-    const salvageCrateChance = Math.min(0.92, (node.type === NODE_TYPES.RESOURCE ? 0.42 : 0.25) * dropMult);
+    const baseCrate = (node.type === NODE_TYPES.RESOURCE ? 0.42 : 0.25) + (Number(choice.crateBonus) || 0);
+    const salvageCrateChance = Math.min(0.95, baseCrate * dropMult);
     if (isSuccess && inventory && typeof inventory.rollLootDropItem === 'function' && Math.random() < salvageCrateChance) {
       const dropped = await inventory.rollLootDropItem({
         tier: 'resource',
@@ -640,29 +749,31 @@ async function advanceNextNode() {
       const aff = Math.max(1, Math.round((Number(node.affinityGain) || 2) * affMult));
       for (const m of aliveMembers) {
         entities.adjustStat(m.id, 'affinity', aff, { min: 0, max: 100 });
-        entities.adjustStat(m.id, 'morale', 3, { min: 0, max: 100 });
+        entities.adjustStat(m.id, 'morale', 4, { min: 0, max: 100 });
       }
       chips.push({ text: `全队好感 +${aff}`, negative: false });
-    } else if (node.type === NODE_TYPES.WEATHER) {
+    } else if (node.type === NODE_TYPES.WEATHER && !choice.safeWeather) {
       const dmg = Math.max(4, Number(node.failDamage?.hp) || 6);
       const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(char.id, 'maxHp', { round: 'round' }).final));
       entities.adjustStat(char.id, 'hp', -dmg, { min: 0, max: effMaxHp });
       chips.push({ text: `海况损耗 ${char.name} HP -${dmg}`, negative: true });
+    } else if (choice.safeWeather) {
+      chips.push({ text: '稳健规避 · 零船体损伤', negative: false });
     }
 
     if (commander) {
-      const expGain = 15;
+      const expGain = 16;
       await commander.grantExp(expGain, `出征节点 ${node.code}`);
       chips.push({ text: `指挥官 EXP +${expGain}`, negative: false });
     }
 
     if (statRules && typeof statRules.grantShipExp === 'function') {
-      const shipNodeExp = 25;
+      const shipNodeExp = 28;
       let anyShipExp = false;
       for (const m of aliveMembers) {
         const sr = statRules.grantShipExp(entities, m.id, shipNodeExp, {
           reason: `出征推进节点 ${node.code}`,
-          inventory: sortieState.context.inventory,
+          inventory,
         });
         if (sr) {
           anyShipExp = true;
@@ -681,22 +792,22 @@ async function advanceNextNode() {
 
     const rendered = await narrative.run({
       template: isSuccess
-        ? '【节点 {nodeCode} · {nodeName}（{nodeType}）】{actor.name}顺利完成打捞与勘察（{check.total} vs DC {check.dc}），收获：{lootText}。'
-        : '【节点 {nodeCode} · {nodeName}（{nodeType}）】受限于海域环境（{check.total} vs DC {check.dc}），仅回收到部分物资：{lootText}。',
+        ? '【节点 {nodeCode} · {nodeName}】{actor.name}依照指令执行「{choiceTag}」，顺利通过检定（{check.total} vs DC {check.dc}），收获：{lootText}。'
+        : '【节点 {nodeCode} · {nodeName}】{actor.name}在「{choiceTag}」中遭遇海况阻力（{check.total} vs DC {check.dc}），仍稳妥回收了部分物资：{lootText}。',
       variables: {
         nodeCode: node.code,
         nodeName: node.name,
-        nodeType: NODE_TYPE_LABELS[node.type] || node.type,
+        choiceTag: choice.tag || choice.label,
         actor: { name: fleetMembers.length > 1 ? `${char.name}率领的${fleetMembers.length}舰编队` : char.name },
         lootText,
         check: checkResult,
       },
-      polishInstruction: `请简短润色节点 ${node.code} 的打捞/气象侦察战报，保留全部客观数字：`,
+      polishInstruction: `请简短润色节点 ${node.code} 的海域遭遇事件结果，保留客观数字：`,
     });
 
     resolveNextStepAfterNode(run, nodeIdx);
 
-    run.reports.unshift({
+    const reportRecord = {
       id: `sr_${Date.now()}_${nodeIdx}`,
       nodeCode: node.code,
       nodeName: node.name,
@@ -715,7 +826,16 @@ async function advanceNextNode() {
       },
       chips,
       timestamp: Date.now(),
-    });
+    };
+    run.reports.unshift(reportRecord);
+
+    story.outcome = {
+      passed: isSuccess,
+      choiceLabel: choice.label,
+      text: rendered.text,
+      check: reportRecord.check,
+      chips,
+    };
 
     await persistActiveRun();
     logs.add({
@@ -723,10 +843,10 @@ async function advanceNextNode() {
       actorId: char.id,
       actorName: char.name,
       title: `[${char.name}等] 节点 ${node.code}·${node.name}（${NODE_TYPE_LABELS[node.type] || node.type}）`,
-      detail: `收获：${lootText}`,
+      detail: `${choice.tag || ''} · 收获：${lootText}`,
     });
     bus.emit('sortie:node-resolved', { routeId: run.routeId, nodeCode: node.code, completed: run.completed });
-    uiKit.showToast(`节点 ${node.code} 打捞完成：${lootText}`, 'ok');
+    uiKit.showToast(`节点 ${node.code} 遭遇结算完成：${lootText}`, isSuccess ? 'ok' : 'info');
   } finally {
     sortieState.busy = false;
     await renderSortieConsole();
@@ -1792,16 +1912,19 @@ function createRadarSeaChartElement(
 async function renderSortieConsole() {
   if (!sortieState.container || !sortieState.context) return;
   const {
+    assets,
     entities,
     resources,
     statRules,
     inventory,
+    personalityPool,
     narrative,
     routeGenerator,
     combat,
     formation,
     commander,
     fxStage,
+    theme,
     modules,
     ui,
     uiKit,
@@ -1809,10 +1932,11 @@ async function renderSortieConsole() {
   const char = getFlagship();
   if (!char) {
     ui.setImmersiveBattle(false);
+    ui.setStageMode?.('chart');
     sortieState.container.innerHTML = `
       <section class="surface-card">
         <h2 class="section-title">暂无可用出征编队</h2>
-        <p class="muted-text">请先返回港区大本营配置至少 1 名适航舰娘入队。</p>
+        <p class="muted-text">请先返回港区配置至少 1 名适航舰娘入队。</p>
       </section>
     `;
     return;
@@ -1825,12 +1949,12 @@ async function renderSortieConsole() {
     : null;
 
   // ============================================================
-  // IMMERSIVE FULL-SCREEN BATTLE SCREEN MODE
-  // Automatically hides the sea chart & locks horizontal swipe!
+  // MODE 1: IMMERSIVE IN-PLACE TACTICAL BATTLE STAGE
   // ============================================================
   const activeCombatSession = combat.isInBattleScreen() ? combat.getSession() : null;
   if (activeCombatSession || sortieState.postBattleSettlement) {
     ui.setImmersiveBattle(true);
+    ui.setStageMode?.('battle');
     const displaySession = activeCombatSession || sortieState.postBattleSettlement.sessionSnapshot;
     const currentTurnSlot = activeCombatSession ? combat.getCurrentTurnSlot() : null;
     const currentActor = activeCombatSession ? combat.getCurrentActor() : null;
@@ -1866,6 +1990,7 @@ async function renderSortieConsole() {
       onPostBattleContinue: () => {
         sortieState.postBattleSettlement = null;
         ui.setImmersiveBattle(false);
+        ui.setStageMode?.('chart');
         renderSortieConsole();
       },
       onPostBattleDockyard: () => {
@@ -1879,8 +2004,143 @@ async function renderSortieConsole() {
     return;
   }
 
-  // Normal Sea-Chart Mode (unlock immersive battle)
+  // ============================================================
+  // MODE 2: IN-PLACE SEA ENCOUNTER STORY THEATRE (Same Central Stage!)
+  // ============================================================
+  if (sortieState.activeNodeStory && sortieState.activeRun) {
+    ui.setImmersiveBattle(false);
+    ui.setStageMode?.('theatre');
+    const story = sortieState.activeNodeStory;
+    const storyChar = entities.get(story.flagshipId) || char;
+    const storyProg = statRules.ensureShipProgression(storyChar);
+    const storyClass = resolveShipClass(storyChar.meta?.shipType);
+    const persSum =
+      personalityPool && typeof personalityPool.getPersonalitySummary === 'function'
+        ? personalityPool.getPersonalitySummary(storyChar)
+        : null;
+    const primaryTrait = persSum?.primary?.name || storyChar.meta?.personalityTags?.[0] || '沉稳';
+    const secondaryTraits =
+      persSum?.secondaries?.length > 0
+        ? persSum.secondaries.map((s) => s.name)
+        : (storyChar.meta?.personalityTags || []).slice(1, 3);
+
+    let flagshipUrl = '';
+    if (assets) {
+      const avRes = await assets.getAssetUrl(storyChar.meta?.avatarAssetId || null, {
+        fallbackSeed: storyChar.id,
+        fallbackLabel: storyChar.name.slice(0, 6),
+      });
+      flagshipUrl = avRes.url;
+    }
+
+    const displayText = story.outcome ? story.outcome.text : story.prompt;
+    sortieState.container.innerHTML = '';
+    const storyWrap = document.createElement('div');
+    storyWrap.className = 'sortie-root';
+    storyWrap.innerHTML = `
+      <section class="surface-card theatre-stage-card is-sea-encounter" id="sortie-encounter-theatre">
+        <div class="theatre-toolbar-row">
+          <span class="status-badge badge-ok">${escapeHtml(story.badge)}</span>
+          <span class="status-badge badge-muted">${escapeHtml(sortieState.activeRun.routeName || '出征海域')} · 节点 ${escapeHtml(story.node?.code || '')}</span>
+        </div>
+
+        <div class="theatre-hero-stage">
+          <div class="theatre-portrait-frame">
+            <img class="theatre-portrait-img" src="${flagshipUrl}" alt="${escapeHtml(storyChar.name)}">
+            <span class="theatre-lv-pill">Lv.${storyProg.level}</span>
+          </div>
+          <div class="theatre-hero-meta">
+            <div class="cc-hero-name-row">
+              <span class="ship-class-ico">${getShipClassSvg(storyClass, { size: 20 })}</span>
+              <h3 class="cc-hero-name">${escapeHtml(storyChar.name)}</h3>
+              <span class="status-badge badge-ok">旗舰</span>
+            </div>
+            <div class="cc-badge-row">
+              <span class="status-badge badge-accent-soft">${escapeHtml(primaryTrait)}</span>
+              ${secondaryTraits.map((t) => `<span class="status-badge badge-muted">${escapeHtml(t)}</span>`).join('')}
+            </div>
+            <div class="muted-text" style="font-size:12px;">${escapeHtml(story.title)}</div>
+          </div>
+        </div>
+
+        <div class="theatre-dialogue-box" id="sortie-story-dialogue-box">
+          <div class="theatre-speaker-row">
+            <span class="theatre-speaker-tag">${escapeHtml(story.outcome ? '遭遇战报结算' : `${storyChar.name} · 舰桥请示`)}</span>
+            ${
+              story.outcome?.check
+                ? `<span class="status-badge ${story.outcome.passed ? 'badge-ok' : 'badge-warn'}">${escapeHtml(story.outcome.check.statLabel)} ${story.outcome.check.total} vs DC ${story.outcome.check.dc}</span>`
+                : `<span class="status-badge badge-muted">请选择应对策略</span>`
+            }
+          </div>
+          <div class="theatre-dialogue-text" id="sortie-story-dialogue-text">${escapeHtml(displayText)}</div>
+          ${
+            story.outcome?.chips?.length
+              ? `<div class="cc-badge-row" style="margin-top:8px;">
+                  ${story.outcome.chips
+                    .map(
+                      (c) =>
+                        `<span class="status-badge ${c.negative ? 'badge-danger' : 'badge-ok'}">${escapeHtml(c.text)}</span>`
+                    )
+                    .join('')}
+                </div>`
+              : ''
+          }
+        </div>
+
+        <div class="theatre-choices-stack">
+          ${
+            story.outcome
+              ? `<button type="button" id="btn-sortie-story-return-chart" class="btn-primary uikit-touch-target">
+                  返回雷达海图继续推进 →
+                </button>`
+              : story.choices
+                  .map(
+                    (ch, idx) => `
+                  <button type="button" class="theatre-choice-btn" data-sea-story-choice="${idx}" ${sortieState.busy ? 'disabled' : ''}>
+                    <span class="theatre-choice-label">${escapeHtml(ch.label)}</span>
+                    <span class="status-badge badge-ok">${escapeHtml(ch.tag || '执行')}</span>
+                  </button>
+                `
+                  )
+                  .join('')
+          }
+        </div>
+      </section>
+    `;
+
+    storyWrap.querySelectorAll('[data-sea-story-choice]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        resolveActiveNodeStoryChoice(Number(btn.getAttribute('data-sea-story-choice')));
+      });
+    });
+
+    storyWrap.querySelector('#btn-sortie-story-return-chart')?.addEventListener('click', () => {
+      sortieState.activeNodeStory = null;
+      ui.setStageMode?.('chart');
+      renderSortieConsole();
+    });
+
+    const dlgEl = storyWrap.querySelector('#sortie-story-dialogue-text');
+    storyWrap.querySelector('#sortie-story-dialogue-box')?.addEventListener('click', () => {
+      if (dlgEl) dlgEl.textContent = displayText;
+    });
+
+    sortieState.container.appendChild(storyWrap);
+
+    if (dlgEl && fxStage && typeof fxStage.typewrite === 'function') {
+      const speedMs = theme ? theme.getTypewriterSpeed() : 12;
+      if (speedMs > 0) {
+        fxStage.typewrite(dlgEl, displayText, { speedMs });
+      }
+    }
+    return;
+  }
+
+  // ============================================================
+  // MODE 3: SEAMLESS RADAR SEA CHART MODE (Same Central Stage!)
+  // ============================================================
   ui.setImmersiveBattle(false);
+  ui.setStageMode?.('chart');
 
   const fleetCap = formation ? formation.getFleetCap() : 3;
   const visionRange = fleetSummary?.visionRange ?? 2;
@@ -1899,22 +2159,19 @@ async function renderSortieConsole() {
   const root = document.createElement('div');
   root.className = 'sortie-root';
 
-  // Unified Full-Screen Subpage Top Bar (`← 返回港区` + Title + Fuel/Ammo)
+  // Compact Unified Stage Header for Sea Chart (Resources already live in Fixed Top Status Bar!)
   root.appendChild(
     uiKit.createSubpageHeader({
       title: '出征分岔海图',
-      subtitle: '8~15 节点雷达海图 · 遇敌自动进入全屏战斗',
+      subtitle: '8~15 节点雷达海图 · 遭遇事件与战斗同台无缝切换',
       modules,
       resources,
-      resourceKeys: ['fuel', 'ammo', 'steel'],
+      resourceKeys: [],
       id: 'sortie-subpage-header',
     })
   );
 
-  // 1. Unified 6-Resource Bar
-  root.appendChild(createResourceOverviewBar(resources, { id: 'sortie-resource-bar' }));
-
-  // 2. Fleet & Flagship Compact Status Bar
+  // 1. Fleet & Flagship Compact Status Bar
   const topCard = document.createElement('section');
   topCard.className = 'surface-card lab-stack-sm';
   topCard.id = 'sortie-flagship-bar';

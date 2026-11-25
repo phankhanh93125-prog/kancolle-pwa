@@ -147,6 +147,11 @@
 - **高产出资源、品级批量拆解与倍率调节器（`src/core/resource-manager.js`、`src/core/port-buildings.js`、`src/core/route-generator.js`、`src/modules/sortie-console.js`）**：全面提升出征节点/精英/Boss 收益与高品级装备/服装箱掉落，提高港区离线每小时自然恢复速度；仓库工坊支持按品级批量拆解闲置装备返还钢材、铝材与银条；设置面板新增持久化「资源与掉落倍率」调节器（`1.0x 常规` / `2.0x 丰饶` / `3.0x 畅玩` + `0.5x~5.0x` 自定义滑块）。
 - **已知装备类型扩建槽位与 Schema v5 无损迁移（`src/core/stat-rules.js`、`src/core/inventory-system.js`、`src/modules/character-console.js`、`src/core/save-manager.js`）**：确立全站统一的 9 类已知装备枚举（`主炮/鱼雷/舰载机/雷达/声呐/防空/引擎/装甲/核心`）并与自定义装备编辑器完全同源；角色卡保留固定三大核心槽位，将原自由输入槽位重构为「+ 扩建装备槽位」类型选择面板（支持变更类型、拆除槽位与同类型精准筛选穿戴），历史存档自动按已穿戴装备或关键词无损迁移至专属类型槽位。
 - **单舰/全队一键最优配装、战后快捷整备与粘贴 JSON 直导（`src/core/inventory-system.js`、`src/core/formation-system.js`、`src/core/port-buildings.js`、`src/core/content-manager.js`、`src/modules/compendium-studio.js`）**：角色卡提供「一键最优配装 / 一键卸下全部」，舰队编成提供「全队一键最优配装」（按旗舰至僚机顺序按品级→强化→八维总和分配仓库最优空闲装备及服装）；出征结算与返航界面集成「全队一键补给油弹」与「受损舰娘一键入渠维修」；图鉴与内容管理台新增多行文本框支持直接粘贴 JSON 文本一键合并导入角色、装备/服装、性格词条与剧情/事件包。
+- **三段式移动端骨架与统一中央沉浸主舞台（v20：`index.html`、`src/main.js`、`src/modules/port-hub.js`、`src/modules/sortie-console.js`、`src/core/story-pack-engine.js`、`src/core/tactical-combat.js`）**：
+  - **顶部固定状态栏**：紧凑常驻油/弹/钢/铝/银条/金条实时余额、可点击指挥官头像/等级摘要及「主题」「存档」「封面」「系统工具」快捷入口。
+  - **底部固定导航栏**：拇指友好 7 键常驻导航（「剧场港区」「出征战斗」「编队」「宿舍」「船坞」「仓库」「图鉴」），非聊天页及战斗态自动收起输入框，释放中央视口高度。
+  - **统一中央主舞台（`#app-stage[data-stage-mode]`）**：在 `theatre`（Galgame 风格剧情剧场：大尺寸秘书舰/角色立绘、舰种徽记、主副性格组合标签、高对比度大号打字机对话箱、快/中/瞬速切换、历史对话回看抽屉，以及图鉴剧情包一键全屏直达演绎）、`chart`（8~15 节点分岔雷达海图，触及打捞/气象节点时原地无缝切入 2 选 1 海域遭遇剧情剧场）与 `battle`（遇敌原地展开上下对阵轮流下令战术战场，战后平滑切回海图）之间同台流转。
+
 
 
 

@@ -1508,7 +1508,156 @@ function openExpeditionSheet() {
 }
 
 // ============================================================
-// Main Port Hub Renderer
+// Central Story Theatre Helpers (Speed Toggle, History Drawer, Story Picker)
+// ============================================================
+
+const TYPEWRITER_SPEED_CYCLE = [
+  { ms: 12, label: '快' },
+  { ms: 24, label: '中' },
+  { ms: 0, label: '瞬' },
+];
+
+function getTypewriterSpeedInfo(theme) {
+  const cur = theme && typeof theme.getTypewriterSpeed === 'function' ? Number(theme.getTypewriterSpeed()) : 12;
+  if (cur <= 0) return { ms: 0, label: '瞬' };
+  if (cur <= 16) return { ms: 12, label: '快' };
+  return { ms: 24, label: '中' };
+}
+
+function cycleTypewriterSpeed(theme, uiKit) {
+  if (!theme || typeof theme.setTypewriterSpeed !== 'function') return;
+  const cur = getTypewriterSpeedInfo(theme);
+  const idx = TYPEWRITER_SPEED_CYCLE.findIndex((x) => x.ms === cur.ms);
+  const next = TYPEWRITER_SPEED_CYCLE[(idx + 1) % TYPEWRITER_SPEED_CYCLE.length];
+  theme.setTypewriterSpeed(next.ms);
+  uiKit?.showToast(`剧场打字机速度：${next.label}（${next.ms === 0 ? '瞬间显示' : `${next.ms}ms/字`}）`, 'info');
+}
+
+function openTheatreHistorySheet() {
+  const { interaction, storyPacks, uiKit } = portState.context;
+  const talkHistory = interaction && typeof interaction.listHistory === 'function' ? interaction.listHistory() : [];
+  const storyHistory = storyPacks && typeof storyPacks.getHistory === 'function' ? storyPacks.getHistory() : [];
+
+  const merged = [
+    ...talkHistory.map((h) => ({
+      kind: 'daily',
+      speaker: h.characterName || '秘书舰',
+      badge: h.type === 'event' ? '日常事件' : h.type === 'gift' ? '赠礼互动' : '日常对话',
+      text: h.text || '',
+      timestamp: Number(h.timestamp) || 0,
+    })),
+    ...storyHistory.map((h) => ({
+      kind: 'story',
+      speaker: `${h.packName || '剧情包'} · ${h.nodeTitle || ''}`,
+      badge: h.choiceLabel || '剧情分支',
+      text: h.text || '',
+      timestamp: Number(h.timestamp) || 0,
+    })),
+  ]
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(0, 40);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'lab-stack-sm';
+  if (merged.length === 0) {
+    wrap.innerHTML = '<p class="muted-text">暂无剧场对话回看记录。和秘书舰交谈或演绎任意剧情包后，历史台词将自动收录于此。</p>';
+  } else {
+    wrap.innerHTML = merged
+      .map(
+        (item) => `
+      <div class="lab-slot-card theatre-history-item">
+        <div class="lab-slot-head">
+          <strong>${escapeHtml(item.speaker)}</strong>
+          <span class="status-badge ${item.kind === 'story' ? 'badge-ok' : 'badge-muted'}">${escapeHtml(item.badge)}</span>
+        </div>
+        <p class="theatre-history-text">${escapeHtml(item.text)}</p>
+      </div>
+    `
+      )
+      .join('');
+  }
+
+  uiKit.openBottomSheet({
+    title: '剧场对话历史回看',
+    subtitle: `最近 ${merged.length} 条港区日常与分支剧情记录`,
+    content: wrap,
+    actions: [{ id: 'close', label: '关闭', tone: 'secondary' }],
+  });
+}
+
+function openStoryPackPickerSheet() {
+  const { storyPacks, modules, uiKit } = portState.context;
+  const packs = storyPacks && typeof storyPacks.listPacks === 'function' ? storyPacks.listPacks() : [];
+  const activeSess = storyPacks?.getActiveTheatreSession?.() || null;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'lab-stack-sm';
+
+  if (activeSess) {
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'btn-secondary uikit-touch-target';
+    backBtn.textContent = '← 退出当前剧情包，返回日常秘书舰剧场';
+    backBtn.addEventListener('click', () => {
+      storyPacks.clearActiveTheatreSession();
+      sheet.close();
+      renderPortHub();
+    });
+    wrap.appendChild(backBtn);
+  }
+
+  const enabledPacks = packs.filter((p) => p.enabled !== false);
+  if (enabledPacks.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted-text';
+    empty.textContent = '暂无已启用的本地剧情包，可前往「图鉴」导入或创建。';
+    wrap.appendChild(empty);
+  } else {
+    for (const p of enabledPacks) {
+      const isPlaying = activeSess && activeSess.packId === p.id;
+      const card = document.createElement('div');
+      card.className = 'lab-slot-card';
+      card.innerHTML = `
+        <div class="lab-slot-head">
+          <strong>${escapeHtml(p.name)}</strong>
+          <span class="status-badge ${isPlaying ? 'badge-ok' : 'badge-muted'}">${p.nodes?.length || 0} 节点</span>
+        </div>
+        <p class="muted-text" style="font-size:12px;">${escapeHtml(p.description || '')}</p>
+        <button type="button" class="${isPlaying ? 'btn-secondary' : 'btn-primary'} uikit-touch-target" data-pick-theatre-pack="${escapeHtml(p.id)}">
+          ${isPlaying ? '从头重新演绎' : '在中央主舞台演绎'}
+        </button>
+      `;
+      card.querySelector('[data-pick-theatre-pack]').addEventListener('click', () => {
+        storyPacks.setActiveTheatreSession(p.id, p.entryNodeId || p.nodes?.[0]?.id || null);
+        portState.lastTypewrittenId = null;
+        uiKit.showToast(`已开启剧场：「${p.name}」`, 'ok');
+        sheet.close();
+        renderPortHub();
+      });
+      wrap.appendChild(card);
+    }
+  }
+
+  const gotoComp = document.createElement('button');
+  gotoComp.type = 'button';
+  gotoComp.className = 'btn-secondary uikit-touch-target';
+  gotoComp.textContent = '前往「图鉴与内容库」管理/导入更多剧情包';
+  gotoComp.addEventListener('click', () => {
+    sheet.close();
+    if (modules?.has('compendium-studio')) modules.mount('compendium-studio', { transition: 'left' });
+  });
+  wrap.appendChild(gotoComp);
+
+  const sheet = uiKit.openBottomSheet({
+    title: '选择并播放本地剧情包',
+    subtitle: '点击即可在中央主舞台全屏式演绎分支事件与主线章节',
+    content: wrap,
+    actions: [{ id: 'close', label: '关闭', tone: 'secondary' }],
+  });
+}
+
+// ============================================================
+// Main Port Hub Renderer (Unified Central Story Theatre + Facilities)
 // ============================================================
 
 async function renderPortHub() {
@@ -1524,13 +1673,20 @@ async function renderPortHub() {
     expeditions,
     buildings,
     interaction,
+    personalityPool,
+    storyPacks,
     narrative,
     fxStage,
     theme,
     rootStorage,
     modules,
+    ui,
     uiKit,
   } = portState.context;
+
+  if (ui && typeof ui.setStageMode === 'function') {
+    ui.setStageMode('theatre');
+  }
 
   const cmdProfile = commander.getProfile();
   const fleetState = formation.getState();
@@ -1541,6 +1697,7 @@ async function renderPortHub() {
   const customBlds = buildings.listCustomBuildings();
   const activeExps = expeditions.listActiveRuns();
   const globalBuffs = buildings.getGlobalBuffSummary();
+  const activeTheatreSess = storyPacks?.getActiveTheatreSession?.() || null;
 
   // Resolve Commander Avatar
   const cmdCacheKey = `cmd::${cmdProfile.avatarAssetId || 'none'}`;
@@ -1556,14 +1713,355 @@ async function renderPortHub() {
 
   portState.container.innerHTML = '';
   const root = document.createElement('div');
-  root.className = 'port-root';
-
-  // 1. Unified 6-Resource & Dual-Currency Overview Bar (Always pinned top)
-  root.appendChild(createResourceOverviewBar(resources, { showCaps: true, id: 'port-resource-bar' }));
+  root.className = 'port-root is-theatre-home';
 
   const sectionElements = {};
 
-  // 2. Top Commander Character Card Summary
+  // 1. Central Visual Novel / Galgame Story & Secretary Theatre (Always Primary Top Showcase)
+  let freshSpeechInfo = null;
+  if (secretary) {
+    const assetId = secretary.meta?.avatarAssetId || null;
+    const cacheKey = `sec::${secretary.id}::${assetId || 'none'}`;
+    let secAvatarUrl = portState.avatarCache.get(cacheKey);
+    if (!secAvatarUrl) {
+      const resolved = await assets.getAssetUrl(assetId, {
+        fallbackSeed: secretary.id,
+        fallbackLabel: secretary.name.slice(0, 6),
+      });
+      secAvatarUrl = resolved.url;
+      portState.avatarCache.set(cacheKey, secAvatarUrl);
+    }
+
+    const eqMap = inventory.getCharacterEquipment(secretary.id);
+    const secProg = statRules.ensureShipProgression(secretary);
+    const outfitName = eqMap.outfit?.name || '日常港区便装';
+    const seaworthyInfo = statRules.evaluateSeaworthiness(inventory, secretary.id);
+    const isOathed = interaction.isOathed(secretary.id);
+    const oathRec = interaction.getOathRecord(secretary.id);
+    const maxAff = interaction.getMaxAffinityFor(secretary.id);
+    const curAff = Math.round(Number(secretary.stats.affinity ?? 0));
+    const affStage = statRules.getAffinityStage(Math.min(100, curAff), {
+      thresholdReduction: cmdProfile.effects.affinityThresholdReduction,
+    });
+    const canOathNow = interaction.canOath(secretary.id).ok;
+    const isAiMode = narrative.getMode() !== NARRATIVE_MODES.LOCAL;
+    const speedInfo = getTypewriterSpeedInfo(theme);
+
+    // Random Personality Combo Badges (主性格 × 副特质)
+    const persSum =
+      personalityPool && typeof personalityPool.getPersonalitySummary === 'function'
+        ? personalityPool.getPersonalitySummary(secretary)
+        : null;
+    const primaryTraitLabel = persSum?.primary?.name || secretary.meta?.personalityTags?.[0] || '元气';
+    const secondaryTraitLabels =
+      persSum?.secondaries?.length > 0
+        ? persSum.secondaries.map((s) => s.name)
+        : (secretary.meta?.personalityTags || []).slice(1, 3);
+
+    // Determine whether we are rendering an active Story Pack or Daily Secretary Dialogue
+    let storyView = null;
+    if (activeTheatreSess && storyPacks) {
+      storyView = storyPacks.renderNodeView(activeTheatreSess.packId, activeTheatreSess.nodeId, secretary.id);
+    }
+
+    const lastTalk = interaction.getLastInteraction();
+    const dailySpeechText =
+      lastTalk && lastTalk.characterId === secretary.id
+        ? lastTalk.text
+        : secretary.meta?.speechHabit || `「${secretary.name} 正在港区秘书舰执勤中，指挥官有什么安排？」`;
+
+    const isStoryMode = Boolean(storyView && activeTheatreSess);
+    const storyOutcome = isStoryMode ? activeTheatreSess.lastOutcome : null;
+    const displaySpeaker = isStoryMode
+      ? `${storyView.pack.name} · ${storyView.node.title}`
+      : `${isOathed ? '★ ' : ''}${secretary.name}`;
+    const displayDialogueText = isStoryMode
+      ? storyOutcome
+        ? storyOutcome.text
+        : storyView.text
+      : dailySpeechText;
+
+    const secCard = document.createElement('section');
+    secCard.className = `surface-card theatre-stage-card ${isStoryMode ? 'is-story-pack-active' : ''}`;
+    secCard.id = 'port-secretary-stage';
+
+    secCard.innerHTML = `
+      <div class="theatre-toolbar-row">
+        <span class="status-badge ${isStoryMode ? 'badge-ok' : 'badge-muted'}" id="theatre-mode-badge">
+          ${isStoryMode ? '剧情剧场演绎中' : '港区日常剧场'}
+        </span>
+        <div class="theatre-toolbar-actions">
+          <button type="button" id="btn-theatre-speed" class="theatre-mini-btn" title="切换打字机速度">
+            打字:${speedInfo.label}
+          </button>
+          <button type="button" id="btn-theatre-history" class="theatre-mini-btn">历史回看</button>
+          <button type="button" id="btn-theatre-pick-pack" class="theatre-mini-btn ${isStoryMode ? 'is-active' : ''}">
+            ${isStoryMode ? '切换剧情' : '剧情包'}
+          </button>
+          <button type="button" id="btn-sec-mode-toggle" class="theatre-mini-btn ${isAiMode ? 'is-active' : ''}">
+            ${isAiMode ? 'AI润色' : '本地'}
+          </button>
+        </div>
+      </div>
+
+      <div class="theatre-hero-stage">
+        <button type="button" class="avatar-jump-btn theatre-portrait-frame" id="btn-port-sec-jump-card" data-jump-char-card="${escapeHtml(secretary.id)}" title="点击立绘直达「${escapeHtml(secretary.name)}」精修角色卡">
+          <img class="theatre-portrait-img" id="port-sec-avatar" src="${secAvatarUrl}" alt="${escapeHtml(secretary.name)}">
+          <span class="theatre-lv-pill" id="port-sec-level-badge">Lv.${secProg.level}</span>
+        </button>
+
+        <div class="theatre-hero-meta">
+          <div class="cc-hero-name-row">
+            <span class="ship-class-ico">${getShipClassSvg(resolveShipClass(secretary.meta?.shipType), { size: 20 })}</span>
+            <h3 class="cc-hero-name" id="port-sec-name">${isOathed ? '★ ' : ''}${escapeHtml(secretary.name)}</h3>
+            <span class="status-badge ${seaworthyInfo.seaworthy ? 'badge-ok' : 'badge-danger'}" id="port-seaworthy-badge">
+              ${seaworthyInfo.seaworthy ? '适航' : '未适航'}
+            </span>
+          </div>
+          <div class="cc-badge-row">
+            <span class="status-badge badge-ok">${escapeHtml(secretary.meta?.shipType || '驱逐舰')}</span>
+            <span class="status-badge badge-accent-soft">${escapeHtml(primaryTraitLabel)}</span>
+            ${secondaryTraitLabels
+              .map((t) => `<span class="status-badge badge-muted">${escapeHtml(t)}</span>`)
+              .join('')}
+          </div>
+          <div class="cc-badge-row">
+            <span class="status-badge badge-muted">服装：${escapeHtml(outfitName)}</span>
+            <span class="status-badge ${isOathed ? 'badge-ok' : 'badge-warn'}" id="port-sec-aff-badge">
+              ${isOathed ? `誓约·${escapeHtml(oathRec?.oathTitle || '永恒')}` : affStage.label} ${curAff}/${maxAff}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="theatre-dialogue-box" id="theatre-dialogue-container" role="region" aria-label="剧场对话阅读区" title="轻触对话区可立即显示全文">
+        <div class="theatre-speaker-row">
+          <span class="theatre-speaker-tag">${escapeHtml(displaySpeaker)}</span>
+          ${
+            isStoryMode && storyOutcome?.check
+              ? `<span class="status-badge ${storyOutcome.passed ? 'badge-ok' : 'badge-warn'}">检定 ${storyOutcome.check.total} vs DC ${storyOutcome.check.dc}</span>`
+              : `<span class="muted-text" style="font-size:11px;">士气 ${Math.round(Number(secretary.stats.morale ?? 70))} · EXP ${secProg.exp}/${secProg.maxExp}</span>`
+          }
+        </div>
+        <div class="theatre-dialogue-text" id="port-sec-dialogue">${escapeHtml(displayDialogueText)}</div>
+        ${
+          isStoryMode && storyOutcome?.chips?.length
+            ? `<div class="cc-badge-row" style="margin-top:8px;">
+                ${storyOutcome.chips
+                  .map(
+                    (c) =>
+                      `<span class="status-badge ${c.negative ? 'badge-danger' : 'badge-ok'}">${escapeHtml(c.text)}</span>`
+                  )
+                  .join('')}
+              </div>`
+            : ''
+        }
+      </div>
+
+      ${
+        isStoryMode
+          ? `
+        <div class="theatre-choices-stack" id="theatre-story-choices">
+          ${
+            storyOutcome
+              ? `
+            <div class="lab-btn-grid">
+              ${
+                storyOutcome.nextNodeId
+                  ? `<button type="button" id="btn-theatre-story-next" class="btn-primary uikit-touch-target">继续下一幕 →</button>`
+                  : `<button type="button" id="btn-theatre-story-replay" class="btn-primary uikit-touch-target">本幕完结 · 重新演绎</button>`
+              }
+              <button type="button" id="btn-theatre-story-exit" class="btn-secondary uikit-touch-target">返回日常剧场</button>
+            </div>
+          `
+              : `
+            ${(storyView.choices || [])
+              .map(
+                (ch) => `
+              <button type="button" class="theatre-choice-btn ${ch.unlocked ? '' : 'is-locked'}" data-theatre-choice="${escapeHtml(ch.id)}" ${ch.unlocked && !portState.busy ? '' : 'disabled'}>
+                <span class="theatre-choice-label">${escapeHtml(ch.label)}</span>
+                ${
+                  ch.check
+                    ? `<span class="status-badge badge-muted">${escapeHtml(ch.check.statKey)} DC ${ch.check.dc}</span>`
+                    : ch.unlocked
+                    ? '<span class="status-badge badge-ok">分支</span>'
+                    : `<span class="status-badge badge-warn">未解锁</span>`
+                }
+              </button>
+            `
+              )
+              .join('')}
+            <button type="button" id="btn-theatre-story-exit" class="btn-secondary uikit-touch-target">暂离剧情 · 返回日常剧场</button>
+          `
+          }
+        </div>
+      `
+          : `
+        <div id="port-sec-bars" class="theatre-mini-bars"></div>
+        <div class="lab-btn-grid">
+          <button type="button" id="btn-sec-talk" class="btn-primary uikit-touch-target" ${portState.busy ? 'disabled' : ''}>日常交谈</button>
+          <button type="button" id="btn-sec-gift" class="btn-secondary uikit-touch-target">赠送礼物</button>
+          <button type="button" id="btn-sec-event" class="btn-secondary uikit-touch-target" ${portState.busy ? 'disabled' : ''}>港区日常事件</button>
+          <button type="button" id="btn-sec-oath" class="${canOathNow || isOathed ? 'btn-primary' : 'btn-secondary'} uikit-touch-target">
+            ${isOathed ? '★ 誓约纪念' : canOathNow ? '★ 举行誓约仪式' : `誓约 (${curAff}/100)`}
+          </button>
+        </div>
+        <div class="lab-btn-grid">
+          <button type="button" id="btn-sec-play-story" class="btn-secondary uikit-touch-target">播放本地剧情包</button>
+          <button type="button" id="btn-sec-switch" class="btn-secondary uikit-touch-target">更换秘书舰</button>
+        </div>
+      `
+      }
+    `;
+
+    // Compact progress bars in Daily Mode
+    const secBars = secCard.querySelector('#port-sec-bars');
+    if (secBars) {
+      const secExpBar = uiKit.createProgressBar({
+        label: `旗舰经验 Lv.${secProg.level} (${secProg.exp}/${secProg.maxExp})`,
+        value: secProg.exp,
+        max: secProg.maxExp,
+        tone: 'ok',
+      });
+      secExpBar.element.id = 'port-sec-exp-bar';
+      secBars.appendChild(secExpBar.element);
+      secBars.appendChild(
+        uiKit.createProgressBar({
+          label: isOathed ? `誓约好感 (${curAff}/${maxAff})` : `好感 · ${affStage.label} (${curAff}/${maxAff})`,
+          value: curAff,
+          max: maxAff,
+          tone: isOathed || canOathNow ? 'ok' : 'accent',
+        }).element
+      );
+    }
+
+    // Bind Toolbar & Portrait
+    secCard.querySelector('#btn-port-sec-jump-card').addEventListener('click', () => {
+      jumpToCharacterCard(secretary.id);
+    });
+    secCard.querySelector('#btn-theatre-speed').addEventListener('click', () => {
+      cycleTypewriterSpeed(theme, uiKit);
+      renderPortHub();
+    });
+    secCard.querySelector('#btn-theatre-history').addEventListener('click', () => openTheatreHistorySheet());
+    secCard.querySelector('#btn-theatre-pick-pack').addEventListener('click', () => openStoryPackPickerSheet());
+    secCard.querySelector('#btn-sec-mode-toggle').addEventListener('click', () => {
+      const next = isAiMode ? NARRATIVE_MODES.LOCAL : NARRATIVE_MODES.AI_POLISH;
+      narrative.setMode(next);
+      uiKit.showToast(next === NARRATIVE_MODES.LOCAL ? '剧场对话切换为纯本地离线文本' : '剧场对话切换为 AI 润色增强', 'ok');
+      renderPortHub();
+    });
+
+    // Tap dialogue box to skip/complete typewriter immediately
+    const dlgBox = secCard.querySelector('#theatre-dialogue-container');
+    const dlgEl = secCard.querySelector('#port-sec-dialogue');
+    dlgBox?.addEventListener('click', () => {
+      if (dlgEl) dlgEl.textContent = displayDialogueText;
+    });
+
+    // Bind Story Pack Choice Actions OR Daily Mode Actions
+    if (isStoryMode) {
+      secCard.querySelectorAll('[data-theatre-choice]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (portState.busy) return;
+          const choiceId = btn.getAttribute('data-theatre-choice');
+          portState.busy = true;
+          try {
+            const outcome = await storyPacks.executeChoice({
+              packId: activeTheatreSess.packId,
+              nodeId: activeTheatreSess.nodeId,
+              choiceId,
+              characterId: secretary.id,
+            });
+            await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: secretary.id });
+            storyPacks.updateActiveTheatreOutcome(outcome, null);
+            portState.lastTypewrittenId = null;
+            uiKit.showToast(outcome.passed ? '剧情选项检定通过！' : '剧情分支已推进', outcome.passed ? 'ok' : 'info');
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '执行选项失败', 'warn');
+          } finally {
+            portState.busy = false;
+            await renderPortHub();
+          }
+        });
+      });
+
+      secCard.querySelector('#btn-theatre-story-next')?.addEventListener('click', () => {
+        if (storyOutcome?.nextNodeId) {
+          storyPacks.updateActiveTheatreOutcome(null, storyOutcome.nextNodeId);
+          portState.lastTypewrittenId = null;
+          renderPortHub();
+        }
+      });
+
+      secCard.querySelector('#btn-theatre-story-replay')?.addEventListener('click', () => {
+        storyPacks.setActiveTheatreSession(
+          storyView.pack.id,
+          storyView.pack.entryNodeId || storyView.pack.nodes?.[0]?.id || null
+        );
+        portState.lastTypewrittenId = null;
+        renderPortHub();
+      });
+
+      secCard.querySelector('#btn-theatre-story-exit')?.addEventListener('click', () => {
+        storyPacks.clearActiveTheatreSession();
+        portState.lastTypewrittenId = null;
+        renderPortHub();
+      });
+
+      const storyKey = `story::${activeTheatreSess.packId}::${activeTheatreSess.nodeId}::${storyOutcome?.timestamp || 'node'}`;
+      if (portState.lastTypewrittenId !== storyKey) {
+        portState.lastTypewrittenId = storyKey;
+        freshSpeechInfo = { el: dlgEl, text: displayDialogueText };
+      }
+    } else {
+      secCard.querySelector('#btn-sec-talk')?.addEventListener('click', async () => {
+        if (portState.busy) return;
+        portState.busy = true;
+        try {
+          const res = await interaction.talkToSecretary({ characterId: secretary.id });
+          await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: secretary.id });
+          uiKit.showToast(`好感 +${res.affDelta}（${res.afterAff}） · 士气 +${res.moraleDelta}`, 'ok');
+        } finally {
+          portState.busy = false;
+          await renderPortHub();
+        }
+      });
+
+      secCard.querySelector('#btn-sec-gift')?.addEventListener('click', () => openGiftSheet(secretary));
+
+      secCard.querySelector('#btn-sec-event')?.addEventListener('click', async () => {
+        if (portState.busy) return;
+        portState.busy = true;
+        try {
+          const res = await interaction.triggerDailyPortEvent(secretary.id);
+          await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: secretary.id });
+          uiKit.showToast(`日常事件「${res.title}」：好感 +${res.affDelta}`, 'ok');
+        } finally {
+          portState.busy = false;
+          await renderPortHub();
+        }
+      });
+
+      secCard.querySelector('#btn-sec-oath')?.addEventListener('click', () => openOathSheet(secretary));
+      secCard.querySelector('#btn-sec-play-story')?.addEventListener('click', () => openStoryPackPickerSheet());
+      secCard.querySelector('#btn-sec-switch')?.addEventListener('click', () => openSwitchSecretarySheet());
+
+      if (
+        lastTalk &&
+        lastTalk.characterId === secretary.id &&
+        lastTalk.timestamp &&
+        portState.lastTypewrittenId !== lastTalk.timestamp
+      ) {
+        portState.lastTypewrittenId = lastTalk.timestamp;
+        freshSpeechInfo = { el: dlgEl, text: displayDialogueText };
+      }
+    }
+
+    sectionElements.secretary = secCard;
+  }
+
+  // 2. Commander Character Card Summary
   const cmdCard = document.createElement('section');
   cmdCard.className = 'surface-card lab-stack-sm';
   cmdCard.id = 'port-commander-card';
@@ -1608,171 +2106,7 @@ async function renderPortHub() {
   cmdCard.querySelector('#btn-port-edit-commander').addEventListener('click', () => openCommanderSheet());
   sectionElements.commander = cmdCard;
 
-  // 3. Center Secretary Daily Interaction & Oath Stage
-  let freshSpeechInfo = null;
-  if (secretary) {
-    const assetId = secretary.meta?.avatarAssetId || null;
-    const cacheKey = `sec::${secretary.id}::${assetId || 'none'}`;
-    let secAvatarUrl = portState.avatarCache.get(cacheKey);
-    if (!secAvatarUrl) {
-      const resolved = await assets.getAssetUrl(assetId, {
-        fallbackSeed: secretary.id,
-        fallbackLabel: secretary.name.slice(0, 6),
-      });
-      secAvatarUrl = resolved.url;
-      portState.avatarCache.set(cacheKey, secAvatarUrl);
-    }
-
-    const eqMap = inventory.getCharacterEquipment(secretary.id);
-    const secProg = statRules.ensureShipProgression(secretary);
-    const outfitName = eqMap.outfit?.name || '日常港区便装';
-    const seaworthyInfo = statRules.evaluateSeaworthiness(inventory, secretary.id);
-    const isOathed = interaction.isOathed(secretary.id);
-    const oathRec = interaction.getOathRecord(secretary.id);
-    const maxAff = interaction.getMaxAffinityFor(secretary.id);
-    const curAff = Math.round(Number(secretary.stats.affinity ?? 0));
-    const affStage = statRules.getAffinityStage(Math.min(100, curAff), {
-      thresholdReduction: cmdProfile.effects.affinityThresholdReduction,
-    });
-    const canOathNow = interaction.canOath(secretary.id).ok;
-    const lastTalk = interaction.getLastInteraction();
-    const speechText =
-      lastTalk && lastTalk.characterId === secretary.id
-        ? lastTalk.text
-        : secretary.meta?.speechHabit || `「${secretary.name} 正在港区秘书舰执勤中，指挥官有什么安排？」`;
-    const isAiMode = narrative.getMode() !== NARRATIVE_MODES.LOCAL;
-
-    const secCard = document.createElement('section');
-    secCard.className = 'surface-card lab-stack-sm';
-    secCard.id = 'port-secretary-stage';
-    secCard.innerHTML = `
-      <div class="section-header-row" style="margin-bottom:0;">
-        <h2 class="section-title">秘书舰互动舞台</h2>
-        <button type="button" id="btn-sec-mode-toggle" class="ac-mode-toggle ${isAiMode ? 'is-ai' : ''}">
-          ${isAiMode ? 'AI 对话增强' : '纯本地台词'}
-        </button>
-      </div>
-
-      <div class="cc-hero-row">
-        <button type="button" class="avatar-jump-btn" id="btn-port-sec-jump-card" data-jump-char-card="${escapeHtml(secretary.id)}" title="点击头像直达精修角色卡">
-          <img class="cc-avatar" id="port-sec-avatar" src="${secAvatarUrl}" alt="${escapeHtml(secretary.name)}">
-        </button>
-        <div class="cc-hero-info">
-          <div class="cc-hero-name-row">
-            <span class="ship-class-ico">${getShipClassSvg(resolveShipClass(secretary.meta?.shipType), { size: 20 })}</span>
-            <h3 class="cc-hero-name" id="port-sec-name">${isOathed ? '★ ' : ''}${escapeHtml(secretary.name)}</h3>
-            <span class="status-badge ship-lv-badge" id="port-sec-level-badge">Lv.${secProg.level}</span>
-            <span class="status-badge ${seaworthyInfo.seaworthy ? 'badge-ok' : 'badge-danger'}" id="port-seaworthy-badge">
-              ${seaworthyInfo.seaworthy ? '适航' : '未适航'}
-            </span>
-          </div>
-          <div class="cc-badge-row">
-            <span class="status-badge badge-ok">${escapeHtml(secretary.meta?.shipType || '驱逐舰')}</span>
-            <span class="status-badge badge-muted">服装：${escapeHtml(outfitName)}</span>
-            <span class="status-badge ${isOathed ? 'badge-ok' : 'badge-warn'}" id="port-sec-aff-badge">
-              ${isOathed ? `誓约·${escapeHtml(oathRec?.oathTitle || '永恒')}` : affStage.label} (${curAff}/${maxAff})
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div class="sec-dialogue-bubble" id="port-sec-dialogue">
-        ${escapeHtml(speechText)}
-      </div>
-
-      <div id="port-sec-bars" class="lab-stack-sm"></div>
-
-      <div class="lab-btn-grid">
-        <button type="button" id="btn-sec-talk" class="btn-primary uikit-touch-target" ${portState.busy ? 'disabled' : ''}>日常交谈</button>
-        <button type="button" id="btn-sec-gift" class="btn-secondary uikit-touch-target">赠送礼物</button>
-        <button type="button" id="btn-sec-event" class="btn-secondary uikit-touch-target" ${portState.busy ? 'disabled' : ''}>港区日常事件</button>
-        <button type="button" id="btn-sec-oath" class="${canOathNow || isOathed ? 'btn-primary' : 'btn-secondary'} uikit-touch-target">
-          ${isOathed ? '★ 誓约纪念' : canOathNow ? '★ 举行誓约仪式' : `誓约 (${curAff}/100)`}
-        </button>
-      </div>
-      <button type="button" id="btn-sec-switch" class="btn-secondary uikit-touch-target">更换秘书舰</button>
-    `;
-
-    const secBars = secCard.querySelector('#port-sec-bars');
-    const secExpBar = uiKit.createProgressBar({
-      label: `旗舰经验 (Lv.${secProg.level} · EXP ${secProg.exp}/${secProg.maxExp})`,
-      value: secProg.exp,
-      max: secProg.maxExp,
-      tone: 'ok',
-    });
-    secExpBar.element.id = 'port-sec-exp-bar';
-    secBars.appendChild(secExpBar.element);
-    secBars.appendChild(
-      uiKit.createProgressBar({
-        label: isOathed ? `誓约好感度 (${curAff}/${maxAff})` : `好感阶段 · ${affStage.label} (${curAff}/${maxAff})`,
-        value: curAff,
-        max: maxAff,
-        tone: isOathed || canOathNow ? 'ok' : 'accent',
-      }).element
-    );
-    secBars.appendChild(
-      uiKit.createProgressBar({
-        label: `士气（${statRules.getMoraleLabel(secretary.stats.morale)}）`,
-        value: Math.round(Number(secretary.stats.morale ?? 70)),
-        max: 100,
-        tone: (secretary.stats.morale ?? 70) < 30 ? 'danger' : 'accent',
-      }).element
-    );
-
-    secCard.querySelector('#btn-port-sec-jump-card').addEventListener('click', () => {
-      jumpToCharacterCard(secretary.id);
-    });
-
-    secCard.querySelector('#btn-sec-mode-toggle').addEventListener('click', () => {
-      const next = isAiMode ? NARRATIVE_MODES.LOCAL : NARRATIVE_MODES.AI_POLISH;
-      narrative.setMode(next);
-      uiKit.showToast(next === NARRATIVE_MODES.LOCAL ? '秘书舰互动切换为纯本地离线台词' : '秘书舰互动切换为 AI 对话增强', 'ok');
-      renderPortHub();
-    });
-
-    secCard.querySelector('#btn-sec-talk').addEventListener('click', async () => {
-      if (portState.busy) return;
-      portState.busy = true;
-      try {
-        const res = await interaction.talkToSecretary({ characterId: secretary.id });
-        await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: secretary.id });
-        uiKit.showToast(`好感 +${res.affDelta}（${res.afterAff}） · 士气 +${res.moraleDelta}`, 'ok');
-      } finally {
-        portState.busy = false;
-        await renderPortHub();
-      }
-    });
-
-    secCard.querySelector('#btn-sec-gift').addEventListener('click', () => openGiftSheet(secretary));
-
-    secCard.querySelector('#btn-sec-event').addEventListener('click', async () => {
-      if (portState.busy) return;
-      portState.busy = true;
-      try {
-        const res = await interaction.triggerDailyPortEvent(secretary.id);
-        await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: secretary.id });
-        uiKit.showToast(`日常事件「${res.title}」：好感 +${res.affDelta}`, 'ok');
-      } finally {
-        portState.busy = false;
-        await renderPortHub();
-      }
-    });
-
-    secCard.querySelector('#btn-sec-oath').addEventListener('click', () => openOathSheet(secretary));
-    secCard.querySelector('#btn-sec-switch').addEventListener('click', () => openSwitchSecretarySheet());
-
-    if (lastTalk && lastTalk.characterId === secretary.id && lastTalk.timestamp && portState.lastTypewrittenId !== lastTalk.timestamp) {
-      portState.lastTypewrittenId = lastTalk.timestamp;
-      freshSpeechInfo = {
-        el: secCard.querySelector('#port-sec-dialogue'),
-        text: speechText,
-      };
-    }
-
-    sectionElements.secretary = secCard;
-  }
-
-  // 4. Streamlined Port Operations Strip (Quick Sortie CTA + One-Tap Resupply)
+  // 3. Streamlined Port Operations Strip (Quick Sortie CTA + One-Tap Resupply)
   const serviceTargets = fleetState.count > 0 ? formation.getMembers() : secretary ? [secretary] : [];
   const servicePlan = computeFleetServicePlan(serviceTargets);
   const costText = servicePlan.needsService
@@ -1804,7 +2138,7 @@ async function renderPortHub() {
   );
   sectionElements.operations = opsCard;
 
-  // 5. Dedicated Full-Screen Facilities Entry Hub (出征海图 / 舰队编成 / 舰娘宿舍 / 船坞整备 / 远征派遣 / 仓库工坊 / 图鉴内容库)
+  // 4. Facilities Entry Hub
   const buffParts = [];
   if (globalBuffs.resourceRegenPct > 0) buffParts.push(`资源恢复 +${globalBuffs.resourceRegenPct}%`);
   if (globalBuffs.expBoostPct > 0) buffParts.push(`经验获取 +${globalBuffs.expBoostPct}%`);
@@ -1821,8 +2155,8 @@ async function renderPortHub() {
   bldCard.id = 'port-buildings-card';
   bldCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">港区功能设施（独立全屏页）</h2>
-      <span class="status-badge badge-ok">${7 + customBlds.length} 个入口</span>
+      <h2 class="section-title">港区设施与远征</h2>
+      <span class="status-badge badge-ok">${8 + customBlds.length} 个入口</span>
     </div>
     ${
       buffParts.length > 0
@@ -1836,7 +2170,7 @@ async function renderPortHub() {
           <strong>出征海图</strong>
           <span class="status-badge badge-ok">8~15节点</span>
         </div>
-        <span class="port-building-sub">分岔雷达海图 · 独立全屏战术战斗</span>
+        <span class="port-building-sub">同台无缝切换海图 / 遭遇剧情 / 战斗</span>
       </button>
 
       <button type="button" class="port-building-tile" id="btn-open-formation" data-open-facility="formation">
@@ -1844,7 +2178,7 @@ async function renderPortHub() {
           <strong>舰队编成</strong>
           <span class="status-badge badge-ok">${fleetState.count}/${fleetState.cap}舰</span>
         </div>
-        <span class="port-building-sub">${escapeHtml(fleetSummary.formationName)} · 3~12人阶梯消耗</span>
+        <span class="port-building-sub">${escapeHtml(fleetSummary.formationName)} · 一键全队配装</span>
       </button>
 
       <button type="button" class="port-building-tile" id="btn-open-dormitory" data-open-facility="dormitory">
@@ -1884,7 +2218,7 @@ async function renderPortHub() {
           <strong>图鉴与内容库</strong>
           <span class="status-badge badge-ok">大礼包/剧情</span>
         </div>
-        <span class="port-building-sub">全要素图鉴 · 分支剧情包与模组导入</span>
+        <span class="port-building-sub">全要素图鉴 · 分支剧情包与 JSON 导入</span>
       </button>
 
       <button type="button" class="port-building-tile" id="btn-open-charcard-hub" data-open-facility="character">
@@ -1892,7 +2226,7 @@ async function renderPortHub() {
           <strong>舰娘角色卡</strong>
           <span class="status-badge badge-muted">${charCount} 名</span>
         </div>
-        <span class="port-building-sub">八维属性 · 性格词库与自定义槽位</span>
+        <span class="port-building-sub">八维属性 · 扩建专属类型槽位与最优配装</span>
       </button>
 
       ${customBlds
@@ -1945,18 +2279,23 @@ async function renderPortHub() {
 
   sectionElements.buildings = bldCard;
 
-  // Render cards according to user's Modular Port Hub Layout (order & visibility)
+  // Always prioritize the Central Story Theatre first in the unified main stage
+  let appendedCount = 0;
+  if (sectionElements.secretary) {
+    root.appendChild(sectionElements.secretary);
+    appendedCount += 1;
+  }
+
   const layoutOrder = theme
     ? theme.getPortLayout()
     : [
-        { id: 'commander', visible: true },
-        { id: 'secretary', visible: true },
         { id: 'operations', visible: true },
         { id: 'buildings', visible: true },
+        { id: 'commander', visible: true },
       ];
 
-  let appendedCount = 0;
   for (const entry of layoutOrder) {
+    if (entry.id === 'secretary') continue;
     if (entry.visible !== false && sectionElements[entry.id]) {
       root.appendChild(sectionElements[entry.id]);
       appendedCount += 1;
@@ -1972,25 +2311,33 @@ async function renderPortHub() {
   portState.container.appendChild(root);
 
   if (freshSpeechInfo && freshSpeechInfo.el && fxStage && typeof fxStage.typewrite === 'function') {
-    const speedMs = theme ? theme.getTypewriterSpeed() : 18;
-    fxStage.typewrite(freshSpeechInfo.el, freshSpeechInfo.text, { speedMs });
+    const speedMs = theme ? theme.getTypewriterSpeed() : 12;
+    if (speedMs <= 0) {
+      freshSpeechInfo.el.textContent = freshSpeechInfo.text;
+    } else {
+      fxStage.typewrite(freshSpeechInfo.el, freshSpeechInfo.text, { speedMs });
+    }
   }
 }
 
 export default {
   id: 'port-hub',
-  name: '港区大本营',
-  description: '港区大本营主中枢：指挥官角色卡、秘书舰日常互动与誓约舞台、宿舍/船坞/编队/远征与自定义港区建筑设施。',
+  name: '剧场港区',
+  description: '统一中央沉浸剧场与港区中枢：Galgame式日常互动与全屏分支剧情包演绎、指挥官资料、港区设施入口。',
 
   mount(container, context) {
     portState.container = container;
     portState.context = context;
     portState.avatarCache.clear();
 
+    context.ui.setStageMode?.('theatre');
     context.ui.setPlaceholder('和秘书舰聊聊任何话题，直接发送即可触发对话...');
     context.ui.setInputHandler(async (text) => {
       const sec = context.interaction?.getSecretary();
       if (sec) {
+        if (context.storyPacks?.getActiveTheatreSession?.()) {
+          context.storyPacks.clearActiveTheatreSession();
+        }
         const res = await context.interaction.talkToSecretary({ characterId: sec.id, customTopic: text });
         await persistCharacterRoster({ storage: context.rootStorage, entities: context.entities, activeCharacterId: sec.id });
         context.uiKit.showToast(`「${sec.name}」回应了你：好感 +${res.affDelta}`, 'ok');
@@ -1998,30 +2345,12 @@ export default {
       }
     });
 
-    context.ui.setQuickActions([
-      {
-        id: 'port-q-sortie',
-        label: '前往出征',
-        onClick: () => context.modules.mount('sortie-console'),
-      },
-      {
-        id: 'port-q-dorm',
-        label: '宿舍管理',
-        onClick: () => openDormitorySheet(),
-      },
-      {
-        id: 'port-q-dock',
-        label: '船坞维修',
-        onClick: () => openDockyardSheet(),
-      },
-      {
-        id: 'port-q-compendium',
-        label: '图鉴与剧情包',
-        onClick: () => context.modules.mount('compendium-studio'),
-      },
-    ]);
+    context.ui.setQuickActions([]);
 
     portState.unsubs = [
+      context.bus.on('port:open-commander', () => openCommanderSheet()),
+      context.bus.on('story:theatre-updated', () => renderPortHub()),
+      context.bus.on('story:choice-resolved', () => renderPortHub()),
       context.bus.on('resource:changed', () => renderPortHub()),
       context.bus.on('inventory:equipped', () => renderPortHub()),
       context.bus.on('inventory:unequipped', () => renderPortHub()),
