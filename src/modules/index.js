@@ -1,5 +1,6 @@
 import characterConsoleModule from './character-console.js';
 import actionConsoleModule from './action-console.js';
+import supplyWorkshopModule from './supply-workshop.js';
 import frameworkLabModule from './framework-lab.js';
 import aiConsoleModule from './ai-console.js';
 
@@ -10,6 +11,7 @@ import aiConsoleModule from './ai-console.js';
 export const REGISTERED_MODULES = [
   characterConsoleModule,
   actionConsoleModule,
+  supplyWorkshopModule,
   frameworkLabModule,
   aiConsoleModule,
 ];

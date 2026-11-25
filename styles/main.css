@@ -2017,5 +2017,170 @@ textarea:focus-visible {
   gap: 8px;
 }
 
+/* ============================================================
+   Unified 6-Resource & Dual-Currency Overview Bar
+   ============================================================ */
+
+.res-overview-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.res-overview-grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.res-overview-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.res-mini-cell {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.res-mini-cell.is-currency {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+}
+
+.res-mini-cell.is-silver {
+  border-color: rgba(203, 213, 225, 0.28);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.res-mini-cell.is-gold {
+  border-color: rgba(245, 158, 11, 0.38);
+  background: rgba(245, 158, 11, 0.09);
+}
+
+.res-mini-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.res-mini-cell.is-gold .res-mini-label {
+  color: #fbbf24;
+}
+
+.res-mini-val {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.res-mini-val small {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Seaworthiness Alert Banner & Custom Slot Cards */
+.seaworthy-alert {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  background: var(--danger-soft);
+  color: #fecaca;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.cc-slot-card {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cc-slot-card.is-missing-core {
+  border-color: rgba(248, 113, 113, 0.55);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.cc-slot-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cc-slot-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cc-slot-btn-row button {
+  flex: 1 1 auto;
+  min-height: 44px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+/* Supply & Workshop Console */
+.sw-root {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sw-shop-card {
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sw-cost-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.sw-drop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sw-drop-item {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-elevated);
+  border: 1px solid rgba(20, 184, 166, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+
 
 

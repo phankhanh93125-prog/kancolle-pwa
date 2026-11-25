@@ -128,6 +128,23 @@ export class LogSystem {
           meta: { itemId: ev.item.id, applied: ev.applied },
         });
       }),
+      this._bus.on('inventory:enhanced', (ev) => {
+        this.add({
+          category: LOG_CATEGORIES.EQUIPMENT,
+          title: `装备强化「${ev.item.name}」+${ev.prevLevel} → +${ev.nextLevel}`,
+          detail: `同步影响 ${ev.affectedCharacters?.length || 0} 名穿戴角色`,
+          meta: { itemId: ev.item.id, level: ev.nextLevel },
+        });
+      }),
+      this._bus.on('resource:offline-recovered', (report) => {
+        if (!report?.changes?.length) return;
+        const text = report.changes.map((c) => `${c.name} +${c.delta}`).join('、');
+        this.add({
+          category: LOG_CATEGORIES.RESOURCE,
+          title: `基础资源离线自动恢复（经过 ${report.formattedDuration}）`,
+          detail: text,
+        });
+      }),
       this._bus.on('resource:changed', (ev) => {
         this.add({
           category: LOG_CATEGORIES.RESOURCE,

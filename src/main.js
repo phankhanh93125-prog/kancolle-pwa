@@ -542,12 +542,16 @@ async function bootApplication() {
 
   logs.attachBusListeners();
 
-  // Trigger Auto-Save snapshot whenever equipment, characters, actions, resources, or rules mutate
+  // Trigger Auto-Save snapshot whenever equipment, slots, characters, actions, resources, or rules mutate
   saves.bindAutoSaveEvents(
     [
       'inventory:equipped',
       'inventory:unequipped',
       'inventory:consumed',
+      'inventory:enhanced',
+      'inventory:slot-added',
+      'inventory:slot-renamed',
+      'inventory:slot-removed',
       'character:saved',
       'character:deleted',
       'resource:changed',

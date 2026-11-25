@@ -221,6 +221,16 @@ export class StatRulesEngine {
   }
 
   /**
+   * Evaluate whether a character satisfies the 3 mandatory core slots (engine / armor / core).
+   */
+  evaluateSeaworthiness(inventory, characterId) {
+    if (!inventory || typeof inventory.checkSeaworthiness !== 'function') {
+      return { seaworthy: true, missingSlots: [], statusText: '适航 (Seaworthy)' };
+    }
+    return inventory.checkSeaworthiness(characterId);
+  }
+
+  /**
    * Build offline time recovery rules for EntitySystem.settleOfflineTime().
    */
   buildOfflineRecoveryRules(entityList = []) {

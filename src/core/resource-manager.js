@@ -1,24 +1,156 @@
 /**
- * Generic Resource Manager.
+ * Generic 6-Resource & Dual-Currency Manager.
  *
- * Tracks global countable resources (e.g., credits, supplies, materials, and custom user entries)
- * with balance validation, safe add/spend operations, batch transactions, EventBus broadcasts,
- * and IndexedDB persistence.
+ * Official resource schema:
+ *   - 4 Base Resources (slow offline auto-recovery up to soft storage cap):
+ *       fuel (燃油), ammo (弹药), steel (钢材), bauxite (铝材)
+ *   - 2 Currencies (do NOT auto-recover over time):
+ *       silver (银条, standard currency), gold (金条, premium currency)
+ *
+ * Provides safe balance validation, batch transactions, custom resource entries,
+ * offline recovery settlement, IndexedDB persistence, and a shared mobile overview bar component.
  */
 
 import { clamp } from './calc-engine.js';
+import { formatDurationZh } from './entity-system.js';
 
 const STORAGE_NS = 'core-resources';
-const STATE_KEY = 'resources-state';
+const STATE_KEY = 'resources-state-v2';
 
 export const DEFAULT_RESOURCES = Object.freeze([
-  { id: 'credits', name: '资金', unit: '币', amount: 1200, min: 0, max: 9999999 },
-  { id: 'supplies', name: '补给', unit: '份', amount: 600, min: 0, max: 9999999 },
-  { id: 'materials', name: '材料', unit: '件', amount: 350, min: 0, max: 9999999 },
+  {
+    id: 'fuel',
+    name: '燃油',
+    unit: '',
+    group: 'resource',
+    amount: 1200,
+    min: 0,
+    cap: 3000,
+    max: 999999,
+    autoRecover: true,
+    recoveryPerMin: 1.5,
+  },
+  {
+    id: 'ammo',
+    name: '弹药',
+    unit: '',
+    group: 'resource',
+    amount: 1200,
+    min: 0,
+    cap: 3000,
+    max: 999999,
+    autoRecover: true,
+    recoveryPerMin: 1.5,
+  },
+  {
+    id: 'steel',
+    name: '钢材',
+    unit: '',
+    group: 'resource',
+    amount: 1200,
+    min: 0,
+    cap: 3000,
+    max: 999999,
+    autoRecover: true,
+    recoveryPerMin: 1.5,
+  },
+  {
+    id: 'bauxite',
+    name: '铝材',
+    unit: '',
+    group: 'resource',
+    amount: 800,
+    min: 0,
+    cap: 2000,
+    max: 999999,
+    autoRecover: true,
+    recoveryPerMin: 0.8,
+  },
+  {
+    id: 'silver',
+    name: '银条',
+    unit: '',
+    group: 'currency',
+    amount: 2500,
+    min: 0,
+    cap: 9999999,
+    max: 9999999,
+    autoRecover: false,
+    recoveryPerMin: 0,
+  },
+  {
+    id: 'gold',
+    name: '金条',
+    unit: '',
+    group: 'currency',
+    amount: 120,
+    min: 0,
+    cap: 9999999,
+    max: 9999999,
+    autoRecover: false,
+    recoveryPerMin: 0,
+  },
 ]);
+
+export const CORE_RESOURCE_IDS = Object.freeze(['fuel', 'ammo', 'steel', 'bauxite']);
+export const CORE_CURRENCY_IDS = Object.freeze(['silver', 'gold']);
 
 function deepClone(v) {
   return JSON.parse(JSON.stringify(v ?? null));
+}
+
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+/**
+ * Render a unified, compact 6-resource + dual-currency top overview bar element
+ * for shared use across Character Console, Action Console, and Supply Workshop.
+ *
+ * @param {ResourceManager} resources
+ * @param {{ showCaps?: boolean, id?: string }} [options]
+ */
+export function createResourceOverviewBar(resources, { showCaps = false, id = 'shared-resource-bar' } = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'res-overview-bar';
+  wrap.id = id;
+
+  const baseItems = CORE_RESOURCE_IDS.map((rid) => resources.get(rid)).filter(Boolean);
+  const currencyItems = CORE_CURRENCY_IDS.map((rid) => resources.get(rid)).filter(Boolean);
+
+  wrap.innerHTML = `
+    <div class="res-overview-grid-4">
+      ${baseItems
+        .map(
+          (r) => `
+        <div class="res-mini-cell" data-res-cell="${escapeHtml(r.id)}">
+          <span class="res-mini-label">${escapeHtml(r.name)}</span>
+          <span class="res-mini-val">${Math.floor(r.amount)}${showCaps && r.cap ? `<small>/${r.cap}</small>` : ''}</span>
+        </div>
+      `
+        )
+        .join('')}
+    </div>
+    <div class="res-overview-grid-2">
+      ${currencyItems
+        .map(
+          (c) => `
+        <div class="res-mini-cell is-currency is-${escapeHtml(c.id)}" data-res-cell="${escapeHtml(c.id)}">
+          <span class="res-mini-label">${escapeHtml(c.name)}</span>
+          <span class="res-mini-val">${Math.floor(c.amount)}</span>
+        </div>
+      `
+        )
+        .join('')}
+    </div>
+  `;
+
+  return wrap;
 }
 
 export class ResourceManager {
@@ -31,8 +163,9 @@ export class ResourceManager {
   constructor({ storage, bus = null }) {
     this._scope = storage.namespace(STORAGE_NS);
     this._bus = bus;
-    /** @type {Map<string, { id: string, name: string, unit: string, amount: number, min: number, max: number, updatedAt: number }>} */
+    /** @type {Map<string, object>} */
     this._resources = new Map();
+    this._lastRecoveryAt = Date.now();
     this._hydrated = false;
   }
 
@@ -45,13 +178,25 @@ export class ResourceManager {
   async init() {
     if (this._hydrated) return;
     const saved = await this._scope.getLarge(STATE_KEY, null);
+    const now = Date.now();
+
     if (saved && Array.isArray(saved.resources) && saved.resources.length > 0) {
       this.deserialize(saved, { persist: false });
-    } else {
-      const now = Date.now();
-      for (const r of DEFAULT_RESOURCES) {
-        this._resources.set(r.id, { ...r, updatedAt: now });
+      // Ensure all 6 mandatory defaults exist
+      for (const def of DEFAULT_RESOURCES) {
+        if (!this._resources.has(def.id)) {
+          this._resources.set(def.id, { ...def, updatedAt: now });
+        }
       }
+      // Settle slow offline auto-recovery for the 4 base resources if >= 60s elapsed
+      if (this._lastRecoveryAt && now - this._lastRecoveryAt >= 60 * 1000) {
+        await this.settleOfflineResources({ lastTimestamp: this._lastRecoveryAt, now });
+      }
+    } else {
+      for (const def of DEFAULT_RESOURCES) {
+        this._resources.set(def.id, { ...def, updatedAt: now });
+      }
+      this._lastRecoveryAt = now;
       await this.persist();
     }
     this._hydrated = true;
@@ -61,8 +206,13 @@ export class ResourceManager {
     await this._scope.setLarge(STATE_KEY, this.serialize());
   }
 
-  list() {
-    return Array.from(this._resources.values()).map((r) => deepClone(r));
+  list({ group = null } = {}) {
+    const out = [];
+    for (const r of this._resources.values()) {
+      if (group && r.group !== group) continue;
+      out.push(deepClone(r));
+    }
+    return out;
   }
 
   get(id) {
@@ -74,19 +224,35 @@ export class ResourceManager {
     return Number(this._resources.get(String(id))?.amount ?? 0);
   }
 
-  async defineResource({ id, name, unit = '', amount = 0, min = 0, max = 9999999 }) {
+  async defineResource({
+    id,
+    name,
+    unit = '',
+    group = 'resource',
+    amount = 0,
+    min = 0,
+    cap = 999999,
+    max = 9999999,
+    autoRecover = false,
+    recoveryPerMin = 0,
+  }) {
     const cleanName = String(name || '').trim();
     const cleanId = String(id || `res_${Date.now().toString(36)}`).trim();
     if (!cleanId || !cleanName) throw new Error('资源 ID 与名称不能为空');
     const lo = Number.isFinite(Number(min)) ? Number(min) : 0;
     const hi = Number.isFinite(Number(max)) ? Number(max) : 9999999;
+    const softCap = Number.isFinite(Number(cap)) ? Number(cap) : hi;
     const entry = {
       id: cleanId,
       name: cleanName,
       unit: String(unit || '').trim(),
+      group: group === 'currency' ? 'currency' : 'resource',
       amount: clamp(Math.round(Number(amount) || 0), lo, hi),
       min: lo,
+      cap: softCap,
       max: hi,
+      autoRecover: Boolean(autoRecover),
+      recoveryPerMin: Math.max(0, Number(recoveryPerMin) || 0),
       updatedAt: Date.now(),
     };
     this._resources.set(cleanId, entry);
@@ -97,6 +263,9 @@ export class ResourceManager {
 
   async removeResource(id) {
     const cleanId = String(id);
+    if (CORE_RESOURCE_IDS.includes(cleanId) || CORE_CURRENCY_IDS.includes(cleanId)) {
+      throw new Error('基础四项资源与双货币为系统核心条目，不可删除');
+    }
     if (!this._resources.has(cleanId)) return false;
     this._resources.delete(cleanId);
     await this.persist();
@@ -105,7 +274,50 @@ export class ResourceManager {
   }
 
   /**
-   * Validate whether current balances cover a single cost or a cost map `{ credits: 100, materials: 20 }`.
+   * Settle slow offline auto-recovery for resources with `autoRecover === true` up to their soft `cap`.
+   * Currencies (silver / gold) are never auto-recovered.
+   */
+  async settleOfflineResources({ lastTimestamp = this._lastRecoveryAt, now = Date.now(), maxElapsedSec = 86400 * 7 } = {}) {
+    const prevTs = Number(lastTimestamp) || now;
+    const elapsedSec = Math.min(Math.max(0, (now - prevTs) / 1000), maxElapsedSec);
+    const elapsedMins = elapsedSec / 60;
+    const changes = [];
+
+    for (const r of this._resources.values()) {
+      if (!r.autoRecover || !(r.recoveryPerMin > 0)) continue;
+      const cap = Number(r.cap ?? r.max ?? 3000);
+      if (r.amount >= cap) continue;
+      const gain = Math.floor(elapsedMins * r.recoveryPerMin);
+      if (gain <= 0) continue;
+      const before = r.amount;
+      const after = Math.min(cap, before + gain);
+      const actual = after - before;
+      if (actual > 0) {
+        r.amount = after;
+        r.updatedAt = now;
+        changes.push({ id: r.id, name: r.name, before, after, delta: actual, cap });
+      }
+    }
+
+    this._lastRecoveryAt = now;
+    if (changes.length > 0) {
+      await this.persist();
+    }
+
+    const report = {
+      elapsedSec: Number(elapsedSec.toFixed(1)),
+      formattedDuration: formatDurationZh(elapsedSec),
+      changes,
+      timestamp: now,
+    };
+    if (changes.length > 0) {
+      this._emit('resource:offline-recovered', report);
+    }
+    return report;
+  }
+
+  /**
+   * Validate whether current balances cover a single cost or a cost map `{ steel: 100, silver: 200 }`.
    */
   canAfford(idOrCostMap, amount = null) {
     if (typeof idOrCostMap === 'string') {
@@ -113,12 +325,13 @@ export class ResourceManager {
       const have = this.getBalance(idOrCostMap);
       return {
         ok: have >= need,
-        shortages: have >= need ? [] : [{ id: idOrCostMap, need, have, missing: need - have }],
+        shortages: have >= need ? [] : [{ id: idOrCostMap, name: this._resources.get(idOrCostMap)?.name || idOrCostMap, need, have, missing: need - have }],
       };
     }
     const shortages = [];
     for (const [resId, rawNeed] of Object.entries(idOrCostMap || {})) {
       const need = Math.max(0, Number(rawNeed) || 0);
+      if (need <= 0) continue;
       const have = this.getBalance(resId);
       if (have < need) {
         shortages.push({ id: resId, name: this._resources.get(resId)?.name || resId, need, have, missing: need - have });
@@ -132,7 +345,7 @@ export class ResourceManager {
     if (!entry) throw new Error(`资源 "${id}" 不存在`);
     const delta = Math.max(0, Number(amount) || 0);
     const before = entry.amount;
-    entry.amount = clamp(Number((before + delta).toFixed(2)), entry.min, entry.max);
+    entry.amount = clamp(Math.round(before + delta), entry.min, entry.max);
     entry.updatedAt = Date.now();
     await this.persist();
 
@@ -142,7 +355,7 @@ export class ResourceManager {
       unit: entry.unit,
       before,
       after: entry.amount,
-      delta: Number((entry.amount - before).toFixed(2)),
+      delta: entry.amount - before,
       reason,
       timestamp: entry.updatedAt,
     };
@@ -157,14 +370,14 @@ export class ResourceManager {
     if (entry.amount - cost < entry.min) {
       return {
         ok: false,
-        reason: `${entry.name}余额不足（当前 ${entry.amount}，需要 ${cost}）`,
+        reason: `${entry.name}不足（当前 ${entry.amount}，需要 ${cost}）`,
         id: entry.id,
         have: entry.amount,
         need: cost,
       };
     }
     const before = entry.amount;
-    entry.amount = clamp(Number((before - cost).toFixed(2)), entry.min, entry.max);
+    entry.amount = clamp(Math.round(before - cost), entry.min, entry.max);
     entry.updatedAt = Date.now();
     await this.persist();
 
@@ -174,7 +387,7 @@ export class ResourceManager {
       unit: entry.unit,
       before,
       after: entry.amount,
-      delta: Number((entry.amount - before).toFixed(2)),
+      delta: entry.amount - before,
       reason,
       timestamp: entry.updatedAt,
     };
@@ -201,7 +414,7 @@ export class ResourceManager {
     const entry = this._resources.get(String(id));
     if (!entry) throw new Error(`资源 "${id}" 不存在`);
     const before = entry.amount;
-    entry.amount = clamp(Number(amount) || 0, entry.min, entry.max);
+    entry.amount = clamp(Math.round(Number(amount) || 0), entry.min, entry.max);
     entry.updatedAt = Date.now();
     await this.persist();
 
@@ -211,7 +424,7 @@ export class ResourceManager {
       unit: entry.unit,
       before,
       after: entry.amount,
-      delta: Number((entry.amount - before).toFixed(2)),
+      delta: entry.amount - before,
       reason,
       timestamp: entry.updatedAt,
     };
@@ -221,6 +434,8 @@ export class ResourceManager {
 
   serialize() {
     return {
+      version: 2,
+      lastRecoveryAt: this._lastRecoveryAt,
       resources: this.list(),
     };
   }
@@ -231,6 +446,7 @@ export class ResourceManager {
     for (const r of snapshot.resources) {
       if (r && r.id) this._resources.set(String(r.id), deepClone(r));
     }
+    this._lastRecoveryAt = Number(snapshot.lastRecoveryAt) || Date.now();
     if (persist) {
       this.persist();
     }

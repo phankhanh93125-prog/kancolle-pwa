@@ -1,22 +1,30 @@
 /**
  * Official Business Module #1: Character Console (`character-console`).
  *
- * Plain, domain-neutral mobile-first console integrating:
- *   - Character roster management (2 starter templates + visual create/edit/delete + photo avatar upload)
- *   - Core status card (avatar, affinity stage, HP/morale/AP bars, global resource summary)
- *   - 5 core stats panel with live equipment/outfit bonus breakdown & composite score
- *   - Inventory & Equipment/Outfit bench (custom outfits/equipment with multi-entry stat bonuses, custom slots)
- *   - Resource manager & Chronological Action Logs (with text summary export)
- *   - Built-in "数值规则设置" & "实时模拟检定" bottom sheets
+ * Mobile-first character console featuring:
+ *   - Unified 6-resource & dual-currency top overview bar (fuel/ammo/steel/bauxite + silver/gold)
+ *   - Character roster CRUD + mobile gallery avatar upload (WebP -> IndexedDB)
+ *   - 3 Fixed Mandatory Core Slots (引擎 / 装甲 / 核心) with live Seaworthiness (适航) validation
+ *   - Completely freeform per-character custom optional slots (+ 添加自定义槽位 / 重命名 / 删除 / 装入任意通用扩展装备)
+ *   - Full-slot live 5-stat recalculation + visual item/affix editor
+ *   - Resource overview, Chronological Action Logs, Stat Rules Settings & Real-Time 1D20 Check Simulator
  */
 
 import { CORE_STAT_DEFS, CORE_STAT_MAP } from '../core/stat-rules.js';
-import { ITEM_CATEGORIES, ITEM_CATEGORY_LABELS } from '../core/inventory-system.js';
+import {
+  ITEM_CATEGORIES,
+  ITEM_CATEGORY_LABELS,
+} from '../core/inventory-system.js';
+import {
+  CORE_CURRENCY_IDS,
+  CORE_RESOURCE_IDS,
+  createResourceOverviewBar,
+} from '../core/resource-manager.js';
 import { LOG_CATEGORIES, LOG_CATEGORY_LABELS } from '../core/log-system.js';
 import { clamp } from '../core/calc-engine.js';
 
 const CHAR_STORAGE_NS = 'core-characters';
-const ROSTER_KEY = 'roster-state';
+const ROSTER_KEY = 'roster-state-v2';
 
 const BONUS_STAT_OPTIONS = [
   { key: 'attack', label: '攻击/火力' },
@@ -120,6 +128,11 @@ function formatBonusChip(bonus) {
   return `${label} ${formatSigned(bonus.value)}`;
 }
 
+function formatItemTitle(item) {
+  if (!item) return '';
+  return item.level > 0 ? `${item.name} +${item.level}` : item.name;
+}
+
 function formatTimeShort(ts) {
   try {
     return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -128,9 +141,23 @@ function formatTimeShort(ts) {
   }
 }
 
+async function equipStarterCorePartsIfPresent(inventory, charId, includeOutfit = false) {
+  if (inventory.getItem('item_core_engine_01')) {
+    await inventory.equipItem(charId, 'engine', 'item_core_engine_01');
+  }
+  if (inventory.getItem('item_core_armor_01')) {
+    await inventory.equipItem(charId, 'armor', 'item_core_armor_01');
+  }
+  if (inventory.getItem('item_core_core_01')) {
+    await inventory.equipItem(charId, 'core', 'item_core_core_01');
+  }
+  if (includeOutfit && inventory.getItem('item_outfit_standard')) {
+    await inventory.equipItem(charId, 'outfit', 'item_outfit_standard');
+  }
+}
+
 /**
  * Hydrate persisted character roster from IndexedDB into EntitySystem on app boot.
- * Also applies offline recovery for HP / Morale / AP if >= 60s elapsed since last visit.
  */
 export async function hydrateCharacterRoster({ storage, entities, inventory, statRules }) {
   const scope = storage.namespace(CHAR_STORAGE_NS);
@@ -145,7 +172,6 @@ export async function hydrateCharacterRoster({ storage, entities, inventory, sta
     }
     inventory.syncAllCharacters();
 
-    // Auto-settle offline recovery if elapsed >= 60 seconds
     if (saved.lastActiveAt && now - saved.lastActiveAt >= 60 * 1000) {
       const charList = entities.list({ kind: 'character' });
       if (charList.length > 0) {
@@ -159,20 +185,17 @@ export async function hydrateCharacterRoster({ storage, entities, inventory, sta
     }
     const restoredId = saved.activeCharacterId || saved.characters[0]?.id || null;
     consoleState.activeCharacterId = restoredId;
-    return {
-      activeCharacterId: restoredId,
-      seeded: false,
-    };
+    if (restoredId) scope.set('activeCharacterId', restoredId);
+    return { activeCharacterId: restoredId, seeded: false };
   }
 
-  // First boot: seed 2 plain generic templates
+  // First boot: seed 2 plain generic templates with 3 starter mandatory core parts equipped
   for (const tpl of DEFAULT_CHARACTER_TEMPLATES) {
     entities.register(tpl);
   }
-  // Equip 1 starter outfit on Template A so live bonus display works immediately
-  if (inventory.getItem('item_outfit_standard')) {
-    await inventory.equipItem('char_template_01', 'outfit', 'item_outfit_standard');
-  }
+  await equipStarterCorePartsIfPresent(inventory, 'char_template_01', true);
+  await equipStarterCorePartsIfPresent(inventory, 'char_template_02', false);
+
   consoleState.activeCharacterId = 'char_template_01';
   await persistCharacterRoster({
     storage,
@@ -196,7 +219,8 @@ export function getActiveCharacterId(storage = null) {
 
 export async function persistCharacterRoster({ storage, entities, activeCharacterId = null }) {
   const scope = storage.namespace(CHAR_STORAGE_NS);
-  const resolvedActiveId = activeCharacterId || consoleState.activeCharacterId || entities.list({ kind: 'character' })[0]?.id || null;
+  const resolvedActiveId =
+    activeCharacterId || consoleState.activeCharacterId || entities.list({ kind: 'character' })[0]?.id || null;
   if (resolvedActiveId) {
     consoleState.activeCharacterId = resolvedActiveId;
     scope.set('activeCharacterId', resolvedActiveId);
@@ -208,7 +232,6 @@ export async function persistCharacterRoster({ storage, entities, activeCharacte
     tags: [...(e.tags || [])],
     stats: { ...(e.stats || {}) },
     statBounds: JSON.parse(JSON.stringify(e.statBounds || {})),
-    // Persist only non-inventory modifiers; inventory modifiers are re-synced from InventorySystem
     modifiers: (e.modifiers || []).filter((m) => !String(m.id || '').startsWith('inv_eq_')),
     meta: JSON.parse(JSON.stringify(e.meta || {})),
   }));
@@ -273,8 +296,146 @@ async function saveRosterNow() {
 }
 
 // ============================================================
-// Bottom Sheet Modals (Character, Item, Slots, Rules, 1D20 Check)
+// Bottom Sheet Modals
 // ============================================================
+
+function openAddCustomSlotSheet(char) {
+  if (!char) return;
+  const { inventory, uiKit, logs } = consoleState.context;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+  wrap.innerHTML = `
+    <p class="muted-text">
+      自定义槽位属于<strong>非必须选装槽位</strong>，不限制名称与武器/电子分类。留空不影响适航状态，可随时装入任意「通用扩展装备」、重命名或删除。
+    </p>
+    <div class="form-group">
+      <label class="form-label" for="cc-custom-slot-name">自定义槽位名称 *</label>
+      <input id="cc-custom-slot-name" class="form-input" type="text" placeholder="自由输入任意名称（如：雷达 / 火控 / 主炮 / 扩展槽1）">
+    </div>
+  `;
+
+  uiKit.openBottomSheet({
+    title: `为「${char.name}」添加自定义槽位`,
+    subtitle: '完全自由命名 · 默认兼容任意通用扩展装备',
+    content: wrap,
+    actions: [
+      { id: 'cancel', label: '取消', tone: 'secondary' },
+      {
+        id: 'add',
+        label: '确认添加',
+        tone: 'primary',
+        onClick: async () => {
+          const label = wrap.querySelector('#cc-custom-slot-name').value.trim();
+          if (!label) {
+            uiKit.showToast('请输入自定义槽位名称', 'warn');
+            return false;
+          }
+          await inventory.addCharacterCustomSlot(char.id, label);
+          logs.add({
+            category: LOG_CATEGORIES.EQUIPMENT,
+            actorId: char.id,
+            actorName: char.name,
+            title: `[${char.name}] 添加自定义槽位「${label}」`,
+            detail: '非必须选装槽位（兼容任意通用扩展装备）',
+          });
+          uiKit.showToast(`已添加自定义槽位：${label}`, 'ok');
+          await renderConsole();
+          return true;
+        },
+      },
+    ],
+  });
+}
+
+function openRenameCustomSlotSheet(char, slot) {
+  const { inventory, uiKit } = consoleState.context;
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+  wrap.innerHTML = `
+    <div class="form-group">
+      <label class="form-label" for="cc-rename-slot-input">新槽位名称 *</label>
+      <input id="cc-rename-slot-input" class="form-input" type="text" value="${escapeHtml(slot.label)}">
+    </div>
+  `;
+
+  uiKit.openBottomSheet({
+    title: `重命名槽位 · ${slot.label}`,
+    content: wrap,
+    actions: [
+      { id: 'cancel', label: '取消', tone: 'secondary' },
+      {
+        id: 'save',
+        label: '保存名称',
+        tone: 'primary',
+        onClick: async () => {
+          const nextName = wrap.querySelector('#cc-rename-slot-input').value.trim();
+          if (!nextName) {
+            uiKit.showToast('槽位名称不能为空', 'warn');
+            return false;
+          }
+          await inventory.renameCharacterCustomSlot(char.id, slot.id, nextName);
+          uiKit.showToast(`槽位已重命名为：${nextName}`, 'ok');
+          await renderConsole();
+          return true;
+        },
+      },
+    ],
+  });
+}
+
+function openSlotEquipPickerSheet(char, slot) {
+  const { inventory, uiKit } = consoleState.context;
+  const compatibleItems = inventory
+    .listItems()
+    .filter((it) => slot.allowedCategories.includes(it.category));
+
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+
+  let sheetHandle = null;
+
+  if (compatibleItems.length === 0) {
+    wrap.innerHTML = `<p class="muted-text">仓库中暂无可装入「${escapeHtml(slot.label)}」的物品，请先新建或前往「物资与工坊台」获取。</p>`;
+  } else {
+    const list = document.createElement('div');
+    list.className = 'lab-stack-sm';
+    for (const item of compatibleItems) {
+      const currentSlot = inventory.getEquippedSlotOfItem(char.id, item.id);
+      const isHere = currentSlot === slot.id;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'lab-choice-btn';
+      btn.dataset.pickItemId = item.id;
+      btn.innerHTML = `
+        <span class="lab-choice-title">${escapeHtml(formatItemTitle(item))}${isHere ? '（当前已装）' : ''}</span>
+        <span class="lab-choice-sub">${
+          item.bonuses?.length ? escapeHtml(item.bonuses.map(formatBonusChip).join(' · ')) : '无属性词条'
+        }</span>
+      `;
+      btn.addEventListener('click', async () => {
+        try {
+          await inventory.equipItem(char.id, slot.id, item.id);
+          await saveRosterNow();
+          if (sheetHandle) sheetHandle.close();
+          uiKit.showToast(`已将「${item.name}」装入「${slot.label}」`, 'ok');
+          await renderConsole();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '装入失败', 'error');
+        }
+      });
+      list.appendChild(btn);
+    }
+    wrap.appendChild(list);
+  }
+
+  sheetHandle = uiKit.openBottomSheet({
+    title: `为「${slot.label}」选择部件/装备`,
+    subtitle: slot.required ? '核心必装槽位' : slot.custom ? '自定义选装槽位（支持任意通用扩展装备）' : '可选穿戴槽位',
+    content: wrap,
+    actions: [{ id: 'close', label: '关闭', tone: 'secondary' }],
+  });
+}
 
 function openCharacterEditorSheet(existingChar = null) {
   const { entities, inventory, assets, uiKit, logs, bus, statRules } = consoleState.context;
@@ -313,6 +474,27 @@ function openCharacterEditorSheet(existingChar = null) {
 
   const formWrap = document.createElement('div');
   formWrap.className = 'module-stack';
+
+  const syncInputsToDraft = () => {
+    const nameEl = formWrap.querySelector('#cc-f-name');
+    if (!nameEl) return;
+    draft.name = nameEl.value.trim();
+    draft.roleTag = formWrap.querySelector('#cc-f-role').value.trim();
+    draft.personality = formWrap.querySelector('#cc-f-personality').value.trim();
+    draft.speechHabit = formWrap.querySelector('#cc-f-speech').value.trim();
+    for (const def of CORE_STAT_DEFS) {
+      const v = Number(formWrap.querySelector(`#cc-f-stat-${def.key}`).value);
+      draft.stats[def.key] = clamp(Number.isFinite(v) ? v : def.defaultValue, rulesCfg.statMin, rulesCfg.statMax);
+    }
+    draft.stats.affinity = clamp(Number(formWrap.querySelector('#cc-f-affinity').value) || 0, 0, 100);
+    const hpVal = clamp(Number(formWrap.querySelector('#cc-f-hp').value) || 0, 0, 999);
+    const apVal = clamp(Number(formWrap.querySelector('#cc-f-ap').value) || 0, 0, 999);
+    draft.stats.hp = hpVal;
+    draft.stats.maxHp = Math.max(Number(draft.stats.maxHp || 100), hpVal);
+    draft.stats.morale = clamp(Number(formWrap.querySelector('#cc-f-morale').value) || 0, 0, 100);
+    draft.stats.ap = apVal;
+    draft.stats.maxAp = Math.max(Number(draft.stats.maxAp || 100), apVal);
+  };
 
   const renderForm = async () => {
     const avatarRes = await assets.getAssetUrl(draft.avatarAssetId, {
@@ -417,115 +599,94 @@ function openCharacterEditorSheet(existingChar = null) {
     }
   };
 
-  const syncInputsToDraft = () => {
-    const nameEl = formWrap.querySelector('#cc-f-name');
-    if (!nameEl) return;
-    draft.name = nameEl.value.trim();
-    draft.roleTag = formWrap.querySelector('#cc-f-role').value.trim();
-    draft.personality = formWrap.querySelector('#cc-f-personality').value.trim();
-    draft.speechHabit = formWrap.querySelector('#cc-f-speech').value.trim();
-    for (const def of CORE_STAT_DEFS) {
-      const v = Number(formWrap.querySelector(`#cc-f-stat-${def.key}`).value);
-      draft.stats[def.key] = clamp(Number.isFinite(v) ? v : def.defaultValue, rulesCfg.statMin, rulesCfg.statMax);
-    }
-    draft.stats.affinity = clamp(Number(formWrap.querySelector('#cc-f-affinity').value) || 0, 0, 100);
-    const hpVal = clamp(Number(formWrap.querySelector('#cc-f-hp').value) || 0, 0, 999);
-    const apVal = clamp(Number(formWrap.querySelector('#cc-f-ap').value) || 0, 0, 999);
-    draft.stats.hp = hpVal;
-    draft.stats.maxHp = Math.max(Number(draft.stats.maxHp || 100), hpVal);
-    draft.stats.morale = clamp(Number(formWrap.querySelector('#cc-f-morale').value) || 0, 0, 100);
-    draft.stats.ap = apVal;
-    draft.stats.maxAp = Math.max(Number(draft.stats.maxAp || 100), apVal);
-  };
-
   renderForm();
-
-  const actions = [
-    { id: 'cancel', label: '取消', tone: 'secondary' },
-    {
-      id: 'save',
-      label: isEdit ? '保存修改' : '创建角色',
-      tone: 'primary',
-      onClick: async () => {
-        syncInputsToDraft();
-        if (!draft.name) {
-          uiKit.showToast('请输入角色名称', 'warn');
-          return false;
-        }
-        const charId = isEdit ? existingChar.id : `char_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        const nonInvMods = isEdit
-          ? (existingChar.modifiers || []).filter((m) => !String(m.id || '').startsWith('inv_eq_'))
-          : [];
-
-        entities.register({
-          id: charId,
-          kind: 'character',
-          name: draft.name,
-          tags: [draft.roleTag || '自定义'],
-          stats: { ...draft.stats },
-          statBounds: {
-            hp: { min: 0, max: draft.stats.maxHp },
-            morale: { min: 0, max: 100 },
-            ap: { min: 0, max: draft.stats.maxAp },
-            affinity: { min: 0, max: 100 },
-          },
-          modifiers: nonInvMods,
-          meta: {
-            roleTag: draft.roleTag || '通用型',
-            avatarAssetId: draft.avatarAssetId,
-            personality: draft.personality,
-            speechHabit: draft.speechHabit,
-          },
-        });
-
-        inventory.syncCharacterModifiers(charId);
-        consoleState.activeCharacterId = charId;
-        consoleState.avatarUrlCache.clear();
-        await saveRosterNow();
-
-        logs.add({
-          category: LOG_CATEGORIES.CHARACTER,
-          actorId: charId,
-          actorName: draft.name,
-          title: isEdit ? `更新角色「${draft.name}」资料` : `新建角色「${draft.name}」`,
-          detail: `五维：攻${draft.stats.attack}/爆${draft.stats.burst}/机${draft.stats.agility}/战${draft.stats.tactics}/幸${draft.stats.luck}`,
-        });
-        bus.emit('character:saved', { characterId: charId, name: draft.name, isEdit });
-        uiKit.showToast(isEdit ? `已保存角色：${draft.name}` : `已创建角色：${draft.name}`, 'ok');
-        await renderConsole();
-        return true;
-      },
-    },
-  ];
 
   uiKit.openBottomSheet({
     title: isEdit ? `编辑角色 · ${existingChar.name}` : '新建自定义角色',
-    subtitle: '数据自动持久化至本地 IndexedDB 数据库',
+    subtitle: '新建角色默认拥有「引擎 / 装甲 / 核心」三个必装槽位',
     content: formWrap,
-    actions,
+    actions: [
+      { id: 'cancel', label: '取消', tone: 'secondary' },
+      {
+        id: 'save',
+        label: isEdit ? '保存修改' : '创建角色',
+        tone: 'primary',
+        onClick: async () => {
+          syncInputsToDraft();
+          if (!draft.name) {
+            uiKit.showToast('请输入角色名称', 'warn');
+            return false;
+          }
+          const charId = isEdit ? existingChar.id : `char_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const nonInvMods = isEdit
+            ? (existingChar.modifiers || []).filter((m) => !String(m.id || '').startsWith('inv_eq_'))
+            : [];
+
+          entities.register({
+            id: charId,
+            kind: 'character',
+            name: draft.name,
+            tags: [draft.roleTag || '自定义'],
+            stats: { ...draft.stats },
+            statBounds: {
+              hp: { min: 0, max: draft.stats.maxHp },
+              morale: { min: 0, max: 100 },
+              ap: { min: 0, max: draft.stats.maxAp },
+              affinity: { min: 0, max: 100 },
+            },
+            modifiers: nonInvMods,
+            meta: {
+              roleTag: draft.roleTag || '通用型',
+              avatarAssetId: draft.avatarAssetId,
+              personality: draft.personality,
+              speechHabit: draft.speechHabit,
+            },
+          });
+
+          if (!isEdit) {
+            await equipStarterCorePartsIfPresent(inventory, charId, false);
+          } else {
+            inventory.syncCharacterModifiers(charId);
+          }
+
+          consoleState.activeCharacterId = charId;
+          consoleState.avatarUrlCache.clear();
+          await saveRosterNow();
+
+          logs.add({
+            category: LOG_CATEGORIES.CHARACTER,
+            actorId: charId,
+            actorName: draft.name,
+            title: isEdit ? `更新角色「${draft.name}」资料` : `新建角色「${draft.name}」`,
+            detail: `五维：攻${draft.stats.attack}/爆${draft.stats.burst}/机${draft.stats.agility}/战${draft.stats.tactics}/幸${draft.stats.luck}`,
+          });
+          bus.emit('character:saved', { characterId: charId, name: draft.name, isEdit });
+          uiKit.showToast(isEdit ? `已保存角色：${draft.name}` : `已创建角色：${draft.name}`, 'ok');
+          await renderConsole();
+          return true;
+        },
+      },
+    ],
   });
 }
 
 function openItemEditorSheet(existingItem = null) {
   const { inventory, uiKit, logs } = consoleState.context;
   const isEdit = Boolean(existingItem);
-  const slots = inventory.listSlots();
 
   const draft = existingItem
     ? {
         name: existingItem.name,
         category: existingItem.category,
-        slotType: existingItem.slotType || 'main_equip',
         tags: (existingItem.tags || []).join(', '),
         description: existingItem.description || '',
         quantity: existingItem.quantity ?? 1,
-        bonuses: (existingItem.bonuses || []).map((b) => ({ ...b })),
+        bonuses: (existingItem.baseBonuses || existingItem.bonuses || []).map((b) => ({ ...b })),
       }
     : {
         name: '',
-        category: ITEM_CATEGORIES.OUTFIT,
-        slotType: 'outfit',
-        tags: '自定义',
+        category: ITEM_CATEGORIES.EXTENSION,
+        tags: '通用扩展',
         description: '',
         quantity: 1,
         bonuses: [
@@ -555,8 +716,6 @@ function openItemEditorSheet(existingItem = null) {
     if (!nameEl) return;
     draft.name = nameEl.value.trim();
     draft.category = wrap.querySelector('#cc-item-cat').value;
-    const slotEl = wrap.querySelector('#cc-item-slot');
-    if (slotEl) draft.slotType = slotEl.value;
     draft.tags = wrap.querySelector('#cc-item-tags').value;
     draft.description = wrap.querySelector('#cc-item-desc').value.trim();
     draft.quantity = Math.max(1, Math.floor(Number(wrap.querySelector('#cc-item-qty').value) || 1));
@@ -564,70 +723,42 @@ function openItemEditorSheet(existingItem = null) {
   };
 
   const renderForm = () => {
-    const compatibleSlots = slots.filter((s) => s.allowedCategories.includes(draft.category));
-    if (draft.category !== ITEM_CATEGORIES.CONSUMABLE && compatibleSlots.length > 0) {
-      if (!compatibleSlots.some((s) => s.id === draft.slotType)) {
-        draft.slotType = compatibleSlots[0].id;
-      }
-    }
-
     wrap.innerHTML = `
       <div class="form-group">
         <label class="form-label" for="cc-item-name">物品名称 *</label>
-        <input id="cc-item-name" class="form-input" type="text" value="${escapeHtml(draft.name)}" placeholder="例如：强化战术风衣 / 高能核心">
+        <input id="cc-item-name" class="form-input" type="text" value="${escapeHtml(draft.name)}" placeholder="例如：高出力引擎 / 扩展模块 / 礼服">
       </div>
 
       <div class="lab-kv-grid">
         <div class="form-group">
           <label class="form-label" for="cc-item-cat">物品分类</label>
           <select id="cc-item-cat" class="form-select">
-            <option value="${ITEM_CATEGORIES.OUTFIT}" ${draft.category === ITEM_CATEGORIES.OUTFIT ? 'selected' : ''}>服装</option>
-            <option value="${ITEM_CATEGORIES.EQUIPMENT}" ${draft.category === ITEM_CATEGORIES.EQUIPMENT ? 'selected' : ''}>装备</option>
+            <option value="${ITEM_CATEGORIES.EXTENSION}" ${draft.category === ITEM_CATEGORIES.EXTENSION ? 'selected' : ''}>通用扩展装备（任意自定义槽位）</option>
+            <option value="${ITEM_CATEGORIES.ENGINE}" ${draft.category === ITEM_CATEGORIES.ENGINE ? 'selected' : ''}>引擎部件（核心必装槽）</option>
+            <option value="${ITEM_CATEGORIES.ARMOR}" ${draft.category === ITEM_CATEGORIES.ARMOR ? 'selected' : ''}>装甲部件（核心必装槽）</option>
+            <option value="${ITEM_CATEGORIES.CORE}" ${draft.category === ITEM_CATEGORIES.CORE ? 'selected' : ''}>核心部件（核心必装槽）</option>
+            <option value="${ITEM_CATEGORIES.OUTFIT}" ${draft.category === ITEM_CATEGORIES.OUTFIT ? 'selected' : ''}>服装（选装）</option>
             <option value="${ITEM_CATEGORIES.CONSUMABLE}" ${draft.category === ITEM_CATEGORIES.CONSUMABLE ? 'selected' : ''}>消耗品</option>
           </select>
         </div>
-        ${
-          draft.category === ITEM_CATEGORIES.CONSUMABLE
-            ? `
-          <div class="form-group">
-            <label class="form-label" for="cc-item-qty">库存数量</label>
-            <input id="cc-item-qty" class="form-input" type="number" min="1" max="999" value="${draft.quantity}">
-          </div>`
-            : `
-          <div class="form-group">
-            <label class="form-label" for="cc-item-slot">穿戴槽位</label>
-            <select id="cc-item-slot" class="form-select">
-              ${compatibleSlots
-                .map(
-                  (s) =>
-                    `<option value="${escapeHtml(s.id)}" ${draft.slotType === s.id ? 'selected' : ''}>${escapeHtml(s.label)}</option>`
-                )
-                .join('')}
-            </select>
-          </div>`
-        }
+        <div class="form-group">
+          <label class="form-label" for="cc-item-qty">数量</label>
+          <input id="cc-item-qty" class="form-input" type="number" min="1" max="999" value="${draft.quantity}">
+        </div>
       </div>
 
-      ${
-        draft.category !== ITEM_CATEGORIES.CONSUMABLE
-          ? `<input id="cc-item-qty" type="hidden" value="${draft.quantity}">`
-          : ''
-      }
-
       <div class="form-group">
-        <label class="form-label" for="cc-item-tags">分类标签（逗号分隔）</label>
-        <input id="cc-item-tags" class="form-input" type="text" value="${escapeHtml(draft.tags)}" placeholder="例如：轻甲, 进阶, 礼服">
+        <label class="form-label" for="cc-item-tags">标签（逗号分隔）</label>
+        <input id="cc-item-tags" class="form-input" type="text" value="${escapeHtml(draft.tags)}" placeholder="例如：高出力, 通用扩展">
       </div>
 
       <div class="form-group">
         <label class="form-label" for="cc-item-desc">外观 / 效果描述</label>
-        <textarea id="cc-item-desc" class="form-textarea" placeholder="填写服装外观细节或装备效果说明...">${escapeHtml(draft.description)}</textarea>
+        <textarea id="cc-item-desc" class="form-textarea" placeholder="填写部件说明或服装外观描述...">${escapeHtml(draft.description)}</textarea>
       </div>
 
       <div class="form-group">
-        <div class="form-label-row">
-          <span class="form-label">属性加减词条（支持正负值，百分比填小数如 0.15 表示 +15%）</span>
-        </div>
+        <span class="form-label">可视化属性加减词条（支持随时微调，保存后实时重算面板）</span>
         <div id="cc-bonus-list" class="lab-stack-sm">
           ${draft.bonuses
             .map(
@@ -654,11 +785,6 @@ function openItemEditorSheet(existingItem = null) {
       </div>
     `;
 
-    wrap.querySelector('#cc-item-cat').addEventListener('change', () => {
-      readMainFields();
-      renderForm();
-    });
-
     wrap.querySelector('#btn-cc-add-bonus').addEventListener('click', () => {
       readMainFields();
       draft.bonuses.push({ stat: 'agility', layer: 'baseAdd', value: 5 });
@@ -678,14 +804,14 @@ function openItemEditorSheet(existingItem = null) {
   renderForm();
 
   uiKit.openBottomSheet({
-    title: isEdit ? `编辑物品 · ${existingItem.name}` : '新建服装 / 装备 / 消耗品',
-    subtitle: '保存后即可为任意角色一键穿戴或使用',
+    title: isEdit ? `编辑词条与资料 · ${existingItem.name}` : '新建核心部件 / 扩展装备 / 服装',
+    subtitle: '通用扩展装备可装入任意自定义名称槽位，无分类限制',
     content: wrap,
     actions: [
       { id: 'cancel', label: '取消', tone: 'secondary' },
       {
         id: 'save',
-        label: isEdit ? '保存物品' : '加入仓库',
+        label: isEdit ? '保存并重算' : '加入仓库',
         tone: 'primary',
         onClick: async () => {
           readMainFields();
@@ -697,10 +823,10 @@ function openItemEditorSheet(existingItem = null) {
             await inventory.updateItem(existingItem.id, draft);
             logs.add({
               category: LOG_CATEGORIES.EQUIPMENT,
-              title: `更新物品「${draft.name}」`,
+              title: `调整物品词条「${draft.name}」`,
               detail: draft.bonuses.map(formatBonusChip).join('、') || '无词条',
             });
-            uiKit.showToast(`已更新物品：${draft.name}`, 'ok');
+            uiKit.showToast(`已更新「${draft.name}」并实时重算属性`, 'ok');
           } else {
             await inventory.createItem(draft);
             logs.add({
@@ -708,7 +834,7 @@ function openItemEditorSheet(existingItem = null) {
               title: `新建${ITEM_CATEGORY_LABELS[draft.category]}「${draft.name}」`,
               detail: draft.bonuses.map(formatBonusChip).join('、') || '无词条',
             });
-            uiKit.showToast(`已新建并入库：${draft.name}`, 'ok');
+            uiKit.showToast(`已新建入库：${draft.name}`, 'ok');
           }
           await saveRosterNow();
           await renderConsole();
@@ -716,84 +842,6 @@ function openItemEditorSheet(existingItem = null) {
         },
       },
     ],
-  });
-}
-
-function openSlotManagerSheet() {
-  const { inventory, uiKit } = consoleState.context;
-  const wrap = document.createElement('div');
-  wrap.className = 'module-stack';
-
-  const renderSlots = () => {
-    const slots = inventory.listSlots();
-    wrap.innerHTML = `
-      <div class="lab-stack-sm">
-        ${slots
-          .map(
-            (s) => `
-          <div class="cc-slot-row">
-            <div class="cc-slot-info">
-              <span class="cc-slot-item-name">${escapeHtml(s.label)}</span>
-              <span class="cc-slot-label">ID: <code>${escapeHtml(s.id)}</code> · 允许：${s.allowedCategories.map((c) => ITEM_CATEGORY_LABELS[c] || c).join(' / ')}</span>
-            </div>
-            <button type="button" class="btn-danger uikit-touch-target" data-del-slot="${escapeHtml(s.id)}" style="padding:0 12px;" ${slots.length <= 1 ? 'disabled' : ''}>删除</button>
-          </div>
-        `
-          )
-          .join('')}
-      </div>
-      <div class="lab-divider"></div>
-      <div class="form-group">
-        <label class="form-label" for="cc-new-slot-label">新增自定义槽位名称</label>
-        <input id="cc-new-slot-label" class="form-input" type="text" placeholder="例如：头部饰件 / 外挂模块">
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="cc-new-slot-cat">允许穿戴类别</label>
-        <select id="cc-new-slot-cat" class="form-select">
-          <option value="both">服装与装备通用</option>
-          <option value="equipment">仅装备</option>
-          <option value="outfit">仅服装</option>
-        </select>
-      </div>
-      <button type="button" id="btn-cc-add-slot" class="btn-primary uikit-touch-target">添加槽位</button>
-    `;
-
-    wrap.querySelectorAll('[data-del-slot]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const sid = btn.getAttribute('data-del-slot');
-        await inventory.removeSlot(sid);
-        uiKit.showToast(`已移除槽位：${sid}`, 'ok');
-        renderSlots();
-        await renderConsole();
-      });
-    });
-
-    wrap.querySelector('#btn-cc-add-slot').addEventListener('click', async () => {
-      const label = wrap.querySelector('#cc-new-slot-label').value.trim();
-      const catSel = wrap.querySelector('#cc-new-slot-cat').value;
-      if (!label) {
-        uiKit.showToast('请输入槽位名称', 'warn');
-        return;
-      }
-      const allowedCategories =
-        catSel === 'equipment'
-          ? [ITEM_CATEGORIES.EQUIPMENT]
-          : catSel === 'outfit'
-          ? [ITEM_CATEGORIES.OUTFIT]
-          : [ITEM_CATEGORIES.EQUIPMENT, ITEM_CATEGORIES.OUTFIT];
-      await inventory.addSlot({ label, allowedCategories });
-      uiKit.showToast(`已新增槽位：${label}`, 'ok');
-      renderSlots();
-      await renderConsole();
-    });
-  };
-
-  renderSlots();
-  uiKit.openBottomSheet({
-    title: '管理角色穿戴槽位',
-    subtitle: '默认包含服装/主装备/副装备/饰品，可自由增删',
-    content: wrap,
-    actions: [{ id: 'done', label: '完成', tone: 'primary' }],
   });
 }
 
@@ -939,7 +987,7 @@ function openCheckSimulatorSheet(char) {
       </div>
 
       <p class="muted-text">
-        预览：<code>1D20 + ${escapeHtml(statDef.label)}修正(${formatSigned(statRules.getStatModifier(effVal))}) + 装备检定词条(${formatSigned(eqBonuses.checkBonus)}) + 士气(${formatSigned(statRules.getMoraleModifier(moraleVal))})</code> vs DC ${dcValue}
+        预览：<code>1D20 + ${escapeHtml(statDef.label)}修正(${formatSigned(statRules.getStatModifier(effVal))}) + 部件/装备检定词条(${formatSigned(eqBonuses.checkBonus)}) + 士气(${formatSigned(statRules.getMoraleModifier(moraleVal))})</code> vs DC ${dcValue}
       </p>
 
       <button type="button" id="btn-cc-run-check" class="btn-primary uikit-touch-target">执行 1D20 实时模拟检定</button>
@@ -1021,7 +1069,7 @@ function openCheckSimulatorSheet(char) {
   renderSim();
   uiKit.openBottomSheet({
     title: '实时模拟检定（1D20）',
-    subtitle: '自动计入当前角色属性、已穿戴服装/装备加成与士气修正，并写入行动日志',
+    subtitle: '自动计入当前角色属性、核心部件与自定义槽位加成、士气修正',
     content: wrap,
     actions: [{ id: 'close', label: '关闭', tone: 'secondary' }],
   });
@@ -1033,17 +1081,17 @@ function openAddResourceSheet() {
   wrap.className = 'module-stack';
   wrap.innerHTML = `
     <div class="form-group">
-      <label class="form-label" for="cc-res-name">资源名称 *</label>
-      <input id="cc-res-name" class="form-input" type="text" placeholder="例如：核心元件 / 凭证">
+      <label class="form-label" for="cc-res-name">自定义资源名称 *</label>
+      <input id="cc-res-name" class="form-input" type="text" placeholder="例如：开发图纸 / 凭证">
     </div>
     <div class="lab-kv-grid">
       <div class="form-group">
         <label class="form-label" for="cc-res-unit">单位</label>
-        <input id="cc-res-unit" class="form-input" type="text" placeholder="例如：个 / 点">
+        <input id="cc-res-unit" class="form-input" type="text" placeholder="例如：张 / 个">
       </div>
       <div class="form-group">
         <label class="form-label" for="cc-res-amt">初始数量</label>
-        <input id="cc-res-amt" class="form-input" type="number" min="0" value="100">
+        <input id="cc-res-amt" class="form-input" type="number" min="0" value="50">
       </div>
     </div>
   `;
@@ -1065,7 +1113,7 @@ function openAddResourceSheet() {
             uiKit.showToast('请输入资源名称', 'warn');
             return false;
           }
-          await resources.defineResource({ name, unit, amount });
+          await resources.defineResource({ name, unit, amount, group: 'resource', autoRecover: false });
           uiKit.showToast(`已新增资源：${name}`, 'ok');
           await renderConsole();
           return true;
@@ -1129,22 +1177,131 @@ function openLogExportSheet() {
 }
 
 // ============================================================
+// Reusable Character Slots Section Renderer
+// ============================================================
+
+function createSlotsSection(char, { compact = false } = {}) {
+  const { inventory, uiKit } = consoleState.context;
+  const slots = inventory.getCharacterSlots(char.id);
+  const equippedMap = inventory.getCharacterEquipment(char.id);
+  const seaworthyInfo = inventory.checkSeaworthiness(char.id);
+
+  const card = document.createElement('section');
+  card.className = 'surface-card lab-stack-sm';
+  card.id = compact ? 'cc-overview-slots-card' : 'cc-slots-card';
+
+  card.innerHTML = `
+    <div class="section-header-row" style="margin-bottom:0;">
+      <h2 class="section-title">核心槽位与自由扩展槽位</h2>
+      <button type="button" id="${compact ? 'btn-cc-add-custom-slot-ov' : 'btn-cc-add-custom-slot'}" class="btn-primary uikit-touch-target" style="padding:6px 12px;font-size:12.5px;">+ 添加自定义槽位</button>
+    </div>
+    <p class="muted-text" style="font-size:12px;">
+      「引擎 / 装甲 / 核心」为固定必装槽（${seaworthyInfo.seaworthy ? '已适航' : '未适航，缺少必装项'}）；自定义槽位完全自由命名、不限扩展装备类型，留空依然适航。
+    </p>
+    <div class="lab-stack-sm" data-slots-list></div>
+  `;
+
+  card
+    .querySelector(compact ? '#btn-cc-add-custom-slot-ov' : '#btn-cc-add-custom-slot')
+    .addEventListener('click', () => openAddCustomSlotSheet(char));
+
+  const listEl = card.querySelector('[data-slots-list]');
+  for (const s of slots) {
+    const item = equippedMap[s.id];
+    const isMissingCore = s.required && !item;
+    const row = document.createElement('div');
+    row.className = `cc-slot-card ${isMissingCore ? 'is-missing-core' : ''}`;
+    row.dataset.equipSlot = s.id;
+    row.dataset.slotCustom = s.custom ? 'true' : 'false';
+
+    const tagHtml = s.required
+      ? `<span class="status-badge ${item ? 'badge-ok' : 'badge-danger'}">必装核心</span>`
+      : s.custom
+      ? '<span class="status-badge badge-muted">自定义选装</span>'
+      : '<span class="status-badge badge-muted">选装</span>';
+
+    row.innerHTML = `
+      <div class="cc-slot-card-top">
+        <div class="cc-slot-info">
+          <div class="cc-badge-row">
+            <span class="cc-slot-item-name">${escapeHtml(s.label)}</span>
+            ${tagHtml}
+          </div>
+          <span class="cc-slot-label">${item ? `已装：${escapeHtml(formatItemTitle(item))}` : isMissingCore ? '未装入（影响适航状态）' : '留空（不影响适航）'}</span>
+          ${
+            item && item.bonuses?.length
+              ? `<span class="cc-stat-sub">${escapeHtml(item.bonuses.map(formatBonusChip).join(' · '))}</span>`
+              : ''
+          }
+        </div>
+      </div>
+      <div class="cc-slot-btn-row">
+        <button type="button" class="btn-secondary" data-slot-act="pick">${item ? '更换' : '装入'}</button>
+        ${item ? '<button type="button" class="btn-danger" data-slot-act="unequip">卸下</button>' : ''}
+        ${s.custom ? '<button type="button" class="btn-secondary" data-slot-act="rename">重命名</button>' : ''}
+        ${s.custom ? '<button type="button" class="btn-danger" data-slot-act="remove-slot">删槽</button>' : ''}
+      </div>
+    `;
+
+    row.querySelector('[data-slot-act="pick"]').addEventListener('click', () => openSlotEquipPickerSheet(char, s));
+
+    const unequipBtn = row.querySelector('[data-slot-act="unequip"]');
+    if (unequipBtn) {
+      unequipBtn.addEventListener('click', async () => {
+        await inventory.unequipSlot(char.id, s.id);
+        await saveRosterNow();
+        const check = inventory.checkSeaworthiness(char.id);
+        uiKit.showToast(
+          check.seaworthy ? `已从「${s.label}」卸下「${item.name}」` : `已卸下「${item.name}」：角色当前未适航`,
+          check.seaworthy ? 'ok' : 'warn'
+        );
+        await renderConsole();
+      });
+    }
+
+    const renameBtn = row.querySelector('[data-slot-act="rename"]');
+    if (renameBtn) {
+      renameBtn.addEventListener('click', () => openRenameCustomSlotSheet(char, s));
+    }
+
+    const removeSlotBtn = row.querySelector('[data-slot-act="remove-slot"]');
+    if (removeSlotBtn) {
+      removeSlotBtn.addEventListener('click', async () => {
+        const ok = await uiKit.confirmDialog({
+          title: `删除自定义槽位「${s.label}」`,
+          message: '确认删除此自定义槽位吗？若已装入扩展装备将自动退回仓库并重算属性。',
+          confirmLabel: '确认删除',
+          tone: 'danger',
+        });
+        if (!ok) return;
+        await inventory.removeCharacterCustomSlot(char.id, s.id);
+        await saveRosterNow();
+        uiKit.showToast(`已删除自定义槽位：${s.label}`, 'ok');
+        await renderConsole();
+      });
+    }
+
+    listEl.appendChild(row);
+  }
+
+  return card;
+}
+
+// ============================================================
 // Sub-Tab Renderers
 // ============================================================
 
 function renderOverviewTab(host, char) {
-  const { entities, inventory, statRules, uiKit, logs } = consoleState.context;
+  const { entities, inventory, statRules, resources, uiKit, logs } = consoleState.context;
   const eqBonuses = inventory.getCharacterEquipmentBonuses(char.id);
-  const equippedMap = inventory.getCharacterEquipment(char.id);
-  const slots = inventory.listSlots();
 
   // 1. Core 5 Stats Panel
   const statCard = document.createElement('section');
   statCard.className = 'surface-card lab-stack-sm';
   statCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">五维面板属性</h2>
-      <span class="status-badge badge-ok" id="cc-equip-check-badge">装备检定加成 ${formatSigned(eqBonuses.checkBonus)}</span>
+      <h2 class="section-title">五维面板属性（全槽位实时累加）</h2>
+      <span class="status-badge badge-ok" id="cc-equip-check-badge">装备检定 ${formatSigned(eqBonuses.checkBonus)}</span>
     </div>
     <div class="cc-stat-grid" id="cc-stat-grid">
       ${CORE_STAT_DEFS.map((def) => {
@@ -1166,7 +1323,7 @@ function renderOverviewTab(host, char) {
                   : ''
               }
             </div>
-            <span class="cc-stat-sub">基础 ${baseVal}${delta !== 0 ? ` · 穿戴 ${formatSigned(delta)}` : ''}</span>
+            <span class="cc-stat-sub">基础 ${baseVal}${delta !== 0 ? ` · 全槽位 ${formatSigned(delta)}` : ''}</span>
           </div>
         `;
       }).join('')}
@@ -1174,7 +1331,10 @@ function renderOverviewTab(host, char) {
   `;
   host.appendChild(statCard);
 
-  // 2. Character Persona & Quick Adjust Card
+  // 2. Direct Core & Custom Slots Builder right on Character Overview Card
+  host.appendChild(createSlotsSection(char, { compact: true }));
+
+  // 3. Character Persona & Quick Status Adjust
   const personaCard = document.createElement('section');
   personaCard.className = 'surface-card lab-stack-sm';
   const affStage = statRules.getAffinityStage(char.stats.affinity ?? 0);
@@ -1192,7 +1352,7 @@ function renderOverviewTab(host, char) {
       <button type="button" id="btn-cc-ap-dec" class="btn-secondary uikit-touch-target">消耗 15 AP</button>
     </div>
     <div class="lab-btn-grid">
-      <button type="button" id="btn-cc-offline-sim" class="btn-secondary uikit-touch-target">模拟离线恢复 +30分</button>
+      <button type="button" id="btn-cc-offline-sim" class="btn-secondary uikit-touch-target">离线恢复 +30分</button>
       <button type="button" id="btn-cc-del-char" class="btn-danger uikit-touch-target" ${getCharacters().length <= 1 ? 'disabled' : ''}>删除当前角色</button>
     </div>
   `;
@@ -1229,13 +1389,14 @@ function renderOverviewTab(host, char) {
   personaCard.querySelector('#btn-cc-offline-sim').addEventListener('click', async () => {
     const now = Date.now();
     const rules = statRules.buildOfflineRecoveryRules(getCharacters());
-    const report = entities.settleOfflineTime({
+    entities.settleOfflineTime({
       lastTimestamp: now - 30 * 60 * 1000,
       now,
       rules,
     });
+    await resources.settleOfflineResources({ lastTimestamp: now - 30 * 60 * 1000, now });
     await saveRosterNow();
-    uiKit.showToast(`已模拟离线恢复 ${report.formattedDuration}`, 'ok');
+    uiKit.showToast('已模拟离线恢复 30 分钟（含角色状态与基础四项资源）', 'ok');
     await renderConsole();
   });
 
@@ -1243,7 +1404,7 @@ function renderOverviewTab(host, char) {
     if (getCharacters().length <= 1) return;
     const ok = await uiKit.confirmDialog({
       title: `删除角色「${char.name}」`,
-      message: '确认删除该角色吗？其已穿戴的装备将自动保留在全局仓库中。',
+      message: '确认删除该角色吗？其已装入的部件与装备将保留在全局仓库中。',
       confirmLabel: '确认删除',
       tone: 'danger',
     });
@@ -1266,101 +1427,13 @@ function renderOverviewTab(host, char) {
   });
 
   host.appendChild(personaCard);
-
-  // 3. Compact Equipped Slots Preview
-  const eqPreviewCard = uiKit.createCollapsibleCard({
-    title: '当前穿戴槽位一览',
-    subtitle: `已装备 ${eqBonuses.items.length} / ${slots.length} 个槽位`,
-    badge: `${eqBonuses.items.length}/${slots.length}`,
-    open: true,
-    content: (body) => {
-      const list = document.createElement('div');
-      list.className = 'lab-stack-sm';
-      for (const s of slots) {
-        const item = equippedMap[s.id];
-        const row = document.createElement('div');
-        row.className = 'cc-slot-row';
-        row.innerHTML = `
-          <div class="cc-slot-info">
-            <span class="cc-slot-label">${escapeHtml(s.label)}</span>
-            <span class="cc-slot-item-name">${item ? escapeHtml(item.name) : '（未穿戴）'}</span>
-          </div>
-          <span class="muted-text" style="font-size:11.5px;">${
-            item && item.bonuses?.length ? escapeHtml(item.bonuses.map(formatBonusChip).slice(0, 2).join(' · ')) : '空闲'
-          }</span>
-        `;
-        list.appendChild(row);
-      }
-      const goBtn = document.createElement('button');
-      goBtn.type = 'button';
-      goBtn.className = 'btn-secondary uikit-touch-target';
-      goBtn.style.width = '100%';
-      goBtn.style.marginTop = '8px';
-      goBtn.textContent = '前往背包与装备穿戴台';
-      goBtn.addEventListener('click', () => {
-        consoleState.activeTab = 'equipment';
-        if (consoleState.tabsCtrl) consoleState.tabsCtrl.setActive('equipment', { silent: true });
-        renderConsole();
-      });
-      body.appendChild(list);
-      body.appendChild(goBtn);
-    },
-  });
-  host.appendChild(eqPreviewCard.element);
 }
 
 function renderEquipmentTab(host, char) {
   const { inventory, uiKit } = consoleState.context;
-  const slots = inventory.listSlots();
-  const equippedMap = inventory.getCharacterEquipment(char.id);
 
-  // Card 1: Character Equipment Slots
-  const slotsCard = document.createElement('section');
-  slotsCard.className = 'surface-card lab-stack-sm';
-  slotsCard.innerHTML = `
-    <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">${escapeHtml(char.name)} · 穿戴槽位</h2>
-      <button type="button" id="btn-cc-manage-slots" class="btn-ghost-sm">管理槽位</button>
-    </div>
-    <div class="lab-stack-sm" id="cc-slots-container"></div>
-  `;
-
-  slotsCard.querySelector('#btn-cc-manage-slots').addEventListener('click', () => openSlotManagerSheet());
-
-  const slotsContainer = slotsCard.querySelector('#cc-slots-container');
-  for (const s of slots) {
-    const item = equippedMap[s.id];
-    const row = document.createElement('div');
-    row.className = 'cc-slot-row';
-    row.dataset.equipSlot = s.id;
-    row.innerHTML = `
-      <div class="cc-slot-info">
-        <span class="cc-slot-label">${escapeHtml(s.label)}</span>
-        <span class="cc-slot-item-name">${item ? escapeHtml(item.name) : '（未穿戴）'}</span>
-        ${
-          item && item.bonuses?.length
-            ? `<span class="cc-stat-sub">${escapeHtml(item.bonuses.map(formatBonusChip).join(' · '))}</span>`
-            : ''
-        }
-      </div>
-      ${
-        item
-          ? `<button type="button" class="btn-danger uikit-touch-target" data-unequip-slot="${escapeHtml(s.id)}" style="padding:0 12px;">卸下</button>`
-          : `<span class="status-badge badge-muted">空闲</span>`
-      }
-    `;
-    const unequipBtn = row.querySelector('[data-unequip-slot]');
-    if (unequipBtn) {
-      unequipBtn.addEventListener('click', async () => {
-        await inventory.unequipSlot(char.id, s.id);
-        await saveRosterNow();
-        uiKit.showToast(`已从「${s.label}」卸下「${item.name}」`, 'ok');
-        await renderConsole();
-      });
-    }
-    slotsContainer.appendChild(row);
-  }
-  host.appendChild(slotsCard);
+  // Card 1: Full Slot Manager (Core 3 + Outfit + Freeform Custom)
+  host.appendChild(createSlotsSection(char, { compact: false }));
 
   // Card 2: Global Item Warehouse
   const items = inventory.listItems({
@@ -1371,14 +1444,17 @@ function renderEquipmentTab(host, char) {
   warehouseCard.className = 'surface-card lab-stack-sm';
   warehouseCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">全局物品仓库（${items.length}）</h2>
-      <button type="button" id="btn-cc-new-item" class="btn-primary uikit-touch-target" style="padding:6px 12px;font-size:12.5px;">+ 新建服装/装备</button>
+      <h2 class="section-title">全局仓库（${items.length}）</h2>
+      <button type="button" id="btn-cc-new-item" class="btn-primary uikit-touch-target" style="padding:6px 12px;font-size:12.5px;">+ 新建装备/部件</button>
     </div>
     <div class="chip-row" id="cc-item-filters">
       ${[
         { id: 'all', label: '全部' },
+        { id: ITEM_CATEGORIES.ENGINE, label: '引擎' },
+        { id: ITEM_CATEGORIES.ARMOR, label: '装甲' },
+        { id: ITEM_CATEGORIES.CORE, label: '核心' },
+        { id: ITEM_CATEGORIES.EXTENSION, label: '通用扩展' },
         { id: ITEM_CATEGORIES.OUTFIT, label: '服装' },
-        { id: ITEM_CATEGORIES.EQUIPMENT, label: '装备' },
         { id: ITEM_CATEGORIES.CONSUMABLE, label: '消耗品' },
       ]
         .map(
@@ -1404,13 +1480,13 @@ function renderEquipmentTab(host, char) {
 
   const listEl = warehouseCard.querySelector('#cc-warehouse-list');
   if (items.length === 0) {
-    listEl.innerHTML = '<p class="muted-text">当前分类暂无物品，点击上方按钮新建服装或装备。</p>';
+    listEl.innerHTML = '<p class="muted-text">当前分类暂无物品，可新建物品或前往「物资与工坊台」获取。</p>';
   } else {
     for (const item of items) {
       const equippedSlotId = inventory.getEquippedSlotOfItem(char.id, item.id);
       const isEquipped = Boolean(equippedSlotId);
       const isConsumable = item.category === ITEM_CATEGORIES.CONSUMABLE;
-      const targetSlot = !isConsumable ? inventory.getSlot(item.slotType) : null;
+      const equippedSlotObj = equippedSlotId ? inventory.getCharacterSlot(char.id, equippedSlotId) : null;
 
       const card = document.createElement('div');
       card.className = `cc-item-card ${isEquipped ? 'is-equipped' : ''}`;
@@ -1418,12 +1494,11 @@ function renderEquipmentTab(host, char) {
       card.innerHTML = `
         <div class="cc-item-head">
           <div style="min-width:0;">
-            <strong>${escapeHtml(item.name)}</strong>
+            <strong>${escapeHtml(formatItemTitle(item))}</strong>
             <div class="cc-badge-row" style="margin-top:4px;">
-              <span class="status-badge ${item.category === ITEM_CATEGORIES.OUTFIT ? 'badge-ok' : 'badge-muted'}">${escapeHtml(ITEM_CATEGORY_LABELS[item.category] || item.category)}</span>
-              ${targetSlot ? `<span class="status-badge badge-muted">槽位：${escapeHtml(targetSlot.label)}</span>` : ''}
+              <span class="status-badge badge-muted">${escapeHtml(ITEM_CATEGORY_LABELS[item.category] || item.category)}</span>
               ${isConsumable ? `<span class="status-badge badge-warn">库存 ×${item.quantity}</span>` : ''}
-              ${isEquipped ? `<span class="status-badge badge-ok">已穿戴</span>` : ''}
+              ${isEquipped ? `<span class="status-badge badge-ok">已装：${escapeHtml(equippedSlotObj?.label || equippedSlotId)}</span>` : ''}
             </div>
           </div>
         </div>
@@ -1437,9 +1512,9 @@ function renderEquipmentTab(host, char) {
         </div>
         <div class="cc-item-actions">
           <button type="button" class="${isEquipped ? 'btn-secondary' : 'btn-primary'}" data-act="primary" ${isConsumable && item.quantity <= 0 ? 'disabled' : ''}>
-            ${isConsumable ? '使用消耗品' : isEquipped ? '卸下物品' : '一键穿戴'}
+            ${isConsumable ? '使用消耗品' : isEquipped ? '卸下部件' : '一键装入'}
           </button>
-          <button type="button" class="btn-secondary" data-act="edit">编辑</button>
+          <button type="button" class="btn-secondary" data-act="edit">调词条</button>
           <button type="button" class="btn-danger" data-act="delete">删除</button>
         </div>
       `;
@@ -1455,9 +1530,9 @@ function renderEquipmentTab(host, char) {
             await saveRosterNow();
             uiKit.showToast(`已卸下「${item.name}」`, 'ok');
           } else {
-            const res = await inventory.equipItem(char.id, item.slotType, item.id);
+            const res = await inventory.equipItem(char.id, null, item.id);
             await saveRosterNow();
-            uiKit.showToast(`已为 ${char.name} 穿戴「${item.name}」（${res.slotLabel}）`, 'ok');
+            uiKit.showToast(`已为 ${char.name} 装入「${item.name}」（${res.slotLabel}）`, 'ok');
           }
           await renderConsole();
         } catch (err) {
@@ -1496,10 +1571,10 @@ function renderResourcesTab(host) {
   card.className = 'surface-card lab-stack-sm';
   card.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">全局资源管理（${list.length} 项）</h2>
-      <button type="button" id="btn-cc-add-res" class="btn-primary uikit-touch-target" style="padding:6px 12px;font-size:12.5px;">+ 新增资源</button>
+      <h2 class="section-title">六项专用资源与双货币</h2>
+      <button type="button" id="btn-cc-add-res" class="btn-primary uikit-touch-target" style="padding:6px 12px;font-size:12.5px;">+ 新增条目</button>
     </div>
-    <p class="muted-text">内置余额校验，消耗不足时自动安全拦截并提示，支持随时增删自定义资源条目。</p>
+    <p class="muted-text">四项基础资源（燃油/弹药/钢材/铝材）随离线时间自动恢复至仓储上限；银条与金条不随时间自然恢复。</p>
     <div class="lab-stack-sm" id="cc-res-list"></div>
   `;
 
@@ -1507,49 +1582,58 @@ function renderResourcesTab(host) {
 
   const listEl = card.querySelector('#cc-res-list');
   for (const r of list) {
+    const isCore = CORE_RESOURCE_IDS.includes(r.id) || CORE_CURRENCY_IDS.includes(r.id);
+    const stepAmt = r.id === 'gold' ? 20 : 100;
     const row = document.createElement('div');
     row.className = 'lab-slot-card';
     row.dataset.resId = r.id;
     row.innerHTML = `
       <div class="lab-slot-head">
-        <strong>${escapeHtml(r.name)}</strong>
-        <span class="metric-value" style="font-size:17px;">${r.amount}${escapeHtml(r.unit)}</span>
+        <div>
+          <strong>${escapeHtml(r.name)}</strong>
+          <span class="status-badge ${r.group === 'currency' ? 'badge-warn' : 'badge-muted'}" style="margin-left:6px;">
+            ${r.autoRecover ? `上限 ${r.cap} · +${r.recoveryPerMin}/分` : '不自动恢复'}
+          </span>
+        </div>
+        <span class="metric-value" style="font-size:17px;">${Math.floor(r.amount)}${escapeHtml(r.unit)}</span>
       </div>
       <div class="cc-btn-3col">
-        <button type="button" class="btn-secondary uikit-touch-target" data-res-act="spend">-100</button>
-        <button type="button" class="btn-primary uikit-touch-target" data-res-act="add">+100</button>
-        <button type="button" class="btn-danger uikit-touch-target" data-res-act="remove" ${list.length <= 1 ? 'disabled' : ''}>删除</button>
+        <button type="button" class="btn-secondary uikit-touch-target" data-res-act="spend">-${stepAmt}</button>
+        <button type="button" class="btn-primary uikit-touch-target" data-res-act="add">+${stepAmt}</button>
+        <button type="button" class="btn-danger uikit-touch-target" data-res-act="remove" ${isCore ? 'disabled' : ''}>${isCore ? '核心项' : '删除'}</button>
       </div>
     `;
 
     row.querySelector('[data-res-act="spend"]').addEventListener('click', async () => {
-      const res = await resources.spend(r.id, 100, { reason: '控制台测试扣除' });
+      const res = await resources.spend(r.id, stepAmt, { reason: '控制台测试扣除' });
       if (!res.ok) {
         uiKit.showToast(res.reason, 'warn');
         return;
       }
-      uiKit.showToast(`${r.name} -100（剩余 ${res.after}）`, 'ok');
+      uiKit.showToast(`${r.name} -${stepAmt}（剩余 ${res.after}）`, 'ok');
       await renderConsole();
     });
 
     row.querySelector('[data-res-act="add"]').addEventListener('click', async () => {
-      const res = await resources.add(r.id, 100, { reason: '控制台测试补充' });
-      uiKit.showToast(`${r.name} +100（当前 ${res.after}）`, 'ok');
+      const res = await resources.add(r.id, stepAmt, { reason: '控制台测试补充' });
+      uiKit.showToast(`${r.name} +${stepAmt}（当前 ${res.after}）`, 'ok');
       await renderConsole();
     });
 
-    row.querySelector('[data-res-act="remove"]').addEventListener('click', async () => {
-      const ok = await uiKit.confirmDialog({
-        title: `删除资源「${r.name}」`,
-        message: '确认删除该资源条目吗？',
-        confirmLabel: '确认删除',
-        tone: 'danger',
+    if (!isCore) {
+      row.querySelector('[data-res-act="remove"]').addEventListener('click', async () => {
+        const ok = await uiKit.confirmDialog({
+          title: `删除资源「${r.name}」`,
+          message: '确认删除该自定义资源条目吗？',
+          confirmLabel: '确认删除',
+          tone: 'danger',
+        });
+        if (!ok) return;
+        await resources.removeResource(r.id);
+        uiKit.showToast(`已删除资源：${r.name}`, 'ok');
+        await renderConsole();
       });
-      if (!ok) return;
-      await resources.removeResource(r.id);
-      uiKit.showToast(`已删除资源：${r.name}`, 'ok');
-      await renderConsole();
-    });
+    }
 
     listEl.appendChild(row);
   }
@@ -1575,7 +1659,7 @@ function renderLogsTab(host) {
       ${[
         { id: 'all', label: '全部' },
         { id: LOG_CATEGORIES.CHECK, label: '检定' },
-        { id: LOG_CATEGORIES.EQUIPMENT, label: '穿脱装备' },
+        { id: LOG_CATEGORIES.EQUIPMENT, label: '穿脱/强化' },
         { id: LOG_CATEGORIES.STAT, label: '数值' },
         { id: LOG_CATEGORIES.RESOURCE, label: '资源' },
         { id: LOG_CATEGORIES.CHARACTER, label: '角色' },
@@ -1661,22 +1745,26 @@ async function renderConsole() {
   const overallScore = statRules.computeOverallScore(effStats, eqBonuses.checkBonus);
   const affStage = statRules.getAffinityStage(char.stats.affinity ?? 0);
   const moraleMod = statRules.getMoraleModifier(char.stats.morale ?? 50);
-  const resList = resources.list();
+  const seaworthyInfo = statRules.evaluateSeaworthiness(inventory, char.id);
 
   consoleState.container.innerHTML = '';
   const root = document.createElement('div');
   root.className = 'cc-root';
+
+  // 0. Unified 6-Resource & Dual-Currency Overview Bar
+  root.appendChild(createResourceOverviewBar(resources, { id: 'cc-resource-bar' }));
 
   // 1. Character Roster Switcher Strip
   const rosterStrip = document.createElement('div');
   rosterStrip.className = 'cc-roster-strip';
   rosterStrip.id = 'cc-roster-strip';
   for (const c of roster) {
+    const sw = inventory.checkSeaworthiness(c.id);
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = `cc-roster-chip ${c.id === char.id ? 'is-active' : ''}`;
     chip.dataset.selectChar = c.id;
-    chip.textContent = c.name;
+    chip.textContent = sw.seaworthy ? c.name : `${c.name} (未适航)`;
     chip.addEventListener('click', async () => {
       consoleState.activeCharacterId = c.id;
       await saveRosterNow();
@@ -1694,7 +1782,7 @@ async function renderConsole() {
   rosterStrip.appendChild(addCharBtn);
   root.appendChild(rosterStrip);
 
-  // 2. Top Core Status Card (Hero + Dynamic Bars + Resource Summary + Quick Modals)
+  // 2. Top Core Status Card
   const heroCard = document.createElement('section');
   heroCard.className = 'surface-card lab-stack-sm';
   heroCard.id = 'cc-hero-card';
@@ -1704,35 +1792,30 @@ async function renderConsole() {
       <div class="cc-hero-info">
         <div class="cc-hero-name-row">
           <h2 class="cc-hero-name" id="cc-active-name">${escapeHtml(char.name)}</h2>
-          <span class="status-badge badge-ok" id="cc-overall-score">综合评分 ${overallScore}</span>
+          <span class="status-badge badge-ok" id="cc-overall-score">评分 ${overallScore}</span>
         </div>
         <div class="cc-badge-row">
+          <span class="status-badge ${seaworthyInfo.seaworthy ? 'badge-ok' : 'badge-danger'}" id="cc-seaworthy-badge">
+            ${seaworthyInfo.seaworthy ? '适航' : '未适航（缺少核心部件）'}
+          </span>
           <span class="status-badge badge-muted">${escapeHtml(char.meta?.roleTag || '通用型')}</span>
-          <span class="status-badge badge-ok" id="cc-affinity-badge">好感 · ${escapeHtml(affStage.label)} (${affStage.value})</span>
+          <span class="status-badge badge-ok" id="cc-affinity-badge">好感 ${escapeHtml(affStage.label)}(${affStage.value})</span>
         </div>
       </div>
     </div>
 
-    <div id="cc-dynamic-bars" class="lab-stack-sm"></div>
+    ${
+      !seaworthyInfo.seaworthy
+        ? `<div class="seaworthy-alert" id="cc-seaworthy-alert">${escapeHtml(seaworthyInfo.statusText)}。装齐「引擎 / 装甲 / 核心」后即可恢复适航出击。</div>`
+        : ''
+    }
 
-    <div class="cc-resource-strip" id="cc-resource-summary">
-      ${resList
-        .slice(0, 4)
-        .map(
-          (r) => `
-        <div class="cc-resource-pill">
-          <span class="cc-resource-pill-label">${escapeHtml(r.name)}</span>
-          <span class="cc-resource-pill-val">${r.amount}${escapeHtml(r.unit)}</span>
-        </div>
-      `
-        )
-        .join('')}
-    </div>
+    <div id="cc-dynamic-bars" class="lab-stack-sm"></div>
 
     <div class="lab-btn-grid">
       <button type="button" id="btn-cc-goto-action" class="btn-primary uikit-touch-target">前往行动台</button>
+      <button type="button" id="btn-cc-goto-workshop" class="btn-secondary uikit-touch-target">物资与工坊台</button>
       <button type="button" id="btn-cc-open-check" class="btn-secondary uikit-touch-target">模拟检定</button>
-      <button type="button" id="btn-cc-open-rules" class="btn-secondary uikit-touch-target">数值规则</button>
       <button type="button" id="btn-cc-edit-char" class="btn-secondary uikit-touch-target">编辑角色</button>
     </div>
   `;
@@ -1768,13 +1851,14 @@ async function renderConsole() {
   heroCard.querySelector('#btn-cc-goto-action').addEventListener('click', () => {
     if (consoleState.context.modules.has('action-console')) {
       consoleState.context.modules.mount('action-console');
-      uiKit.showToast(`已携「${char.name}」前往行动与事件台`, 'ok');
-    } else {
-      uiKit.showToast('行动与事件台尚未注册', 'warn');
+    }
+  });
+  heroCard.querySelector('#btn-cc-goto-workshop').addEventListener('click', () => {
+    if (consoleState.context.modules.has('supply-workshop')) {
+      consoleState.context.modules.mount('supply-workshop');
     }
   });
   heroCard.querySelector('#btn-cc-open-check').addEventListener('click', () => openCheckSimulatorSheet(char));
-  heroCard.querySelector('#btn-cc-open-rules').addEventListener('click', () => openStatRulesSheet());
   heroCard.querySelector('#btn-cc-edit-char').addEventListener('click', () => openCharacterEditorSheet(char));
   root.appendChild(heroCard);
 
@@ -1823,14 +1907,13 @@ async function renderConsole() {
 export default {
   id: 'character-console',
   name: '角色控制台',
-  description: '通用角色管理、五维面板与 1D20 检定、背包与服装/装备穿戴、资源管理及行动日志控制台。',
+  description: '角色管理、三核心必装槽适航校验、完全自由的自定义槽位建造器、五维面板、1D20 检定、六项资源与行动日志控制台。',
 
   mount(container, context) {
     consoleState.container = container;
     consoleState.context = context;
     consoleState.avatarUrlCache.clear();
 
-    // Ensure roster exists even if storage was just cleared
     if (getCharacters().length === 0) {
       for (const tpl of DEFAULT_CHARACTER_TEMPLATES) {
         context.entities.register(tpl);
@@ -1856,14 +1939,14 @@ export default {
 
     context.ui.setQuickActions([
       {
+        id: 'cc-quick-add-slot',
+        label: '+ 自定义槽位',
+        onClick: () => openAddCustomSlotSheet(getActiveCharacter()),
+      },
+      {
         id: 'cc-quick-check',
         label: '模拟检定',
         onClick: () => openCheckSimulatorSheet(getActiveCharacter()),
-      },
-      {
-        id: 'cc-quick-new-item',
-        label: '新建服装/装备',
-        onClick: () => openItemEditorSheet(null),
       },
       {
         id: 'cc-quick-rules',
@@ -1871,15 +1954,16 @@ export default {
         onClick: () => openStatRulesSheet(),
       },
       {
-        id: 'cc-quick-logs',
-        label: '导出日志摘要',
-        onClick: () => openLogExportSheet(),
+        id: 'cc-quick-new-item',
+        label: '新建部件/装备',
+        onClick: () => openItemEditorSheet(null),
       },
     ]);
 
     consoleState.unsubs = [
       context.bus.on('stat-rules:changed', () => renderConsole()),
       context.bus.on('action:settled', () => renderConsole()),
+      context.bus.on('inventory:enhanced', () => renderConsole()),
       context.bus.on('storage:changed', (detail) => {
         if (detail?.action === 'resetAll' || detail?.action === 'import') {
           renderConsole();

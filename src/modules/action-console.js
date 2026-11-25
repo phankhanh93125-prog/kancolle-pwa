@@ -1,23 +1,24 @@
 /**
  * Generic Action & Event Console Module (`action-console`).
  *
- * Plain, domain-neutral interactive gameplay loop integrating:
- *   - Compact active character status bar synced live with Character Console
+ * Features:
+ *   - Unified 6-resource & dual-currency top overview bar (fuel/ammo/steel/bauxite + silver/gold)
+ *   - Live Seaworthiness (适航) enforcement: strictly blocks sorties if any mandatory core slot
+ *     (引擎 / 装甲 / 核心) is missing on the active character
  *   - One-tap Pure Local Mode / AI Enhanced Mode switch (via PromptPipeline)
- *   - Immersive chronological timeline (event cards, branching choices, D20 check breakdowns, settlement chips)
- *   - Quick actions ("执行探索", "随机事件", "状态休整") + freeform bottom input bar
+ *   - Immersive chronological timeline (event cards, branching D20 checks, settlement chips)
  *   - Visual mobile Event Rule Editor Bottom Sheet persisted in IndexedDB
- *   - Automatic EventBus sync & SaveManager Auto-Save on every state/resource settlement
  */
 
 import { CORE_STAT_DEFS, CORE_STAT_MAP } from '../core/stat-rules.js';
 import { NARRATIVE_MODES } from '../core/prompt-pipeline.js';
+import { createResourceOverviewBar } from '../core/resource-manager.js';
 import { LOG_CATEGORIES } from '../core/log-system.js';
 import { getActiveCharacterId, persistCharacterRoster } from './character-console.js';
 import { clamp } from '../core/calc-engine.js';
 
 const ACTION_STORAGE_NS = 'core-action-events';
-const EVENTS_KEY = 'event-library';
+const EVENTS_KEY = 'event-library-v2';
 const TIMELINE_KEY = 'timeline-history';
 const MAX_TIMELINE_ITEMS = 50;
 
@@ -43,8 +44,8 @@ export const DEFAULT_ACTION_EVENTS = [
         label: '稳健推进并核查数据',
         statKey: 'tactics',
         dc: 14,
-        successEffects: { hp: 0, morale: 5, ap: 0, affinity: 3, credits: 80, supplies: 30, materials: 20 },
-        failEffects: { hp: -8, morale: -5, ap: 0, affinity: 0, credits: 15, supplies: 0, materials: 0 },
+        successEffects: { hp: 0, morale: 5, ap: 0, affinity: 3, fuel: 40, steel: 50, silver: 120 },
+        failEffects: { hp: -8, morale: -5, ap: 0, affinity: 0, fuel: -20, silver: 20 },
         successTemplate:
           '{actor.name}身着「{outfitName}」，凭借清晰的战术判断顺利完成区域核查（检定 {check.total} vs DC {check.dc}），结算收益：{rewardSummary}。',
         failTemplate:
@@ -55,10 +56,10 @@ export const DEFAULT_ACTION_EVENTS = [
         label: '快速机动绕行侦察',
         statKey: 'agility',
         dc: 13,
-        successEffects: { hp: 0, morale: 4, ap: 5, affinity: 2, credits: 50, supplies: 45, materials: 10 },
-        failEffects: { hp: -5, morale: -3, ap: -5, affinity: 0, credits: 0, supplies: 0, materials: 0 },
+        successEffects: { hp: 0, morale: 4, ap: 5, affinity: 2, fuel: 60, bauxite: 35, silver: 80 },
+        failEffects: { hp: -5, morale: -3, ap: -5, affinity: 0, fuel: -15 },
         successTemplate:
-          '{actor.name}灵活绕开障碍区域，高效带回一批沿途补给（检定 {check.total} vs DC {check.dc}），结算收益：{rewardSummary}。',
+          '{actor.name}灵活绕开障碍区域，高效带回一批沿途资源（检定 {check.total} vs DC {check.dc}），结算收益：{rewardSummary}。',
         failTemplate:
           '{actor.name}绕行路线较为耗费体力，未能收集到有效物资（检定 {check.total} vs DC {check.dc}），结算变动：{penaltySummary}。',
       },
@@ -67,7 +68,7 @@ export const DEFAULT_ACTION_EVENTS = [
         label: '标记坐标后安全撤回（免检定）',
         statKey: 'none',
         dc: 0,
-        successEffects: { hp: 0, morale: 2, ap: 0, affinity: 1, credits: 20, supplies: 0, materials: 0 },
+        successEffects: { hp: 0, morale: 2, ap: 0, affinity: 1, silver: 30 },
         failEffects: {},
         successTemplate:
           '{actor.name}稳妥记录了坐标信息并返回基地，获得基础补贴：{rewardSummary}。',
@@ -81,7 +82,7 @@ export const DEFAULT_ACTION_EVENTS = [
     category: 'explore',
     weight: 35,
     apCost: 12,
-    description: '发现一处封闭的旧式仓储点，外层门锁已经锈蚀，内部隐约存放着可用材料与补给。',
+    description: '发现一处封闭的旧式仓储点，外层门锁已经锈蚀，内部隐约存放着钢材、弹药与货币。',
     builtIn: true,
     choices: [
       {
@@ -89,8 +90,8 @@ export const DEFAULT_ACTION_EVENTS = [
         label: '强行破拆门锁（高回报）',
         statKey: 'attack',
         dc: 15,
-        successEffects: { hp: 0, morale: 6, ap: 0, affinity: 3, credits: 100, supplies: 50, materials: 45 },
-        failEffects: { hp: -12, morale: -4, ap: 0, affinity: 0, credits: 0, supplies: 10, materials: 0 },
+        successEffects: { hp: 0, morale: 6, ap: 0, affinity: 3, ammo: 60, steel: 90, silver: 150 },
+        failEffects: { hp: -12, morale: -4, ap: 0, affinity: 0, ammo: -20, steel: 15 },
         successTemplate:
           '{actor.name}果断破开封闭门锁，完整回收内部库存（检定 {check.total} vs DC {check.dc}），结算收益：{rewardSummary}。',
         failTemplate:
@@ -101,8 +102,8 @@ export const DEFAULT_ACTION_EVENTS = [
         label: '搜寻侧面备用通道',
         statKey: 'luck',
         dc: 13,
-        successEffects: { hp: 0, morale: 5, ap: 0, affinity: 2, credits: 70, supplies: 35, materials: 30 },
-        failEffects: { hp: -4, morale: -3, ap: 0, affinity: 0, credits: 10, supplies: 0, materials: 0 },
+        successEffects: { hp: 0, morale: 5, ap: 0, affinity: 2, bauxite: 55, steel: 40, silver: 100 },
+        failEffects: { hp: -4, morale: -3, ap: 0, affinity: 0, silver: 20 },
         successTemplate:
           '{actor.name}意外找到未上锁的维护通道，轻松取走物资（检定 {check.total} vs DC {check.dc}），结算收益：{rewardSummary}。',
         failTemplate:
@@ -124,8 +125,8 @@ export const DEFAULT_ACTION_EVENTS = [
         label: '高功率瞬时压制干扰源',
         statKey: 'burst',
         dc: 15,
-        successEffects: { hp: 0, morale: 8, ap: 0, affinity: 4, credits: 110, supplies: 20, materials: 35 },
-        failEffects: { hp: -10, morale: -6, ap: 0, affinity: 0, credits: 0, supplies: 0, materials: 0 },
+        successEffects: { hp: 0, morale: 8, ap: 0, affinity: 4, bauxite: 60, silver: 160, gold: 2 },
+        failEffects: { hp: -10, morale: -6, ap: 0, affinity: 0, ammo: -25 },
         successTemplate:
           '{actor.name}以精准爆发输出瞬间清除干扰源，频道恢复畅通（检定 {check.total} vs DC {check.dc}），结算收益：{rewardSummary}。',
         failTemplate:
@@ -136,8 +137,8 @@ export const DEFAULT_ACTION_EVENTS = [
         label: '记录频谱并逆向解析',
         statKey: 'tactics',
         dc: 14,
-        successEffects: { hp: 0, morale: 5, ap: 0, affinity: 3, credits: 90, supplies: 25, materials: 25 },
-        failEffects: { hp: -4, morale: -4, ap: 0, affinity: 0, credits: 20, supplies: 0, materials: 0 },
+        successEffects: { hp: 0, morale: 5, ap: 0, affinity: 3, bauxite: 45, silver: 110 },
+        failEffects: { hp: -4, morale: -4, ap: 0, affinity: 0, silver: 25 },
         successTemplate:
           '{actor.name}成功解析杂波背后的规律并导出数据（检定 {check.total} vs DC {check.dc}），结算收益：{rewardSummary}。',
         failTemplate:
@@ -159,20 +160,20 @@ export const DEFAULT_ACTION_EVENTS = [
         label: '友好接洽并互换物资',
         statKey: 'luck',
         dc: 12,
-        successEffects: { hp: 6, morale: 8, ap: 0, affinity: 4, credits: 60, supplies: 60, materials: 15 },
-        failEffects: { hp: 0, morale: 2, ap: 0, affinity: 1, credits: 20, supplies: 15, materials: 0 },
+        successEffects: { hp: 6, morale: 8, ap: 0, affinity: 4, fuel: 70, ammo: 50, silver: 90 },
+        failEffects: { hp: 0, morale: 2, ap: 0, affinity: 1, fuel: 25 },
         successTemplate:
           '{actor.name}身着「{outfitName}」与对方愉快达成交换，顺便获得热食补给（检定 {check.total} vs DC {check.dc}），结算收益：{rewardSummary}。',
         failTemplate:
-          '{actor.name}与对方简单交流后只换到少量常规物资（检定 {check.total} vs DC {check.dc}），结算变动：{penaltySummary}。',
+          '{actor.name}与对方简单交流后只换到少量常规燃油（检定 {check.total} vs DC {check.dc}），结算变动：{penaltySummary}。',
       },
       {
         id: 'ch_camp_assist',
         label: '协助快速装卸（机动检定）',
         statKey: 'agility',
         dc: 14,
-        successEffects: { hp: 0, morale: 6, ap: 0, affinity: 3, credits: 120, supplies: 30, materials: 20 },
-        failEffects: { hp: -6, morale: -2, ap: 0, affinity: 1, credits: 40, supplies: 0, materials: 0 },
+        successEffects: { hp: 0, morale: 6, ap: 0, affinity: 3, steel: 70, silver: 140 },
+        failEffects: { hp: -6, morale: -2, ap: 0, affinity: 1, silver: 45 },
         successTemplate:
           '{actor.name}高效完成装卸协助，对方慷慨支付报酬（检定 {check.total} vs DC {check.dc}），结算收益：{rewardSummary}。',
         failTemplate:
@@ -208,10 +209,6 @@ function formatTimeShort(ts) {
   }
 }
 
-// ============================================================
-// Module Persistent State & RuleEngine Sync
-// ============================================================
-
 let actionState = {
   container: null,
   context: null,
@@ -243,11 +240,8 @@ function syncEventsToRuleEngine(rulesEngine, eventsList) {
       meta: { actionEventId: evt.id, category: evt.category },
     });
     allIds.push(nodeId);
-    if (evt.category === 'explore') {
-      exploreIds.push(nodeId);
-    } else {
-      randomIds.push(nodeId);
-    }
+    if (evt.category === 'explore') exploreIds.push(nodeId);
+    else randomIds.push(nodeId);
   }
 
   rulesEngine.registerPool('action_explore_pool', exploreIds.length ? exploreIds : allIds);
@@ -269,12 +263,7 @@ export async function hydrateActionConsole({ storage, rules }) {
     await scope.setLarge(EVENTS_KEY, actionState.events);
   }
 
-  if (Array.isArray(savedTimeline)) {
-    actionState.timeline = savedTimeline.slice(-MAX_TIMELINE_ITEMS);
-  } else {
-    actionState.timeline = [];
-  }
-
+  actionState.timeline = Array.isArray(savedTimeline) ? savedTimeline.slice(-MAX_TIMELINE_ITEMS) : [];
   syncEventsToRuleEngine(rules, actionState.events);
   actionState.hydrated = true;
 }
@@ -305,19 +294,18 @@ function getCharacterOutfitAndGearContext(char) {
   const equipped = inventory.getCharacterEquipment(char.id);
   const outfitItem = equipped.outfit || null;
   const outfitName = outfitItem ? outfitItem.name : '默认便装';
-  const outfitDesc = outfitItem?.description || '简洁轻便的常规服装';
 
   const gearList = Object.entries(equipped)
     .filter(([, item]) => Boolean(item))
     .map(([slotId, item]) => {
-      const slot = inventory.getSlot(slotId);
-      return `${slot?.label || slotId}：${item.name}${item.description ? `（${item.description}）` : ''}`;
+      const slot = inventory.getCharacterSlot(char.id, slotId);
+      const title = item.level > 0 ? `${item.name} +${item.level}` : item.name;
+      return `${slot?.label || slotId}：${title}${item.description ? `（${item.description}）` : ''}`;
     });
 
   return {
     outfitName,
-    outfitDesc,
-    gearSummaryText: gearList.length > 0 ? gearList.join('；') : '当前未穿戴额外装备与服装',
+    gearSummaryText: gearList.length > 0 ? gearList.join('；') : '当前未穿戴装备与服装',
   };
 }
 
@@ -332,9 +320,19 @@ function buildAiSystemPrompt(char) {
     `【当前出战角色】${char.name}（定位：${char.meta?.roleTag || '通用型'}，好感度阶段：${aff.label} ${aff.value}/100）`,
     `【性格设定】${char.meta?.personality || '稳重务实'}`,
     `【对话口癖】${char.meta?.speechHabit || '无特定口癖'}`,
-    `【当前穿戴服装与装备】${gear.gearSummaryText}`,
+    `【当前核心部件、自定义槽位装备与服装】${gear.gearSummaryText}`,
     `【近期行动日志参考】\n${recentLogs}`,
   ].join('\n');
+}
+
+function assertSeaworthy(char) {
+  const { statRules, inventory, uiKit } = actionState.context;
+  const sw = statRules.evaluateSeaworthiness(inventory, char.id);
+  if (!sw.seaworthy) {
+    uiKit.showToast(`禁止出击：${sw.statusText}`, 'error');
+    return false;
+  }
+  return true;
 }
 
 async function applyEffectsBundle(char, effects = {}, { critBonus = false, reason = '事件结算' } = {}) {
@@ -364,7 +362,7 @@ async function applyEffectsBundle(char, effects = {}, { critBonus = false, reaso
     }
   }
 
-  const resKeys = ['credits', 'supplies', 'materials'];
+  const resKeys = ['fuel', 'ammo', 'steel', 'bauxite', 'silver', 'gold'];
   for (const rKey of resKeys) {
     const rawVal = Number(effects[rKey] || 0);
     if (!rawVal) continue;
@@ -373,13 +371,13 @@ async function applyEffectsBundle(char, effects = {}, { critBonus = false, reaso
     const val = rawVal > 0 && critBonus ? Math.round(rawVal * mult) : rawVal;
     if (val > 0) {
       await resources.add(rKey, val, { reason });
-      const txt = `${resObj.name} +${val}${resObj.unit}`;
+      const txt = `${resObj.name} +${val}`;
       chips.push({ text: txt, negative: false });
       summaryParts.push(txt);
     } else if (val < 0) {
       const spendRes = await resources.spend(rKey, Math.abs(val), { reason });
       if (spendRes.ok) {
-        const txt = `${resObj.name} ${val}${resObj.unit}`;
+        const txt = `${resObj.name} ${val}`;
         chips.push({ text: txt, negative: true });
         summaryParts.push(txt);
       }
@@ -399,7 +397,7 @@ async function applyEffectsBundle(char, effects = {}, { critBonus = false, reaso
 }
 
 // ============================================================
-// Core Actions: Explore, Random Event, Choice Execution, Rest, Free Input
+// Core Actions
 // ============================================================
 
 async function triggerEventById(eventId, { spendAp = false } = {}) {
@@ -407,8 +405,9 @@ async function triggerEventById(eventId, { spendAp = false } = {}) {
   if (!evt) return;
   const char = getActiveCharacter();
   if (!char) return;
-  const { entities, rootStorage, turnStepper, uiKit } = actionState.context;
+  if (!assertSeaworthy(char)) return;
 
+  const { entities, rootStorage, turnStepper, uiKit } = actionState.context;
   const apCost = spendAp ? Math.max(0, Number(evt.apCost) || 0) : 0;
   if (apCost > 0 && Number(char.stats.ap ?? 0) < apCost) {
     uiKit.showToast(`行动点 AP 不足（需要 ${apCost}，请先点击「状态休整」恢复）`, 'warn');
@@ -431,6 +430,9 @@ async function triggerEventById(eventId, { spendAp = false } = {}) {
 }
 
 async function drawAndTriggerFromPool(poolName, { spendAp = true } = {}) {
+  const char = getActiveCharacter();
+  if (!char || !assertSeaworthy(char)) return;
+
   const { rules, uiKit } = actionState.context;
   const lastId = actionState.activeEvent ? `ac_${actionState.activeEvent.id}` : null;
   const excludeIds = lastId && actionState.events.length > 1 ? [lastId] : [];
@@ -453,7 +455,7 @@ async function executeActiveChoice(choiceId) {
   if (!choice) return;
 
   const char = getActiveCharacter();
-  if (!char) return;
+  if (!char || !assertSeaworthy(char)) return;
 
   const { entities, inventory, statRules, narrative, logs, bus, uiKit } = actionState.context;
   actionState.busy = true;
@@ -510,7 +512,7 @@ async function executeActiveChoice(choiceId) {
       polishInstruction: `请结合角色人设、口癖和当前穿着「${gear.outfitName}」，润色以下事件结算描写（保留全部客观结果与检定事实）：`,
     });
 
-    const cardEntry = {
+    actionState.timeline.push({
       id: `tl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       timestamp: Date.now(),
       type: 'outcome',
@@ -535,9 +537,7 @@ async function executeActiveChoice(choiceId) {
       degraded: rendered.degraded,
       degradeReason: rendered.degradeReason,
       chips: settled.chips,
-    };
-
-    actionState.timeline.push(cardEntry);
+    });
     if (actionState.timeline.length > MAX_TIMELINE_ITEMS) {
       actionState.timeline = actionState.timeline.slice(-MAX_TIMELINE_ITEMS);
     }
@@ -570,7 +570,6 @@ async function executeActiveChoice(choiceId) {
   } finally {
     actionState.busy = false;
     await renderActionConsole();
-    scrollTimelineToBottom();
   }
 }
 
@@ -582,9 +581,9 @@ async function performRestAction() {
 
   actionState.busy = true;
   try {
-    const canSpendSupply = resources.canAfford('supplies', 20).ok;
-    const restEffects = canSpendSupply
-      ? { hp: 20, morale: 16, ap: 30, affinity: 1, supplies: -20 }
+    const canSpendFuel = resources.canAfford('fuel', 25).ok;
+    const restEffects = canSpendFuel
+      ? { hp: 20, morale: 16, ap: 30, affinity: 1, fuel: -25 }
       : { hp: 10, morale: 10, ap: 20, affinity: 0 };
 
     const settled = await applyEffectsBundle(char, restEffects, { reason: '状态休整' });
@@ -592,9 +591,9 @@ async function performRestAction() {
 
     const gear = getCharacterOutfitAndGearContext(char);
     const rendered = await narrative.run({
-      template: canSpendSupply
-        ? '{actor.name}身着「{outfitName}」使用 20 份补给进行了充分休整，状态恢复：{rewardSummary}。'
-        : '{actor.name}身着「{outfitName}」进行了简易休整（当前补给不足 20 份），状态恢复：{rewardSummary}。',
+      template: canSpendFuel
+        ? '{actor.name}身着「{outfitName}」消耗 25 燃油进行了充分休整，状态恢复：{rewardSummary}。'
+        : '{actor.name}身着「{outfitName}」进行了简易休整（当前燃油不足 25），状态恢复：{rewardSummary}。',
       variables: {
         actor: { name: char.name, ...char.stats },
         outfitName: gear.outfitName,
@@ -609,7 +608,7 @@ async function performRestAction() {
       timestamp: Date.now(),
       type: 'rest',
       eventTitle: '状态休整',
-      choiceLabel: canSpendSupply ? '补给休整' : '简易休整',
+      choiceLabel: canSpendFuel ? '补给休整' : '简易休整',
       actorName: char.name,
       outfitName: gear.outfitName,
       check: null,
@@ -642,7 +641,6 @@ async function performRestAction() {
   } finally {
     actionState.busy = false;
     await renderActionConsole();
-    scrollTimelineToBottom();
   }
 }
 
@@ -650,27 +648,24 @@ async function handleFreeActionInput(rawText) {
   const text = String(rawText || '').trim();
   if (!text || actionState.busy) return;
 
-  // Keyword intent shortcut in pure local mode
-  if (actionState.context.narrative.getMode() === NARRATIVE_MODES.LOCAL) {
-    if (/^(探索|执行探索|搜查|勘查)/.test(text)) {
-      await drawAndTriggerFromPool('action_explore_pool', { spendAp: true });
-      return;
-    }
-    if (/^(休整|休息|恢复|状态休整)/.test(text)) {
-      await performRestAction();
-      return;
-    }
+  if (/^(休整|休息|恢复|状态休整)/.test(text)) {
+    await performRestAction();
+    return;
   }
 
   const char = getActiveCharacter();
-  if (!char) return;
-  const { entities, inventory, statRules, narrative, turnStepper, logs, bus, uiKit } = actionState.context;
+  if (!char || !assertSeaworthy(char)) return;
 
+  if (actionState.context.narrative.getMode() === NARRATIVE_MODES.LOCAL && /^(探索|执行探索|搜查|勘查)/.test(text)) {
+    await drawAndTriggerFromPool('action_explore_pool', { spendAp: true });
+    return;
+  }
+
+  const { entities, inventory, statRules, narrative, turnStepper, logs, bus, uiKit } = actionState.context;
   actionState.busy = true;
   await renderActionConsole();
 
   try {
-    // Pick best matching stat keyword or default to tactics
     let statKey = 'tactics';
     if (/(攻击|战斗|打击|火力|破拆)/.test(text)) statKey = 'attack';
     else if (/(爆发|强攻|压制|突击)/.test(text)) statKey = 'burst';
@@ -695,8 +690,8 @@ async function handleFreeActionInput(rawText) {
     const settled = await applyEffectsBundle(
       char,
       isSuccess
-        ? { ap: -5, morale: 3, affinity: 2, credits: 35 }
-        : { ap: -5, morale: -2, credits: 10 },
+        ? { ap: -5, morale: 3, affinity: 2, silver: 45, steel: 20 }
+        : { ap: -5, morale: -2, silver: 10 },
       { critBonus: checkResult.outcome === 'crit-success', reason: '自由行动' }
     );
     turnStepper.advance({ steps: 1, reason: 'action-free-input' });
@@ -770,16 +765,7 @@ async function handleFreeActionInput(rawText) {
   } finally {
     actionState.busy = false;
     await renderActionConsole();
-    scrollTimelineToBottom();
   }
-}
-
-function scrollTimelineToBottom() {
-  requestAnimationFrame(() => {
-    if (actionState.container) {
-      actionState.container.scrollTop = actionState.container.scrollHeight;
-    }
-  });
 }
 
 // ============================================================
@@ -794,8 +780,8 @@ function openEventFormSheet(existingEvent = null, onSaved = null) {
     label: '执行主方案',
     statKey: 'tactics',
     dc: 14,
-    successEffects: { hp: 0, morale: 5, ap: 0, affinity: 3, credits: 90, supplies: 30, materials: 20 },
-    failEffects: { hp: -8, morale: -4, ap: 0, affinity: 0, credits: 10, supplies: 0, materials: 0 },
+    successEffects: { hp: 0, morale: 5, ap: 0, affinity: 3, fuel: 40, steel: 50, silver: 120 },
+    failEffects: { hp: -8, morale: -4, ap: 0, affinity: 0, silver: 15 },
     successTemplate: '{actor.name}身着「{outfitName}」顺利完成了事件目标，获得：{rewardSummary}。',
     failTemplate: '{actor.name}行动受阻未能达成目标，状态变动：{penaltySummary}。',
   };
@@ -855,35 +841,33 @@ function openEventFormSheet(existingEvent = null, onSaved = null) {
     </div>
 
     <div class="form-group">
-      <span class="form-label">检定成功奖惩（支持正负值）</span>
+      <span class="form-label">检定成功奖惩（银条 / 燃油 / 钢材 / HP / 士气 / 好感）</span>
       <div class="lab-kv-grid-3">
-        <input id="ev-f-s-credits" class="form-input" type="number" value="${Number(primaryChoice.successEffects?.credits ?? 90)}" placeholder="资金" aria-label="成功资金">
-        <input id="ev-f-s-supplies" class="form-input" type="number" value="${Number(primaryChoice.successEffects?.supplies ?? 30)}" placeholder="补给" aria-label="成功补给">
-        <input id="ev-f-s-materials" class="form-input" type="number" value="${Number(primaryChoice.successEffects?.materials ?? 20)}" placeholder="材料" aria-label="成功材料">
-        <input id="ev-f-s-hp" class="form-input" type="number" value="${Number(primaryChoice.successEffects?.hp ?? 0)}" placeholder="HP" aria-label="成功HP">
-        <input id="ev-f-s-morale" class="form-input" type="number" value="${Number(primaryChoice.successEffects?.morale ?? 5)}" placeholder="士气" aria-label="成功士气">
-        <input id="ev-f-s-affinity" class="form-input" type="number" value="${Number(primaryChoice.successEffects?.affinity ?? 3)}" placeholder="好感" aria-label="成功好感">
+        <input id="ev-f-s-silver" class="form-input" type="number" value="${Number(primaryChoice.successEffects?.silver ?? 120)}" aria-label="成功银条">
+        <input id="ev-f-s-fuel" class="form-input" type="number" value="${Number(primaryChoice.successEffects?.fuel ?? 40)}" aria-label="成功燃油">
+        <input id="ev-f-s-steel" class="form-input" type="number" value="${Number(primaryChoice.successEffects?.steel ?? 50)}" aria-label="成功钢材">
+        <input id="ev-f-s-hp" class="form-input" type="number" value="${Number(primaryChoice.successEffects?.hp ?? 0)}" aria-label="成功HP">
+        <input id="ev-f-s-morale" class="form-input" type="number" value="${Number(primaryChoice.successEffects?.morale ?? 5)}" aria-label="成功士气">
+        <input id="ev-f-s-affinity" class="form-input" type="number" value="${Number(primaryChoice.successEffects?.affinity ?? 3)}" aria-label="成功好感">
       </div>
-      <span class="cc-stat-sub">上排：资金 / 补给 / 材料；下排：HP / 士气 / 好感</span>
     </div>
 
     <div class="form-group">
-      <span class="form-label">检定失败奖惩（支持正负值）</span>
+      <span class="form-label">检定失败奖惩（HP / 士气 / 银条）</span>
       <div class="lab-kv-grid-3">
-        <input id="ev-f-f-hp" class="form-input" type="number" value="${Number(primaryChoice.failEffects?.hp ?? -8)}" placeholder="HP" aria-label="失败HP">
-        <input id="ev-f-f-morale" class="form-input" type="number" value="${Number(primaryChoice.failEffects?.morale ?? -4)}" placeholder="士气" aria-label="失败士气">
-        <input id="ev-f-f-credits" class="form-input" type="number" value="${Number(primaryChoice.failEffects?.credits ?? 10)}" placeholder="资金" aria-label="失败资金">
+        <input id="ev-f-f-hp" class="form-input" type="number" value="${Number(primaryChoice.failEffects?.hp ?? -8)}" aria-label="失败HP">
+        <input id="ev-f-f-morale" class="form-input" type="number" value="${Number(primaryChoice.failEffects?.morale ?? -4)}" aria-label="失败士气">
+        <input id="ev-f-f-silver" class="form-input" type="number" value="${Number(primaryChoice.failEffects?.silver ?? 15)}" aria-label="失败银条">
       </div>
-      <span class="cc-stat-sub">依次：HP / 士气 / 资金</span>
     </div>
 
     <div class="form-group">
-      <label class="form-label" for="ev-f-stpl">成功本地输出模板（可用 {actor.name} {outfitName} {rewardSummary}）</label>
+      <label class="form-label" for="ev-f-stpl">成功本地输出模板</label>
       <textarea id="ev-f-stpl" class="form-textarea">${escapeHtml(primaryChoice.successTemplate || '')}</textarea>
     </div>
 
     <div class="form-group">
-      <label class="form-label" for="ev-f-ftpl">失败本地输出模板（可用 {actor.name} {outfitName} {penaltySummary}）</label>
+      <label class="form-label" for="ev-f-ftpl">失败本地输出模板</label>
       <textarea id="ev-f-ftpl" class="form-textarea">${escapeHtml(primaryChoice.failTemplate || '')}</textarea>
     </div>
   `;
@@ -912,22 +896,17 @@ function openEventFormSheet(existingEvent = null, onSaved = null) {
             statKey: wrap.querySelector('#ev-f-stat').value,
             dc: clamp(Number(wrap.querySelector('#ev-f-dc').value) || 14, 0, 40),
             successEffects: {
-              credits: Number(wrap.querySelector('#ev-f-s-credits').value) || 0,
-              supplies: Number(wrap.querySelector('#ev-f-s-supplies').value) || 0,
-              materials: Number(wrap.querySelector('#ev-f-s-materials').value) || 0,
+              silver: Number(wrap.querySelector('#ev-f-s-silver').value) || 0,
+              fuel: Number(wrap.querySelector('#ev-f-s-fuel').value) || 0,
+              steel: Number(wrap.querySelector('#ev-f-s-steel').value) || 0,
               hp: Number(wrap.querySelector('#ev-f-s-hp').value) || 0,
               morale: Number(wrap.querySelector('#ev-f-s-morale').value) || 0,
               affinity: Number(wrap.querySelector('#ev-f-s-affinity').value) || 0,
-              ap: 0,
             },
             failEffects: {
               hp: Number(wrap.querySelector('#ev-f-f-hp').value) || 0,
               morale: Number(wrap.querySelector('#ev-f-f-morale').value) || 0,
-              credits: Number(wrap.querySelector('#ev-f-f-credits').value) || 0,
-              supplies: 0,
-              materials: 0,
-              affinity: 0,
-              ap: 0,
+              silver: Number(wrap.querySelector('#ev-f-f-silver').value) || 0,
             },
             successTemplate: wrap.querySelector('#ev-f-stpl').value.trim(),
             failTemplate: wrap.querySelector('#ev-f-ftpl').value.trim(),
@@ -941,7 +920,7 @@ function openEventFormSheet(existingEvent = null, onSaved = null) {
                   label: '谨慎观察后离开（免检定）',
                   statKey: 'none',
                   dc: 0,
-                  successEffects: { hp: 0, morale: 1, ap: 0, affinity: 0, credits: 10, supplies: 0, materials: 0 },
+                  successEffects: { hp: 0, morale: 1, silver: 15 },
                   failEffects: {},
                   successTemplate: '{actor.name}评估风险后选择稳妥撤离，获得少量记录补贴：{rewardSummary}。',
                   failTemplate: '',
@@ -1032,7 +1011,6 @@ function openEventEditorSheet() {
       card.querySelector('[data-ev-act="trigger"]').addEventListener('click', async () => {
         if (sheetHandle) sheetHandle.close();
         await triggerEventById(evt.id, { spendAp: false });
-        uiKit.showToast(`已手动触发事件：${evt.title}`, 'ok');
       });
 
       card.querySelector('[data-ev-act="edit"]').addEventListener('click', () => {
@@ -1071,7 +1049,7 @@ function openEventEditorSheet() {
 
 async function renderActionConsole() {
   if (!actionState.container || !actionState.context) return;
-  const { assets, resources, narrative, turnStepper, modules, uiKit } = actionState.context;
+  const { assets, resources, narrative, turnStepper, modules, statRules, inventory, uiKit } = actionState.context;
   const char = getActiveCharacter();
   if (!char) {
     actionState.container.innerHTML = `
@@ -1099,12 +1077,15 @@ async function renderActionConsole() {
   const mode = narrative.getMode();
   const isAiMode = mode !== NARRATIVE_MODES.LOCAL;
   const step = turnStepper.getSnapshot();
-  const resList = resources.list();
   const isPinnedDefault = modules.getDefaultModuleId() === 'action-console';
+  const seaworthyInfo = statRules.evaluateSeaworthiness(inventory, char.id);
 
   actionState.container.innerHTML = '';
   const root = document.createElement('div');
   root.className = 'ac-root';
+
+  // 0. Unified 6-Resource & Dual-Currency Overview Bar
+  root.appendChild(createResourceOverviewBar(resources, { id: 'ac-resource-bar' }));
 
   // 1. Top Compact Status Bar
   const statusCard = document.createElement('section');
@@ -1116,6 +1097,9 @@ async function renderActionConsole() {
       <div class="ac-status-meta">
         <div class="ac-status-name-row">
           <span class="ac-char-name" id="ac-char-name">${escapeHtml(char.name)}</span>
+          <span class="status-badge ${seaworthyInfo.seaworthy ? 'badge-ok' : 'badge-danger'}" id="ac-seaworthy-badge">
+            ${seaworthyInfo.seaworthy ? '适航' : '未适航'}
+          </span>
           <span class="status-badge badge-muted">T${step.turn}</span>
         </div>
         <span class="ac-outfit-line" id="ac-outfit-name">服装：${escapeHtml(gear.outfitName)}</span>
@@ -1125,21 +1109,13 @@ async function renderActionConsole() {
       </button>
     </div>
 
-    <div id="ac-compact-bars" class="ac-bars-compact"></div>
+    ${
+      !seaworthyInfo.seaworthy
+        ? `<div class="seaworthy-alert" id="ac-seaworthy-block">禁止出击：${escapeHtml(seaworthyInfo.statusText)}。请返回「角色控制台」装齐引擎、装甲与核心部件后再执行出击。</div>`
+        : ''
+    }
 
-    <div class="cc-resource-strip" id="ac-resource-strip">
-      ${resList
-        .slice(0, 3)
-        .map(
-          (r) => `
-        <div class="cc-resource-pill" data-ac-res="${escapeHtml(r.id)}">
-          <span class="cc-resource-pill-label">${escapeHtml(r.name)}</span>
-          <span class="cc-resource-pill-val">${r.amount}${escapeHtml(r.unit)}</span>
-        </div>
-      `
-        )
-        .join('')}
-    </div>
+    <div id="ac-compact-bars" class="ac-bars-compact"></div>
 
     <div class="cc-btn-3col">
       <button type="button" id="btn-ac-open-editor" class="btn-secondary uikit-touch-target">事件编辑器</button>
@@ -1215,14 +1191,15 @@ async function renderActionConsole() {
 
   root.appendChild(statusCard);
 
-  // 2. Primary Action Triggers Bar
+  // 2. Primary Action Triggers Bar (Exploration & Random Events blocked when not Seaworthy)
+  const sortieDisabled = actionState.busy || !seaworthyInfo.seaworthy;
   const actionsCard = document.createElement('section');
   actionsCard.className = 'surface-card';
   actionsCard.style.padding = '10px 12px';
   actionsCard.innerHTML = `
     <div class="cc-btn-3col">
-      <button type="button" id="btn-ac-explore" class="btn-primary uikit-touch-target" ${actionState.busy ? 'disabled' : ''}>执行探索</button>
-      <button type="button" id="btn-ac-random" class="btn-secondary uikit-touch-target" ${actionState.busy ? 'disabled' : ''}>随机事件</button>
+      <button type="button" id="btn-ac-explore" class="btn-primary uikit-touch-target" ${sortieDisabled ? 'disabled' : ''}>执行探索</button>
+      <button type="button" id="btn-ac-random" class="btn-secondary uikit-touch-target" ${sortieDisabled ? 'disabled' : ''}>随机事件</button>
       <button type="button" id="btn-ac-rest" class="btn-secondary uikit-touch-target" ${actionState.busy ? 'disabled' : ''}>状态休整</button>
     </div>
   `;
@@ -1235,8 +1212,8 @@ async function renderActionConsole() {
   actionsCard.querySelector('#btn-ac-rest').addEventListener('click', () => performRestAction());
   root.appendChild(actionsCard);
 
-  // 3. Active Unresolved Event Card (Interactive Branching)
-  if (actionState.activeEvent) {
+  // 3. Active Unresolved Event Card
+  if (actionState.activeEvent && seaworthyInfo.seaworthy) {
     const evt = actionState.activeEvent;
     const evtCard = document.createElement('section');
     evtCard.className = 'ac-card ac-card-event';
@@ -1287,7 +1264,6 @@ async function renderActionConsole() {
       </section>
     `;
   } else {
-    // Show newest records at top or bottom? Showing newest first keeps the latest settlement immediately visible under active event on mobile!
     const reversed = [...actionState.timeline].reverse();
     for (const item of reversed) {
       const card = document.createElement('article');
@@ -1359,14 +1335,14 @@ async function renderActionConsole() {
 export default {
   id: 'action-console',
   name: '行动与事件台',
-  description: '纯本地离线与 AI 增强双轨行动台：探索、随机事件、D20 检定拆解、状态休整与手机端可视化事件规则编辑器。',
+  description: '纯本地离线与 AI 增强双轨行动台：适航出击校验、探索/随机事件/休整、D20 检定拆解与手机端事件规则编辑器。',
 
   mount(container, context) {
     actionState.container = container;
     actionState.context = context;
     actionState.avatarCache.clear();
 
-    context.ui.setPlaceholder('输入自由行动指令（如：侦察周边 / 寻找物资 / 状态休整）...');
+    context.ui.setPlaceholder('输入自由行动指令（如：侦察周边 / 状态休整）...');
     context.ui.setInputHandler(handleFreeActionInput);
     context.ui.setQuickActions([
       {
