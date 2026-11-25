@@ -1837,4 +1837,185 @@ textarea:focus-visible {
   font-size: 12.5px;
 }
 
+/* ============================================================
+   Action & Event Console (Mobile First Timeline & Controls)
+   ============================================================ */
+
+.ac-root {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ac-status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.ac-status-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ac-avatar-sm {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 auto;
+  border-radius: 12px;
+  object-fit: cover;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  display: block;
+}
+
+.ac-status-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ac-status-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ac-char-name {
+  font-size: 15px;
+  font-weight: 680;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-outfit-line {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-mode-toggle {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.ac-mode-toggle.is-ai {
+  border-color: rgba(20, 184, 166, 0.55);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+.ac-bars-compact {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ac-bars-compact .uikit-progress-header {
+  font-size: 11px;
+}
+
+.ac-bars-compact .uikit-progress-value {
+  font-size: 11px;
+}
+
+.ac-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ac-card {
+  padding: 13px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.ac-card-event {
+  border-color: rgba(20, 184, 166, 0.48);
+  background: rgba(20, 184, 166, 0.06);
+}
+
+.ac-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ac-card-title {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.ac-card-body {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ac-settlement-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ac-delta-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 99px;
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+.ac-delta-chip.is-neg {
+  background: var(--danger-soft);
+  color: #fca5a5;
+}
+
+.ac-editor-card {
+  padding: 11px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+
 

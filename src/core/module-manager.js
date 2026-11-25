@@ -116,6 +116,25 @@ export class ModuleManager {
     return this._shellStore.get('activeModuleId', null);
   }
 
+  getDefaultModuleId() {
+    return this._shellStore.get('defaultModuleId', null);
+  }
+
+  setDefaultModuleId(id) {
+    if (!id) {
+      this._shellStore.remove('defaultModuleId');
+      this._bus.emit('module:default-changed', { id: null });
+      return null;
+    }
+    if (!this._registry.has(id)) {
+      throw new Error(`Module "${id}" is not registered`);
+    }
+    this._shellStore.set('defaultModuleId', id);
+    this._shellStore.set('activeModuleId', id);
+    this._bus.emit('module:default-changed', { id });
+    return id;
+  }
+
   unmountCurrent() {
     if (!this._activeModule) return;
     const prev = this._activeModule;
@@ -177,9 +196,13 @@ export class ModuleManager {
   }
 
   /**
-   * Mount the previously active module, falling back to the first registered module.
+   * Mount the previously active module (or pinned default module), falling back to the first registered module.
    */
   mountInitial() {
+    const defaultId = this.getDefaultModuleId();
+    if (defaultId && this._registry.has(defaultId)) {
+      return this.mount(defaultId);
+    }
     const savedId = this.getSavedModuleId();
     if (savedId && this._registry.has(savedId)) {
       return this.mount(savedId);

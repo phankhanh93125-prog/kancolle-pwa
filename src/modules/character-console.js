@@ -182,8 +182,25 @@ export async function hydrateCharacterRoster({ storage, entities, inventory, sta
   return { activeCharacterId: 'char_template_01', seeded: true };
 }
 
+export function getActiveCharacterId(storage = null) {
+  if (consoleState.activeCharacterId) return consoleState.activeCharacterId;
+  if (storage) {
+    const saved = storage.namespace(CHAR_STORAGE_NS).get('activeCharacterId', null);
+    if (saved) {
+      consoleState.activeCharacterId = saved;
+      return saved;
+    }
+  }
+  return null;
+}
+
 export async function persistCharacterRoster({ storage, entities, activeCharacterId = null }) {
   const scope = storage.namespace(CHAR_STORAGE_NS);
+  const resolvedActiveId = activeCharacterId || consoleState.activeCharacterId || entities.list({ kind: 'character' })[0]?.id || null;
+  if (resolvedActiveId) {
+    consoleState.activeCharacterId = resolvedActiveId;
+    scope.set('activeCharacterId', resolvedActiveId);
+  }
   const characters = entities.list({ kind: 'character' }).map((e) => ({
     id: e.id,
     kind: 'character',
@@ -196,7 +213,7 @@ export async function persistCharacterRoster({ storage, entities, activeCharacte
     meta: JSON.parse(JSON.stringify(e.meta || {})),
   }));
   await scope.setLarge(ROSTER_KEY, {
-    activeCharacterId,
+    activeCharacterId: resolvedActiveId,
     lastActiveAt: Date.now(),
     characters,
   });
@@ -1663,6 +1680,7 @@ async function renderConsole() {
     chip.addEventListener('click', async () => {
       consoleState.activeCharacterId = c.id;
       await saveRosterNow();
+      consoleState.context.bus.emit('character:selected', { characterId: c.id, name: c.name });
       await renderConsole();
     });
     rosterStrip.appendChild(chip);
@@ -1711,8 +1729,9 @@ async function renderConsole() {
         .join('')}
     </div>
 
-    <div class="cc-btn-3col">
-      <button type="button" id="btn-cc-open-check" class="btn-primary uikit-touch-target">模拟检定</button>
+    <div class="lab-btn-grid">
+      <button type="button" id="btn-cc-goto-action" class="btn-primary uikit-touch-target">前往行动台</button>
+      <button type="button" id="btn-cc-open-check" class="btn-secondary uikit-touch-target">模拟检定</button>
       <button type="button" id="btn-cc-open-rules" class="btn-secondary uikit-touch-target">数值规则</button>
       <button type="button" id="btn-cc-edit-char" class="btn-secondary uikit-touch-target">编辑角色</button>
     </div>
@@ -1746,6 +1765,14 @@ async function renderConsole() {
     }).element
   );
 
+  heroCard.querySelector('#btn-cc-goto-action').addEventListener('click', () => {
+    if (consoleState.context.modules.has('action-console')) {
+      consoleState.context.modules.mount('action-console');
+      uiKit.showToast(`已携「${char.name}」前往行动与事件台`, 'ok');
+    } else {
+      uiKit.showToast('行动与事件台尚未注册', 'warn');
+    }
+  });
   heroCard.querySelector('#btn-cc-open-check').addEventListener('click', () => openCheckSimulatorSheet(char));
   heroCard.querySelector('#btn-cc-open-rules').addEventListener('click', () => openStatRulesSheet());
   heroCard.querySelector('#btn-cc-edit-char').addEventListener('click', () => openCharacterEditorSheet(char));
@@ -1852,6 +1879,7 @@ export default {
 
     consoleState.unsubs = [
       context.bus.on('stat-rules:changed', () => renderConsole()),
+      context.bus.on('action:settled', () => renderConsole()),
       context.bus.on('storage:changed', (detail) => {
         if (detail?.action === 'resetAll' || detail?.action === 'import') {
           renderConsole();

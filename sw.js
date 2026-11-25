@@ -1,4 +1,4 @@
-const CACHE_NAME = 'modular-pwa-base-v3';
+const CACHE_NAME = 'modular-pwa-base-v4';
 
 const CORE_ASSETS = [
   './',
@@ -26,6 +26,7 @@ const CORE_ASSETS = [
   './src/core/log-system.js',
   './src/modules/index.js',
   './src/modules/character-console.js',
+  './src/modules/action-console.js',
   './src/modules/framework-lab.js',
   './src/modules/ai-console.js',
 ];

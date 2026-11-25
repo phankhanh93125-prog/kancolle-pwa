@@ -16,6 +16,7 @@ import { LogSystem } from './core/log-system.js';
 import { createUIKit, showToast } from './core/ui-kit.js';
 import { REGISTERED_MODULES } from './modules/index.js';
 import { hydrateCharacterRoster } from './modules/character-console.js';
+import { hydrateActionConsole } from './modules/action-console.js';
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -534,13 +535,14 @@ async function bootApplication() {
   try {
     await Promise.all([inventory.init(), resources.init(), logs.init()]);
     await hydrateCharacterRoster({ storage, entities, inventory, statRules });
+    await hydrateActionConsole({ storage, rules });
   } catch (err) {
     console.error('[App] Persistence hydration failed:', err);
   }
 
   logs.attachBusListeners();
 
-  // Trigger Auto-Save snapshot whenever equipment, characters, resources, or rules mutate
+  // Trigger Auto-Save snapshot whenever equipment, characters, actions, resources, or rules mutate
   saves.bindAutoSaveEvents(
     [
       'inventory:equipped',
@@ -550,6 +552,8 @@ async function bootApplication() {
       'character:deleted',
       'resource:changed',
       'stat-rules:changed',
+      'action:settled',
+      'action:events-changed',
     ],
     (eventName) => ({
       name: '系统自动存档快照',
