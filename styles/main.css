@@ -2637,3 +2637,70 @@ textarea:focus-visible {
   border-color: rgba(20, 184, 166, 0.45);
   background: rgba(20, 184, 166, 0.06);
 }
+
+/* ============================================================
+   Secretary Interaction Stage & Port Buildings Grid
+   ============================================================ */
+.sec-dialogue-bubble {
+  padding: 11px 13px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+.port-facility-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.port-building-tile {
+  min-height: 76px;
+  padding: 10px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.15s ease;
+}
+
+.port-building-tile:active {
+  transform: scale(0.98);
+}
+
+.port-building-tile.is-custom {
+  border-color: rgba(20, 184, 166, 0.48);
+  background: rgba(20, 184, 166, 0.07);
+}
+
+.port-building-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  width: 100%;
+  font-size: 13px;
+}
+
+.port-building-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.port-building-sub {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+

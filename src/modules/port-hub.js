@@ -1,15 +1,18 @@
 /**
  * Official Home Screen Module: Port Hub (`port-hub` · 港区大本营).
  *
- * Refactored mobile command hub integrating:
- *   1. Unified 6-Resource & Dual-Currency Bar (fuel/ammo/steel/bauxite + silver/gold)
- *   2. Top Commander Character Card Summary (avatar, level/EXP, 6 core stats, independent 0-base Luck,
- *      dynamic 3..12 fleet cap, and one-tap Edit / Allocate Points / Mobile Debug bottom sheet)
- *   3. Flagship Duty Board (shipType, seaworthiness badge, HP/morale/AP bars, gear summary)
- *   4. Core Operations ("前往出征", "一键补给与入渠修复" with Commander dispatch discount & affinity morale boost)
- *   5. Sortie Fleet Formation Center (visual 3..12 dynamic slot roster, formation switcher & coefficient editor)
- *   6. Port Expedition Dispatch Center (offline timestamp countdowns via EntitySystem, seaworthy idle ship selection,
- *      Commander dispatch reward scaling & one-tap claim)
+ * Complete mobile naval base command center featuring:
+ *   1. Top Unified 6-Resource & Dual-Currency Bar
+ *   2. Top Commander Character Card Summary (6 stats + 0-base Luck + 3..12 dynamic fleet cap + edit/debug sheet)
+ *   3. Center Secretary Interactive Stage (portrait, current outfit, affinity/oath bar, dual-track dialogue bubble,
+ *      Talk / Gift / Daily Event / Oath Ceremony / Switch Secretary)
+ *   4. Port Operations Bar ("前往出征", "一键补给修复", quick nav to Character Console / Workshop / Compendium Studio / Action Console)
+ *   5. Interactive Port Buildings & Facilities Grid:
+ *        - Built-in Dormitory (宿舍): assign residents, offline morale/affinity recovery, feed supplies, expand beds
+ *        - Built-in Dockyard (船坞): multi-bay repair queue, offline countdown, fast repair, expand bays, construct ship
+ *        - Fleet Formation Center (舰队编成): 3..12 dynamic roster & 5 configurable formations
+ *        - Expedition Center (远征中心): offline timestamp dispatches & Commander dispatch reward multiplier
+ *        - Player-built Custom Facilities (自定义建筑): build, edit, upgrade, station shipgirls, global passive buffs
  */
 
 import { createResourceOverviewBar } from '../core/resource-manager.js';
@@ -17,6 +20,12 @@ import {
   COMMANDER_STAT_DEFS,
   COMMANDER_STAT_GROUP_LABELS,
 } from '../core/commander-system.js';
+import {
+  CUSTOM_BUFF_TYPES,
+  SHIP_TYPE_PRESETS,
+} from '../core/port-buildings.js';
+import { CORE_STAT_DEFS } from '../core/stat-rules.js';
+import { NARRATIVE_MODES } from '../core/prompt-pipeline.js';
 import { LOG_CATEGORIES } from '../core/log-system.js';
 import {
   getActiveCharacterId,
@@ -43,6 +52,7 @@ let portState = {
   avatarCache: new Map(),
   selectedExpMissionId: 'exp_harbor_patrol',
   selectedExpShipIds: [],
+  busy: false,
   timerHandle: null,
   unsubs: [],
 };
@@ -172,7 +182,7 @@ async function performResupplyAndRepair(chars) {
     actorId: targetList[0].id,
     actorName: targetList[0].name,
     title: `港区一键补给与入渠修复（${targetList.length}舰）`,
-    detail: `恢复：${recoveredParts.join('、')} | 消耗：${costSummary}${plan.repairDisc > 0 ? `（调度减免 ${Math.round(plan.repairDisc * 100)}%）` : ''}`,
+    detail: `恢复：${recoveredParts.join('、')} | 消耗：${costSummary}`,
   });
 
   bus.emit('port:serviced', {
@@ -187,7 +197,7 @@ async function performResupplyAndRepair(chars) {
 }
 
 // ============================================================
-// Commander Editor, Point Allocation & Mobile Debug Sheet
+// Bottom Sheet 1: Commander Edit / Allocate / Debug
 // ============================================================
 
 function openCommanderSheet() {
@@ -258,11 +268,11 @@ function openCommanderSheet() {
         <div class="section-header-row" style="margin-bottom:0;">
           <strong style="font-size:13.5px;">独立特殊属性 · 运气（Luck）</strong>
           <span class="status-badge ${profile.luck > 0 ? 'badge-ok' : profile.luck < 0 ? 'badge-danger' : 'badge-muted'}" id="cmd-sheet-luck-badge">
-            当前 ${formatSigned(profile.luck)}（初始为 0）
+            当前 ${profile.luck === 0 ? '0' : formatSigned(profile.luck)}（初始为 0）
           </span>
         </div>
         <p class="muted-text" style="font-size:12px;">
-          不参与常规升级加点，仅随特殊事件/里程碑或下方调试增减（支持正负）。当前微调：大成功阈值 -${profile.effects.luckEffects.critSuccessShift} / 稀有掉率 ${formatSigned(Math.round(profile.effects.luckEffects.rareDropBonus * 100))}%。
+          不参与常规升级自由加点，仅随特殊事件/里程碑或调试增减（支持正负）。
         </p>
         <div class="lab-kv-grid">
           <div class="form-group">
@@ -323,9 +333,8 @@ function openCommanderSheet() {
 
     wrap.querySelectorAll('[data-cmd-alloc]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        const key = btn.getAttribute('data-cmd-alloc');
         try {
-          await commander.allocateStat(key, 1);
+          await commander.allocateStat(btn.getAttribute('data-cmd-alloc'), 1);
           uiKit.showToast('属性点分配成功', 'ok');
           await renderInner();
           await renderPortHub();
@@ -378,60 +387,1004 @@ function openCommanderSheet() {
   });
 }
 
-function openFormationCoeffSheet() {
-  const { formation, uiKit } = portState.context;
-  const active = formation.getActiveFormation();
+// ============================================================
+// Bottom Sheets 2~4: Secretary Switch, Gift Picker, Oath Ceremony
+// ============================================================
+
+function openSwitchSecretarySheet() {
+  const { interaction, uiKit } = portState.context;
+  const roster = getCharacters();
+  const curId = interaction.getSecretaryId();
+  const wrap = document.createElement('div');
+  wrap.className = 'lab-stack-sm';
+
+  for (const c of roster) {
+    const isCur = c.id === curId;
+    const isOath = interaction.isOathed(c.id);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `${isCur ? 'btn-primary' : 'btn-secondary'} uikit-touch-target`;
+    btn.dataset.pickSecretary = c.id;
+    btn.textContent = `${isOath ? '★ ' : ''}${c.name}（${c.meta?.shipType || '驱逐舰'} · 好感 ${Math.round(c.stats.affinity ?? 0)}）${isCur ? ' · 当前秘书舰' : ''}`;
+    btn.addEventListener('click', async () => {
+      await interaction.setSecretary(c.id);
+      uiKit.showToast(`已指派「${c.name}」担任港区秘书舰`, 'ok');
+      sheet.close();
+      await renderPortHub();
+    });
+    wrap.appendChild(btn);
+  }
+
+  const sheet = uiKit.openBottomSheet({
+    title: '更换港区秘书舰',
+    subtitle: '秘书舰将在港区中央互动舞台常驻执勤，响应日常交谈、送礼与誓约',
+    content: wrap,
+    actions: [{ id: 'close', label: '关闭', tone: 'secondary' }],
+  });
+}
+
+function openGiftSheet(secretary) {
+  const { interaction, resources, entities, rootStorage, uiKit } = portState.context;
+  const gifts = interaction.listGifts();
+  const wrap = document.createElement('div');
+  wrap.className = 'lab-stack-sm';
+
+  for (const g of gifts) {
+    const curName = resources.get(g.currency)?.name || g.currency;
+    const afford = g.price <= 0 || resources.canAfford({ [g.currency]: g.price }).ok;
+    const card = document.createElement('div');
+    card.className = 'lab-slot-card';
+    card.dataset.giftCard = g.id;
+    card.innerHTML = `
+      <div class="lab-slot-head">
+        <strong>${escapeHtml(g.name)}</strong>
+        <span class="status-badge badge-ok">好感 +${g.affinityGain} · 士气 +${g.moraleGain}</span>
+      </div>
+      <p class="muted-text" style="font-size:12px;">${escapeHtml(g.description || '')}</p>
+      <button type="button" class="btn-primary uikit-touch-target" data-send-gift="${escapeHtml(g.id)}" ${afford ? '' : 'disabled'}>
+        ${g.price > 0 ? `赠送（消耗 ${curName} ${g.price}）` : '免费赠送'}
+      </button>
+    `;
+    card.querySelector('[data-send-gift]').addEventListener('click', async () => {
+      try {
+        const res = await interaction.giveGift(secretary.id, g.id);
+        await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: secretary.id });
+        uiKit.showToast(`赠送「${g.name}」成功：好感 +${res.affDelta}（当前 ${res.afterAff}）`, 'ok');
+        sheet.close();
+        await renderPortHub();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '赠送失败', 'warn');
+      }
+    });
+    wrap.appendChild(card);
+  }
+
+  const sheet = uiKit.openBottomSheet({
+    title: `赠送礼物给「${secretary.name}」`,
+    subtitle: '含内置礼物与图鉴内容台自定义的专属礼物',
+    content: wrap,
+    actions: [{ id: 'close', label: '取消', tone: 'secondary' }],
+  });
+}
+
+function openOathSheet(secretary) {
+  const { interaction, entities, rootStorage, uiKit } = portState.context;
+  const check = interaction.canOath(secretary.id);
+  const existing = interaction.getOathRecord(secretary.id);
+
   const wrap = document.createElement('div');
   wrap.className = 'module-stack';
 
-  const keys = [
-    { key: 'firepower', label: '火力倍率' },
-    { key: 'torpedo', label: '雷击倍率' },
-    { key: 'armor', label: '装甲倍率' },
-    { key: 'evasion', label: '机动倍率' },
-    { key: 'recon', label: '侦查倍率' },
-    { key: 'aa', label: '防空倍率' },
-    { key: 'asw', label: '反潜倍率' },
-    { key: 'guardBonus', label: '援护率增量' },
-  ];
+  if (existing) {
+    wrap.innerHTML = `
+      <div class="surface-card lab-stack-sm">
+        <div class="lab-slot-head">
+          <strong>★ 已缔结誓约【${escapeHtml(existing.oathTitle)}】</strong>
+          <span class="status-badge badge-ok">好感上限 200</span>
+        </div>
+        <p class="muted-text">誓约效果：全战斗八维属性 +8%，耐久上限 +12，解锁专属誓约互动台词。</p>
+        ${existing.customVow ? `<p class="muted-text"><strong>誓言记录：</strong>「${escapeHtml(existing.customVow)}」</p>` : ''}
+      </div>
+    `;
+    uiKit.openBottomSheet({
+      title: `誓约纪念 · ${secretary.name}`,
+      content: wrap,
+      actions: [{ id: 'close', label: '关闭', tone: 'secondary' }],
+    });
+    return;
+  }
 
   wrap.innerHTML = `
-    <p class="muted-text">正在调整阵型「<strong>${escapeHtml(active.name)}</strong>」的自定义系数：</p>
-    <div class="lab-kv-grid">
-      ${keys
-        .map(
-          (k) => `
-        <div class="form-group">
-          <label class="form-label" for="fm-mod-${k.key}">${k.label}</label>
-          <input id="fm-mod-${k.key}" class="form-input" type="number" step="0.05" value="${Number(active.mods[k.key] ?? 1)}">
-        </div>
-      `
-        )
-        .join('')}
+    <p class="muted-text">
+      当舰娘好感度达到 <strong>100</strong> 时即可举行誓约仪式，授予专属誓约徽记、突破好感上限至 <strong>200</strong> 并获得全战斗属性 <strong>+8%</strong> 与耐久 <strong>+12</strong> 永久羁绊加成。
+    </p>
+    <div class="status-badge ${check.ok ? 'badge-ok' : 'badge-warn'}">${escapeHtml(check.reason)}</div>
+    <div class="form-group">
+      <label class="form-label" for="oath-f-title">誓约称号</label>
+      <input id="oath-f-title" class="form-input" type="text" value="永恒誓约" ${check.ok ? '' : 'disabled'}>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="oath-f-vow">自定义誓言（可选）</label>
+      <input id="oath-f-vow" class="form-input" type="text" placeholder="写下你想对她说的话..." ${check.ok ? '' : 'disabled'}>
     </div>
   `;
 
   uiKit.openBottomSheet({
-    title: `自定义阵型系数 · ${active.name}`,
+    title: `誓约仪式 · ${secretary.name}`,
+    content: wrap,
+    actions: [
+      { id: 'cancel', label: '返回', tone: 'secondary' },
+      ...(check.ok
+        ? [
+            {
+              id: 'oath',
+              label: '★ 举行誓约仪式',
+              tone: 'primary',
+              onClick: async () => {
+                const oathTitle = wrap.querySelector('#oath-f-title').value.trim();
+                const customVow = wrap.querySelector('#oath-f-vow').value.trim();
+                await interaction.performOath(secretary.id, { oathTitle, customVow });
+                await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: secretary.id });
+                uiKit.showToast(`★ 与「${secretary.name}」誓约仪式完成！`, 'ok');
+                await renderPortHub();
+                return true;
+              },
+            },
+          ]
+        : []),
+    ],
+  });
+}
+
+// ============================================================
+// Bottom Sheet 5: Dormitory Management (宿舍)
+// ============================================================
+
+function openDormitorySheet() {
+  const { buildings, entities, rootStorage, resources, uiKit } = portState.context;
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+
+  const renderDorm = () => {
+    const dorm = buildings.getDormitoryState();
+    const roster = getCharacters();
+    const resSet = new Set(dorm.residents);
+    const available = roster.filter((c) => !resSet.has(c.id));
+
+    wrap.innerHTML = `
+      <div class="section-header-row" style="margin-bottom:0;">
+        <strong>宿舍 Lv.${dorm.level}（床位 ${dorm.residents.length}/${dorm.capacity}）</strong>
+        <span class="status-badge badge-ok">离线自动恢复士气 & 好感</span>
+      </div>
+
+      <div class="lab-btn-grid">
+        <button type="button" id="btn-dorm-feed" class="btn-primary uikit-touch-target" ${dorm.residents.length === 0 ? 'disabled' : ''}>
+          投喂补给（全员士气+14/好感+2）
+        </button>
+        <button type="button" id="btn-dorm-expand" class="btn-secondary uikit-touch-target" ${dorm.canExpand ? '' : 'disabled'}>
+          ${dorm.canExpand ? `扩建床位 +1（钢${dorm.expandCost.steel}/铝${dorm.expandCost.bauxite}/银${dorm.expandCost.silver}）` : '已达最大床位'}
+        </button>
+      </div>
+
+      <span class="form-label">当前入住舰娘（${dorm.residentDetails.length}）</span>
+      <div class="lab-stack-sm" id="dorm-resident-list">
+        ${
+          dorm.residentDetails.length === 0
+            ? '<p class="muted-text">宿舍目前空置，请从下方分配舰娘入住。</p>'
+            : dorm.residentDetails
+                .map(
+                  (r) => `
+            <div class="lab-slot-card" data-dorm-resident="${escapeHtml(r.id)}">
+              <div class="lab-slot-head">
+                <strong>${escapeHtml(r.name)}</strong>
+                <span class="status-badge badge-ok">士气 ${r.morale} · 好感 ${r.affinity}</span>
+              </div>
+              <button type="button" class="btn-secondary uikit-touch-target" data-dorm-remove="${escapeHtml(r.id)}">移出宿舍</button>
+            </div>
+          `
+                )
+                .join('')
+        }
+      </div>
+
+      <div class="lab-divider"></div>
+      <span class="form-label">可分配入住舰娘</span>
+      <div class="lab-stack-sm" id="dorm-candidate-list">
+        ${
+          available.length === 0
+            ? '<p class="muted-text">所有舰娘均已入住。</p>'
+            : available
+                .map(
+                  (c) => `
+            <div class="lab-slot-card">
+              <div class="lab-slot-head">
+                <strong>${escapeHtml(c.name)}</strong>
+                <span class="status-badge badge-muted">${escapeHtml(c.meta?.shipType || '驱逐舰')} · 士气 ${Math.round(c.stats.morale ?? 60)}</span>
+              </div>
+              <button type="button" class="btn-secondary uikit-touch-target" data-dorm-assign="${escapeHtml(c.id)}" ${dorm.residents.length >= dorm.capacity ? 'disabled' : ''}>
+                + 分配入住
+              </button>
+            </div>
+          `
+                )
+                .join('')
+        }
+      </div>
+    `;
+
+    wrap.querySelector('#btn-dorm-feed').addEventListener('click', async () => {
+      try {
+        const res = await buildings.feedDormitory();
+        await persistCharacterRoster({ storage: rootStorage, entities });
+        uiKit.showToast(`投喂完成：${res.count} 名入住舰娘士气 +${res.moraleGain}、好感 +${res.affGain}`, 'ok');
+        renderDorm();
+        await renderPortHub();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '投喂失败', 'warn');
+      }
+    });
+
+    wrap.querySelector('#btn-dorm-expand').addEventListener('click', async () => {
+      try {
+        const next = await buildings.expandDormitory();
+        uiKit.showToast(`宿舍已扩建至 ${next.capacity} 床位`, 'ok');
+        renderDorm();
+        await renderPortHub();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '扩建失败', 'warn');
+      }
+    });
+
+    wrap.querySelectorAll('[data-dorm-assign]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          await buildings.assignDormResident(btn.getAttribute('data-dorm-assign'));
+          uiKit.showToast('已分配入住港区宿舍', 'ok');
+          renderDorm();
+          await renderPortHub();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '分配失败', 'warn');
+        }
+      });
+    });
+
+    wrap.querySelectorAll('[data-dorm-remove]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await buildings.removeDormResident(btn.getAttribute('data-dorm-remove'));
+        uiKit.showToast('已移出宿舍', 'info');
+        renderDorm();
+        await renderPortHub();
+      });
+    });
+  };
+
+  renderDorm();
+
+  uiKit.openBottomSheet({
+    title: '港区宿舍（Dormitory）',
+    subtitle: '入住舰娘随离线时间自动恢复士气与微量好感度',
+    content: wrap,
+    actions: [{ id: 'close', label: '完成', tone: 'secondary' }],
+  });
+}
+
+// ============================================================
+// Bottom Sheet 6: Dockyard Management (船坞维修队列 + 新舰建造)
+// ============================================================
+
+function openDockyardSheet() {
+  const { buildings, entities, rootStorage, uiKit } = portState.context;
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+
+  const renderDock = () => {
+    const dock = buildings.getDockyardState();
+    const roster = getCharacters();
+    const inDockIds = new Set(dock.queue.map((q) => q.characterId));
+    const idleForDock = roster.filter((c) => !inDockIds.has(c.id));
+
+    wrap.innerHTML = `
+      <div class="section-header-row" style="margin-bottom:0;">
+        <strong>船坞 Lv.${dock.level}（渠位 ${dock.queue.length}/${dock.capacity}）</strong>
+        <button type="button" id="btn-dock-expand" class="btn-secondary uikit-touch-target" style="padding:0 12px;" ${dock.canExpand ? '' : 'disabled'}>
+          ${dock.canExpand ? '+ 扩建渠位' : '渠位已满'}
+        </button>
+      </div>
+
+      <span class="form-label">维修渠位队列（支持离线倒计时自动完成）</span>
+      <div class="lab-stack-sm" id="dock-queue-list">
+        ${
+          dock.queue.length === 0
+            ? '<p class="muted-text">当前无入渠维修任务。</p>'
+            : dock.queue
+                .map(
+                  (job) => `
+            <div class="lab-slot-card" data-dock-job="${escapeHtml(job.characterId)}">
+              <div class="lab-slot-head">
+                <strong>${escapeHtml(job.characterName)}</strong>
+                <span class="status-badge ${job.ready ? 'badge-ok' : 'badge-warn'}">${escapeHtml(job.remainingText)}</span>
+              </div>
+              <div class="muted-text" style="font-size:12px;">
+                ${job.isMaintenanceOnly ? '预防性船体保养（恢复士气与 AP）' : `修复受损耐久 ${job.missingHp} 点`} · 消耗 钢${job.cost.steel}/铝${job.cost.bauxite}
+              </div>
+              <div class="lab-btn-row">
+                <button type="button" class="btn-primary uikit-touch-target" data-dock-complete="${escapeHtml(job.characterId)}" ${job.ready ? '' : 'disabled'}>
+                  ${job.ready ? '出渠完成' : '维修中…'}
+                </button>
+                ${
+                  !job.ready
+                    ? `<button type="button" class="btn-secondary uikit-touch-target" data-dock-fast="${escapeHtml(job.characterId)}">快速修复</button>`
+                    : ''
+                }
+              </div>
+            </div>
+          `
+                )
+                .join('')
+        }
+      </div>
+
+      <div class="lab-divider"></div>
+      <span class="form-label">选择舰娘入渠维修 / 保养</span>
+      <div class="lab-stack-sm" id="dock-candidates-list">
+        ${idleForDock
+          .map((c) => {
+            const plan = buildings.computeDockRepairPlan(c.id);
+            return `
+            <div class="lab-slot-card">
+              <div class="lab-slot-head">
+                <strong>${escapeHtml(c.name)}</strong>
+                <span class="status-badge ${plan.missingHp > 0 ? 'badge-warn' : 'badge-ok'}">
+                  HP ${plan.curHp}/${plan.effMaxHp} · ${escapeHtml(plan.durationText)}
+                </span>
+              </div>
+              <button type="button" class="btn-secondary uikit-touch-target" data-dock-start="${escapeHtml(c.id)}" ${dock.queue.length >= dock.capacity ? 'disabled' : ''}>
+                ${plan.isMaintenanceOnly ? '入渠保养' : '入渠维修'}（钢${plan.cost.steel} / 铝${plan.cost.bauxite}）
+              </button>
+            </div>
+          `;
+          })
+          .join('')}
+      </div>
+
+      <div class="lab-divider"></div>
+      <div class="surface-card lab-stack-sm" style="padding:10px;">
+        <strong style="font-size:13.5px;">船坞新舰建造 / 登记（油80/弹60/钢100/铝50）</strong>
+        <div class="lab-kv-grid">
+          <input id="dock-build-name" class="form-input" type="text" placeholder="输入新舰名称">
+          <select id="dock-build-type" class="form-select">
+            ${SHIP_TYPE_PRESETS.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('')}
+          </select>
+        </div>
+        <button type="button" id="btn-dock-construct" class="btn-primary uikit-touch-target">建造并登记新舰</button>
+      </div>
+    `;
+
+    wrap.querySelector('#btn-dock-expand').addEventListener('click', async () => {
+      try {
+        const next = await buildings.expandDockyard();
+        uiKit.showToast(`船坞渠位扩建至 ${next.capacity} 席`, 'ok');
+        renderDock();
+        await renderPortHub();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '扩建失败', 'warn');
+      }
+    });
+
+    wrap.querySelectorAll('[data-dock-start]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          const job = await buildings.startDockRepair(btn.getAttribute('data-dock-start'));
+          uiKit.showToast(`「${job.characterName}」已入渠（预计 ${job.durationSec}秒）`, 'ok');
+          renderDock();
+          await renderPortHub();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '入渠失败', 'warn');
+        }
+      });
+    });
+
+    wrap.querySelectorAll('[data-dock-complete]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          await buildings.completeDockRepair(btn.getAttribute('data-dock-complete'));
+          await persistCharacterRoster({ storage: rootStorage, entities });
+          uiKit.showToast('维修完成，舰船已出渠！', 'ok');
+          renderDock();
+          await renderPortHub();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '出渠失败', 'warn');
+        }
+      });
+    });
+
+    wrap.querySelectorAll('[data-dock-fast]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          const res = await buildings.completeDockRepair(btn.getAttribute('data-dock-fast'), { fastRepair: true });
+          await persistCharacterRoster({ storage: rootStorage, entities });
+          uiKit.showToast(`快速修复完成（消耗 ${res.fastMethod}）`, 'ok');
+          renderDock();
+          await renderPortHub();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '快速修复失败', 'warn');
+        }
+      });
+    });
+
+    wrap.querySelector('#btn-dock-construct').addEventListener('click', async () => {
+      const name = wrap.querySelector('#dock-build-name').value.trim();
+      const shipType = wrap.querySelector('#dock-build-type').value;
+      try {
+        const created = await buildings.constructShip({ name, shipType });
+        await persistCharacterRoster({ storage: rootStorage, entities });
+        uiKit.showToast(`新舰「${created.name}」（${shipType}）建造登记完成！`, 'ok');
+        renderDock();
+        await renderPortHub();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '建造失败', 'warn');
+      }
+    });
+  };
+
+  renderDock();
+
+  uiKit.openBottomSheet({
+    title: '港区船坞（Dockyard）',
+    subtitle: '多渠位入渠维修队列（离线计时完成 / 快速修复）与基础新舰建造',
+    content: wrap,
+    actions: [{ id: 'close', label: '完成', tone: 'secondary' }],
+  });
+}
+
+// ============================================================
+// Bottom Sheet 7 & 8: Custom Building Create/Edit & Manage
+// ============================================================
+
+function openCreateCustomBuildingSheet(existing = null) {
+  const { buildings, uiKit } = portState.context;
+  const isEdit = Boolean(existing);
+  const draft = existing
+    ? { ...existing }
+    : {
+        name: '',
+        typeTag: '后勤设施',
+        description: '',
+        stationCap: 2,
+        buffType: 'resource_regen',
+        buffStat: 'firepower',
+        buffValuePerLevel: 6,
+        upgradeCost: { steel: 60, bauxite: 30, silver: 60 },
+      };
+
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+
+  const renderForm = () => {
+    wrap.innerHTML = `
+      <div class="lab-kv-grid">
+        <div class="form-group">
+          <label class="form-label" for="bld-f-name">建筑名称 *</label>
+          <input id="bld-f-name" class="form-input" type="text" value="${escapeHtml(draft.name)}" placeholder="例如：海事研究所 / 补给仓库">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="bld-f-tag">建筑类型标签</label>
+          <input id="bld-f-tag" class="form-input" type="text" value="${escapeHtml(draft.typeTag)}" placeholder="后勤 / 科研 / 战术">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="bld-f-desc">功能描述</label>
+        <input id="bld-f-desc" class="form-input" type="text" value="${escapeHtml(draft.description)}" placeholder="描述该设施的作用与背景...">
+      </div>
+
+      <div class="lab-kv-grid">
+        <div class="form-group">
+          <label class="form-label" for="bld-f-bufftype">全局增益类型</label>
+          <select id="bld-f-bufftype" class="form-select">
+            ${CUSTOM_BUFF_TYPES.map(
+              (b) => `<option value="${b.id}" ${draft.buffType === b.id ? 'selected' : ''}>${escapeHtml(b.label)}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="bld-f-buffval">每级增益幅度</label>
+          <input id="bld-f-buffval" class="form-input" type="number" min="1" max="50" value="${Number(draft.buffValuePerLevel ?? 6)}">
+        </div>
+      </div>
+
+      ${
+        draft.buffType === 'stat_boost'
+          ? `
+        <div class="form-group">
+          <label class="form-label" for="bld-f-buffstat">加成目标属性</label>
+          <select id="bld-f-buffstat" class="form-select">
+            ${CORE_STAT_DEFS.map(
+              (d) => `<option value="${d.key}" ${draft.buffStat === d.key ? 'selected' : ''}>${escapeHtml(d.label)}</option>`
+            ).join('')}
+          </select>
+        </div>
+      `
+          : ''
+      }
+
+      <div class="lab-kv-grid">
+        <div class="form-group">
+          <label class="form-label" for="bld-f-cap">可驻守角色数 (0~6)</label>
+          <input id="bld-f-cap" class="form-input" type="number" min="0" max="6" value="${Number(draft.stationCap ?? 2)}">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="bld-f-steel">升级基准钢材</label>
+          <input id="bld-f-steel" class="form-input" type="number" min="0" value="${Number(draft.upgradeCost?.steel ?? 60)}">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="bld-f-bauxite">升级基准铝材</label>
+          <input id="bld-f-bauxite" class="form-input" type="number" min="0" value="${Number(draft.upgradeCost?.bauxite ?? 30)}">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="bld-f-silver">升级基准银条</label>
+          <input id="bld-f-silver" class="form-input" type="number" min="0" value="${Number(draft.upgradeCost?.silver ?? 60)}">
+        </div>
+      </div>
+    `;
+
+    wrap.querySelector('#bld-f-bufftype').addEventListener('change', (e) => {
+      draft.name = wrap.querySelector('#bld-f-name').value.trim();
+      draft.typeTag = wrap.querySelector('#bld-f-tag').value.trim();
+      draft.description = wrap.querySelector('#bld-f-desc').value.trim();
+      draft.buffType = e.target.value;
+      renderForm();
+    });
+  };
+
+  renderForm();
+
+  uiKit.openBottomSheet({
+    title: isEdit ? `编辑设施 · ${existing.name}` : '建造新自定义建筑',
+    subtitle: '自由定义名称、驻守席位、升级消耗与全局被动增益',
     content: wrap,
     actions: [
       { id: 'cancel', label: '取消', tone: 'secondary' },
       {
         id: 'save',
-        label: '保存阵型系数',
+        label: isEdit ? '保存修改' : '确认建造',
         tone: 'primary',
         onClick: async () => {
-          const patch = {};
-          for (const k of keys) {
-            patch[k.key] = Number(wrap.querySelector(`#fm-mod-${k.key}`).value);
+          const payload = {
+            name: wrap.querySelector('#bld-f-name').value.trim(),
+            typeTag: wrap.querySelector('#bld-f-tag').value.trim() || '自定义设施',
+            description: wrap.querySelector('#bld-f-desc').value.trim(),
+            buffType: wrap.querySelector('#bld-f-bufftype').value,
+            buffStat: wrap.querySelector('#bld-f-buffstat')?.value || draft.buffStat || 'firepower',
+            buffValuePerLevel: Number(wrap.querySelector('#bld-f-buffval').value) || 5,
+            stationCap: Number(wrap.querySelector('#bld-f-cap').value) || 2,
+            upgradeCost: {
+              steel: Number(wrap.querySelector('#bld-f-steel').value) || 0,
+              bauxite: Number(wrap.querySelector('#bld-f-bauxite').value) || 0,
+              silver: Number(wrap.querySelector('#bld-f-silver').value) || 0,
+            },
+          };
+          try {
+            if (isEdit) {
+              await buildings.updateCustomBuilding(existing.id, payload);
+              uiKit.showToast(`已更新设施「${payload.name}」`, 'ok');
+            } else {
+              await buildings.createCustomBuilding(payload);
+              uiKit.showToast(`自定义建筑「${payload.name}」建造完成！`, 'ok');
+            }
+            await renderPortHub();
+            return true;
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '操作失败', 'warn');
+            return false;
           }
-          await formation.updateFormationModifiers(active.id, patch);
-          uiKit.showToast(`已保存「${active.name}」自定义系数`, 'ok');
-          await renderPortHub();
-          return true;
         },
       },
     ],
+  });
+}
+
+function openCustomBuildingDetailSheet(buildingId) {
+  const { buildings, resources, uiKit } = portState.context;
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+
+  const renderDetail = () => {
+    const b = buildings.getCustomBuilding(buildingId);
+    if (!b) return;
+    const roster = getCharacters();
+    const stSet = new Set(b.stationedIds || []);
+    const costStr = Object.entries(b.nextUpgradeCost || {})
+      .map(([k, v]) => `${resources.get(k)?.name || k} ${v}`)
+      .join(' / ');
+
+    wrap.innerHTML = `
+      <div class="section-header-row" style="margin-bottom:0;">
+        <strong>${escapeHtml(b.name)} · Lv.${b.level}/${b.maxLevel}</strong>
+        <span class="status-badge badge-ok">${escapeHtml(b.typeTag)}</span>
+      </div>
+      <p class="muted-text">${escapeHtml(b.description)}</p>
+      <div class="status-badge badge-ok" id="custom-bld-buff-badge">
+        当前总增益：${escapeHtml(b.buffLabel)} +${b.totalBuffValue}
+      </div>
+
+      <button type="button" id="btn-custom-bld-upgrade" class="btn-primary uikit-touch-target" ${b.level >= b.maxLevel ? 'disabled' : ''}>
+        ${b.level >= b.maxLevel ? '已达最高等级' : `升级至 Lv.${b.level + 1}（${escapeHtml(costStr || '免费')}）`}
+      </button>
+
+      <div class="lab-divider"></div>
+      <span class="form-label">驻守角色（${(b.stationedIds || []).length}/${b.stationCap} · 驻守提升额外增益）</span>
+      <div class="chip-row">
+        ${roster
+          .map((c) => {
+            const stationed = stSet.has(c.id);
+            return `
+            <button type="button" class="preset-chip ${stationed ? 'is-active' : ''}" data-bld-toggle-station="${escapeHtml(c.id)}"
+              style="${stationed ? 'border-color:var(--accent);color:var(--text-primary);background:var(--accent-soft);' : ''}">
+              ${stationed ? '✓ ' : '+ '}${escapeHtml(c.name)}
+            </button>
+          `;
+          })
+          .join('')}
+      </div>
+
+      <div class="lab-btn-grid" style="margin-top:8px;">
+        <button type="button" id="btn-custom-bld-edit" class="btn-secondary uikit-touch-target">编辑设定</button>
+        <button type="button" id="btn-custom-bld-delete" class="btn-danger uikit-touch-target">拆除建筑</button>
+      </div>
+    `;
+
+    wrap.querySelector('#btn-custom-bld-upgrade').addEventListener('click', async () => {
+      try {
+        const up = await buildings.upgradeCustomBuilding(b.id);
+        uiKit.showToast(`「${up.name}」已升级至 Lv.${up.level}！`, 'ok');
+        renderDetail();
+        await renderPortHub();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '升级失败', 'warn');
+      }
+    });
+
+    wrap.querySelectorAll('[data-bld-toggle-station]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const cid = btn.getAttribute('data-bld-toggle-station');
+        try {
+          if (stSet.has(cid)) {
+            await buildings.removeCustomStation(b.id, cid);
+          } else {
+            await buildings.assignCustomStation(b.id, cid);
+          }
+          renderDetail();
+          await renderPortHub();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '驻守调整失败', 'warn');
+        }
+      });
+    });
+
+    wrap.querySelector('#btn-custom-bld-edit').addEventListener('click', () => {
+      sheet.close();
+      openCreateCustomBuildingSheet(b);
+    });
+
+    wrap.querySelector('#btn-custom-bld-delete').addEventListener('click', async () => {
+      await buildings.deleteCustomBuilding(b.id);
+      uiKit.showToast(`已拆除设施「${b.name}」`, 'info');
+      sheet.close();
+      await renderPortHub();
+    });
+  };
+
+  renderDetail();
+
+  const sheet = uiKit.openBottomSheet({
+    title: '自定义建筑管理',
+    content: wrap,
+    actions: [{ id: 'close', label: '完成', tone: 'secondary' }],
+  });
+}
+
+// ============================================================
+// Bottom Sheet 9 & 10: Fleet Formation & Expedition Center Sheets
+// ============================================================
+
+function openFormationSheet() {
+  const { formation, expeditions, entities, rootStorage, uiKit } = portState.context;
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+
+  const renderInner = () => {
+    const fleetState = formation.getState();
+    const fleetSummary = fleetState.summary;
+    const formationsList = formation.listFormations();
+    const roster = getCharacters();
+    const inFleetSet = new Set(fleetState.memberIds);
+    const idleCandidates = roster.filter((c) => !inFleetSet.has(c.id));
+
+    wrap.innerHTML = `
+      <div class="section-header-row" style="margin-bottom:0;">
+        <strong>当前出征编队（${fleetState.count}/${fleetState.cap} 席位）</strong>
+        <button type="button" id="btn-sheet-autofill" class="btn-secondary uikit-touch-target" style="padding:0 12px;">一键补满</button>
+      </div>
+
+      <div class="chip-row">
+        ${formationsList
+          .map(
+            (f) => `
+          <button type="button" class="preset-chip ${f.active ? 'is-active' : ''}" data-select-formation="${f.id}"
+            style="${f.active ? 'border-color:var(--accent);color:var(--text-primary);background:var(--accent-soft);' : ''}">
+            ${escapeHtml(f.name)}
+          </button>
+        `
+          )
+          .join('')}
+      </div>
+      <p class="muted-text" style="font-size:12px;">${escapeHtml(fleetState.formation.desc)}</p>
+
+      <div class="port-gear-summary">
+        <span class="ns-chip">火 ${fleetSummary.effective.firepower}</span>
+        <span class="ns-chip">雷 ${fleetSummary.effective.torpedo}</span>
+        <span class="ns-chip">甲 ${fleetSummary.effective.armor}</span>
+        <span class="ns-chip">机 ${fleetSummary.effective.evasion}</span>
+        <span class="ns-chip">侦 ${fleetSummary.effective.recon}</span>
+        <span class="ns-chip">防空 ${fleetSummary.effective.aa}</span>
+        <span class="ns-chip">反潜 ${fleetSummary.effective.asw}</span>
+      </div>
+
+      <div class="lab-stack-sm">
+        ${fleetSummary.members
+          .map(
+            (m, idx) => `
+          <div class="lab-slot-card">
+            <div class="lab-slot-head">
+              <strong>${idx === 0 ? '★ 旗舰' : `僚机 #${idx}`} · ${escapeHtml(m.name)}</strong>
+              <span class="status-badge badge-muted">${escapeHtml(m.shipType)} · HP ${m.hp}/${m.maxHp}</span>
+            </div>
+            <div class="lab-btn-row">
+              ${
+                idx > 0
+                  ? `<button type="button" class="btn-secondary uikit-touch-target" data-fleet-promote="${escapeHtml(m.id)}">设为旗舰</button>`
+                  : ''
+              }
+              <button type="button" class="btn-danger uikit-touch-target" data-fleet-remove="${escapeHtml(m.id)}">移出编队</button>
+            </div>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+
+      ${
+        idleCandidates.length > 0
+          ? `
+        <div class="lab-divider"></div>
+        <span class="form-label">待命舰娘</span>
+        <div class="lab-stack-sm">
+          ${idleCandidates
+            .map((c) => {
+              const check = formation.canAddMember(c.id);
+              const disp = expeditions.isCharacterDispatched(c.id);
+              return `
+              <div class="lab-slot-card">
+                <div class="lab-slot-head">
+                  <strong>${escapeHtml(c.name)}</strong>
+                  <span class="status-badge ${disp ? 'badge-warn' : check.ok ? 'badge-ok' : 'badge-muted'}">
+                    ${disp ? '远征中' : check.ok ? '可入队' : '暂不可用'}
+                  </span>
+                </div>
+                <button type="button" class="btn-secondary uikit-touch-target" data-fleet-add="${escapeHtml(c.id)}" ${check.ok ? '' : 'disabled'}>
+                  ${check.ok ? '+ 编入出征舰队' : escapeHtml(check.reason.slice(0, 26))}
+                </button>
+              </div>
+            `;
+            })
+            .join('')}
+        </div>
+      `
+          : ''
+      }
+    `;
+
+    wrap.querySelector('#btn-sheet-autofill').addEventListener('click', async () => {
+      await formation.autoFillFleet();
+      renderInner();
+      await renderPortHub();
+    });
+    wrap.querySelectorAll('[data-select-formation]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await formation.setFormation(btn.getAttribute('data-select-formation'));
+        renderInner();
+        await renderPortHub();
+      });
+    });
+    wrap.querySelectorAll('[data-fleet-promote]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-fleet-promote');
+        await formation.setFlagship(id);
+        await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: id });
+        renderInner();
+        await renderPortHub();
+      });
+    });
+    wrap.querySelectorAll('[data-fleet-remove]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await formation.removeMember(btn.getAttribute('data-fleet-remove'));
+        renderInner();
+        await renderPortHub();
+      });
+    });
+    wrap.querySelectorAll('[data-fleet-add]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          await formation.addMember(btn.getAttribute('data-fleet-add'));
+          renderInner();
+          await renderPortHub();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '无法入队', 'warn');
+        }
+      });
+    });
+  };
+
+  renderInner();
+
+  uiKit.openBottomSheet({
+    title: '出征舰队编成（3~12 人动态上限）',
+    subtitle: '编队上限受指挥官「统率」属性控制，仅允许适航且未在远征中的舰娘入队',
+    content: wrap,
+    actions: [{ id: 'close', label: '完成', tone: 'secondary' }],
+  });
+}
+
+function openExpeditionSheet() {
+  const { expeditions, inventory, resources, entities, rootStorage, formation, commander, uiKit } = portState.context;
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+
+  const renderInner = () => {
+    const missions = expeditions.listMissions();
+    const activeRuns = expeditions.listActiveRuns();
+    const selectedMission =
+      missions.find((m) => m.id === portState.selectedExpMissionId) || missions[0];
+    const roster = getCharacters();
+    const inFleetSet = new Set(formation.getMemberIds());
+    const dispatchable = roster.filter(
+      (c) => inventory.checkSeaworthiness(c.id).seaworthy && !expeditions.isCharacterDispatched(c.id)
+    );
+    const validSet = new Set(dispatchable.map((c) => c.id));
+    portState.selectedExpShipIds = portState.selectedExpShipIds.filter((id) => validSet.has(id));
+    if (portState.selectedExpShipIds.length === 0 && dispatchable.length > 0) {
+      const pref = dispatchable.find((c) => !inFleetSet.has(c.id)) || dispatchable[dispatchable.length - 1];
+      if (pref) portState.selectedExpShipIds = [pref.id];
+    }
+
+    wrap.innerHTML = `
+      <div class="section-header-row" style="margin-bottom:0;">
+        <strong>进行中远征（${activeRuns.length}）</strong>
+        <span class="status-badge badge-ok">调度收益 x${commander.getExpeditionRewardMultiplier().toFixed(2)}</span>
+      </div>
+
+      ${
+        activeRuns.length > 0
+          ? activeRuns
+              .map(
+                (run) => `
+          <div class="lab-slot-card" data-exp-run="${escapeHtml(run.id)}">
+            <div class="lab-slot-head">
+              <strong>${escapeHtml(run.missionName)}</strong>
+              <span class="status-badge ${run.ready ? 'badge-ok' : 'badge-warn'}">${escapeHtml(run.remainingText)}</span>
+            </div>
+            <div class="muted-text" style="font-size:12px;">舰船：${escapeHtml(run.ships.map((s) => s.name).join('、'))}</div>
+            <div class="lab-btn-row">
+              <button type="button" class="btn-primary uikit-touch-target" data-exp-claim="${escapeHtml(run.id)}" ${run.ready ? '' : 'disabled'}>
+                ${run.ready ? '一键领取物资' : '倒计时中…'}
+              </button>
+              <button type="button" class="btn-secondary uikit-touch-target" data-exp-recall="${escapeHtml(run.id)}">召回</button>
+            </div>
+          </div>
+        `
+              )
+              .join('')
+          : '<p class="muted-text" style="font-size:12px;">暂无进行中的远征任务。</p>'
+      }
+
+      <div class="lab-divider"></div>
+      <div class="form-group">
+        <label class="form-label" for="sheet-exp-mission">选择远征任务</label>
+        <select id="sheet-exp-mission" class="form-select">
+          ${missions
+            .map(
+              (m) => `
+            <option value="${escapeHtml(m.id)}" ${m.id === selectedMission.id ? 'selected' : ''}>
+              ${escapeHtml(m.name)}（${escapeHtml(m.durationText)} · ${m.minShips}~${m.maxShips}舰）
+            </option>
+          `
+            )
+            .join('')}
+        </select>
+      </div>
+      <p class="muted-text" style="font-size:12px;">
+        预计回报：${escapeHtml(
+          Object.entries(selectedMission.projectedRewards)
+            .map(([k, v]) => `${resources.get(k)?.name || k} +${v}`)
+            .join(' / ')
+        )} · 指挥官 EXP +${selectedMission.commanderExp}
+      </p>
+      <div class="chip-row">
+        ${dispatchable
+          .map((c) => {
+            const picked = portState.selectedExpShipIds.includes(c.id);
+            return `
+            <button type="button" class="preset-chip ${picked ? 'is-active' : ''}" data-exp-pick="${escapeHtml(c.id)}"
+              style="${picked ? 'border-color:var(--accent);color:var(--text-primary);background:var(--accent-soft);' : ''}">
+              ${escapeHtml(c.name)}
+            </button>
+          `;
+          })
+          .join('')}
+      </div>
+      <button type="button" id="btn-sheet-dispatch-exp" class="btn-primary uikit-touch-target"
+        ${portState.selectedExpShipIds.length < selectedMission.minShips ? 'disabled' : ''}>
+        派遣远征出发
+      </button>
+    `;
+
+    wrap.querySelector('#sheet-exp-mission').addEventListener('change', (e) => {
+      portState.selectedExpMissionId = e.target.value;
+      renderInner();
+    });
+    wrap.querySelectorAll('[data-exp-pick]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const cid = btn.getAttribute('data-exp-pick');
+        if (portState.selectedExpShipIds.includes(cid)) {
+          portState.selectedExpShipIds = portState.selectedExpShipIds.filter((id) => id !== cid);
+        } else if (portState.selectedExpShipIds.length < selectedMission.maxShips) {
+          portState.selectedExpShipIds.push(cid);
+        }
+        renderInner();
+      });
+    });
+    wrap.querySelector('#btn-sheet-dispatch-exp').addEventListener('click', async () => {
+      try {
+        const run = await expeditions.dispatch(selectedMission.id, portState.selectedExpShipIds);
+        portState.selectedExpShipIds = [];
+        uiKit.showToast(`远征「${run.missionName}」已出发！`, 'ok');
+        renderInner();
+        await renderPortHub();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '派遣失败', 'warn');
+      }
+    });
+    wrap.querySelectorAll('[data-exp-claim]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          const res = await expeditions.claim(btn.getAttribute('data-exp-claim'));
+          await persistCharacterRoster({ storage: rootStorage, entities });
+          uiKit.showToast(`远征领取成功！指挥官 EXP +${res.commanderExp}`, 'ok');
+          renderInner();
+          await renderPortHub();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '领取失败', 'warn');
+        }
+      });
+    });
+    wrap.querySelectorAll('[data-exp-recall]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        await expeditions.recall(btn.getAttribute('data-exp-recall'));
+        uiKit.showToast('已召回远征舰船', 'info');
+        renderInner();
+        await renderPortHub();
+      });
+    });
+  };
+
+  renderInner();
+
+  uiKit.openBottomSheet({
+    title: '港区远征派遣中心',
+    subtitle: '关闭页面仍按真实时间戳倒计时，完成后按指挥官「调度」加成结算',
+    content: wrap,
+    actions: [{ id: 'close', label: '完成', tone: 'secondary' }],
   });
 }
 
@@ -450,17 +1403,23 @@ async function renderPortHub() {
     commander,
     formation,
     expeditions,
+    buildings,
+    interaction,
+    narrative,
     rootStorage,
     modules,
-    bus,
     uiKit,
   } = portState.context;
 
-  const roster = getCharacters();
-  const flagship = getFlagship();
   const cmdProfile = commander.getProfile();
   const fleetState = formation.getState();
   const fleetSummary = fleetState.summary;
+  const secretary = interaction.getSecretary() || getFlagship();
+  const dorm = buildings.getDormitoryState();
+  const dock = buildings.getDockyardState();
+  const customBlds = buildings.listCustomBuildings();
+  const activeExps = expeditions.listActiveRuns();
+  const globalBuffs = buildings.getGlobalBuffSummary();
 
   // Resolve Commander Avatar
   const cmdCacheKey = `cmd::${cmdProfile.avatarAssetId || 'none'}`;
@@ -503,16 +1462,9 @@ async function renderPortHub() {
           <span class="status-badge ${cmdProfile.luck > 0 ? 'badge-ok' : cmdProfile.luck < 0 ? 'badge-danger' : 'badge-warn'}" id="port-commander-luck">
             独立运气 ${cmdProfile.luck === 0 ? '0' : formatSigned(cmdProfile.luck)}
           </span>
-          ${
-            cmdProfile.freePoints > 0
-              ? `<span class="status-badge badge-ok">待分配 ${cmdProfile.freePoints} 点</span>`
-              : ''
-          }
         </div>
       </div>
     </div>
-
-    <div id="port-commander-exp-bar"></div>
 
     <div class="cmd-six-grid" id="port-commander-stats">
       ${COMMANDER_STAT_DEFS.map(
@@ -526,133 +1478,159 @@ async function renderPortHub() {
       ).join('')}
     </div>
 
-    <div class="muted-text" style="font-size:11.5px;">
-      扫描/迂回 +${cmdProfile.effects.tacticsCheckBonus} · 援护/补刀 ${Math.round(cmdProfile.effects.wingmanAssistChance * 100)}% · 油弹/维修减免 ${Math.round(cmdProfile.effects.sortieStepDiscount * 100)}%/${Math.round(cmdProfile.effects.repairCostDiscount * 100)}% · 远征收益 x${cmdProfile.effects.expeditionRewardMultiplier.toFixed(2)}
-    </div>
-
     <button type="button" id="btn-port-edit-commander" class="btn-secondary uikit-touch-target">
       指挥官加点 / 资料编辑与调试
     </button>
   `;
-  cmdCard.querySelector('#port-commander-exp-bar').appendChild(
-    uiKit.createProgressBar({
-      label: `指挥官经验 (Lv.${cmdProfile.level})`,
-      value: cmdProfile.exp,
-      max: cmdProfile.expToNext,
-      tone: 'accent',
-    }).element
-  );
   cmdCard.querySelector('#btn-port-edit-commander').addEventListener('click', () => openCommanderSheet());
   root.appendChild(cmdCard);
 
-  // 3. Flagship Duty Board Card
-  if (flagship) {
-    const assetId = flagship.meta?.avatarAssetId || null;
-    const cacheKey = `${flagship.id}::${assetId || 'none'}`;
-    let avatarUrl = portState.avatarCache.get(cacheKey);
-    if (!avatarUrl) {
+  // 3. Center Secretary Daily Interaction & Oath Stage
+  if (secretary) {
+    const assetId = secretary.meta?.avatarAssetId || null;
+    const cacheKey = `sec::${secretary.id}::${assetId || 'none'}`;
+    let secAvatarUrl = portState.avatarCache.get(cacheKey);
+    if (!secAvatarUrl) {
       const resolved = await assets.getAssetUrl(assetId, {
-        fallbackSeed: flagship.id,
-        fallbackLabel: flagship.name.slice(0, 6),
+        fallbackSeed: secretary.id,
+        fallbackLabel: secretary.name.slice(0, 6),
       });
-      avatarUrl = resolved.url;
-      portState.avatarCache.set(cacheKey, avatarUrl);
+      secAvatarUrl = resolved.url;
+      portState.avatarCache.set(cacheKey, secAvatarUrl);
     }
 
-    const seaworthyInfo = statRules.evaluateSeaworthiness(inventory, flagship.id);
-    const affStage = statRules.getAffinityStage(flagship.stats.affinity ?? 0, {
+    const eqMap = inventory.getCharacterEquipment(secretary.id);
+    const outfitName = eqMap.outfit?.name || '日常港区便装';
+    const seaworthyInfo = statRules.evaluateSeaworthiness(inventory, secretary.id);
+    const isOathed = interaction.isOathed(secretary.id);
+    const oathRec = interaction.getOathRecord(secretary.id);
+    const maxAff = interaction.getMaxAffinityFor(secretary.id);
+    const curAff = Math.round(Number(secretary.stats.affinity ?? 0));
+    const affStage = statRules.getAffinityStage(Math.min(100, curAff), {
       thresholdReduction: cmdProfile.effects.affinityThresholdReduction,
     });
-    const moraleMod = statRules.getMoraleModifier(flagship.stats.morale ?? 50);
-    const effStats = entities.getEffectiveStats(flagship.id, { round: 'round' });
-    const eqBonuses = inventory.getCharacterEquipmentBonuses(flagship.id);
-    const overallScore = statRules.computeOverallScore(effStats, eqBonuses.checkBonus);
-    const equippedMap = inventory.getCharacterEquipment(flagship.id);
+    const canOathNow = interaction.canOath(secretary.id).ok;
+    const lastTalk = interaction.getLastInteraction();
+    const speechText =
+      lastTalk && lastTalk.characterId === secretary.id
+        ? lastTalk.text
+        : secretary.meta?.speechHabit || `「${secretary.name} 正在港区秘书舰执勤中，指挥官有什么安排？」`;
+    const isAiMode = narrative.getMode() !== NARRATIVE_MODES.LOCAL;
 
-    const flagshipCard = document.createElement('section');
-    flagshipCard.className = 'surface-card lab-stack-sm';
-    flagshipCard.id = 'port-flagship-card';
-    flagshipCard.innerHTML = `
+    const secCard = document.createElement('section');
+    secCard.className = 'surface-card lab-stack-sm';
+    secCard.id = 'port-secretary-stage';
+    secCard.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
-        <h2 class="section-title">旗舰执勤看板</h2>
-        <span class="status-badge badge-ok" id="port-overall-score">评分 ${overallScore}</span>
+        <h2 class="section-title">秘书舰互动舞台</h2>
+        <button type="button" id="btn-sec-mode-toggle" class="ac-mode-toggle ${isAiMode ? 'is-ai' : ''}">
+          ${isAiMode ? 'AI 对话增强' : '纯本地台词'}
+        </button>
       </div>
 
       <div class="cc-hero-row">
-        <img class="cc-avatar" id="port-flagship-avatar" src="${avatarUrl}" alt="${escapeHtml(flagship.name)}">
+        <img class="cc-avatar" id="port-sec-avatar" src="${secAvatarUrl}" alt="${escapeHtml(secretary.name)}">
         <div class="cc-hero-info">
           <div class="cc-hero-name-row">
-            <h3 class="cc-hero-name" id="port-flagship-name">${escapeHtml(flagship.name)}</h3>
+            <h3 class="cc-hero-name" id="port-sec-name">${isOathed ? '★ ' : ''}${escapeHtml(secretary.name)}</h3>
             <span class="status-badge ${seaworthyInfo.seaworthy ? 'badge-ok' : 'badge-danger'}" id="port-seaworthy-badge">
               ${seaworthyInfo.seaworthy ? '适航' : '未适航'}
             </span>
           </div>
           <div class="cc-badge-row">
-            <span class="status-badge badge-ok">${escapeHtml(flagship.meta?.shipType || '驱逐舰')}</span>
-            <span class="status-badge badge-ok">好感 · ${escapeHtml(affStage.label)} (${affStage.value})</span>
+            <span class="status-badge badge-ok">${escapeHtml(secretary.meta?.shipType || '驱逐舰')}</span>
+            <span class="status-badge badge-muted">服装：${escapeHtml(outfitName)}</span>
+            <span class="status-badge ${isOathed ? 'badge-ok' : 'badge-warn'}" id="port-sec-aff-badge">
+              ${isOathed ? `誓约·${escapeHtml(oathRec?.oathTitle || '永恒')}` : affStage.label} (${curAff}/${maxAff})
+            </span>
           </div>
         </div>
       </div>
 
-      ${
-        !seaworthyInfo.seaworthy
-          ? `<div class="seaworthy-alert" id="port-seaworthy-alert">${escapeHtml(seaworthyInfo.statusText)}。请前往「角色控制台」装齐引擎、装甲、核心。</div>`
-          : ''
-      }
-
-      <div id="port-flagship-bars" class="lab-stack-sm"></div>
-
-      <div class="port-gear-summary" id="port-gear-summary">
-        <span class="ns-chip">火 ${Math.round(effStats.firepower ?? 0)}</span>
-        <span class="ns-chip">甲 ${Math.round(effStats.armor ?? 0)}</span>
-        <span class="ns-chip">雷 ${Math.round(effStats.torpedo ?? 0)}</span>
-        <span class="ns-chip">机 ${Math.round(effStats.evasion ?? 0)}</span>
-        <span class="ns-chip">侦 ${Math.round(effStats.recon ?? 0)}</span>
-        <span class="ns-chip">防空 ${Math.round(effStats.aa ?? 0)}</span>
-        <span class="ns-chip">反潜 ${Math.round(effStats.asw ?? 0)}</span>
-        <span class="ns-chip">核心：${escapeHtml(equippedMap.core?.name || '缺失')}</span>
+      <div class="sec-dialogue-bubble" id="port-sec-dialogue">
+        ${escapeHtml(speechText)}
       </div>
+
+      <div id="port-sec-bars" class="lab-stack-sm"></div>
+
+      <div class="lab-btn-grid">
+        <button type="button" id="btn-sec-talk" class="btn-primary uikit-touch-target" ${portState.busy ? 'disabled' : ''}>日常交谈</button>
+        <button type="button" id="btn-sec-gift" class="btn-secondary uikit-touch-target">赠送礼物</button>
+        <button type="button" id="btn-sec-event" class="btn-secondary uikit-touch-target" ${portState.busy ? 'disabled' : ''}>港区日常事件</button>
+        <button type="button" id="btn-sec-oath" class="${canOathNow || isOathed ? 'btn-primary' : 'btn-secondary'} uikit-touch-target">
+          ${isOathed ? '★ 誓约纪念' : canOathNow ? '★ 举行誓约仪式' : `誓约 (${curAff}/100)`}
+        </button>
+      </div>
+      <button type="button" id="btn-sec-switch" class="btn-secondary uikit-touch-target">更换秘书舰</button>
     `;
 
-    const barsHost = flagshipCard.querySelector('#port-flagship-bars');
-    const maxHp = Math.max(1, Math.round(Number(effStats.maxHp ?? flagship.stats.maxHp ?? 100)));
-    const maxAp = Number(flagship.stats.maxAp ?? 100);
-    const hpVal = Math.min(maxHp, Math.round(Number(flagship.stats.hp ?? maxHp)));
-    barsHost.appendChild(
+    const secBars = secCard.querySelector('#port-sec-bars');
+    secBars.appendChild(
       uiKit.createProgressBar({
-        label: hpVal / maxHp < 0.25 ? '耐久 (HP · 大破警告)' : '耐久 (HP)',
-        value: hpVal,
-        max: maxHp,
-        tone: hpVal / maxHp < 0.25 ? 'danger' : hpVal / maxHp < 0.5 ? 'warn' : 'accent',
+        label: isOathed ? `誓约好感度 (${curAff}/${maxAff})` : `好感阶段 · ${affStage.label} (${curAff}/${maxAff})`,
+        value: curAff,
+        max: maxAff,
+        tone: isOathed || canOathNow ? 'ok' : 'accent',
       }).element
     );
-    barsHost.appendChild(
+    secBars.appendChild(
       uiKit.createProgressBar({
-        label: `士气（${statRules.getMoraleLabel(flagship.stats.morale)} · 检定 ${formatSigned(moraleMod)}）`,
-        value: flagship.stats.morale ?? 50,
+        label: `士气（${statRules.getMoraleLabel(secretary.stats.morale)}）`,
+        value: Math.round(Number(secretary.stats.morale ?? 70)),
         max: 100,
-        tone: (flagship.stats.morale ?? 50) < 30 ? 'danger' : (flagship.stats.morale ?? 50) < 50 ? 'warn' : 'accent',
+        tone: (secretary.stats.morale ?? 70) < 30 ? 'danger' : 'accent',
       }).element
     );
-    barsHost.appendChild(
-      uiKit.createProgressBar({
-        label: '行动点 (AP)',
-        value: flagship.stats.ap ?? maxAp,
-        max: maxAp,
-        tone: (flagship.stats.ap ?? maxAp) / maxAp < 0.25 ? 'warn' : 'accent',
-      }).element
-    );
-    root.appendChild(flagshipCard);
+
+    secCard.querySelector('#btn-sec-mode-toggle').addEventListener('click', () => {
+      const next = isAiMode ? NARRATIVE_MODES.LOCAL : NARRATIVE_MODES.AI_POLISH;
+      narrative.setMode(next);
+      uiKit.showToast(next === NARRATIVE_MODES.LOCAL ? '秘书舰互动切换为纯本地离线台词' : '秘书舰互动切换为 AI 对话增强', 'ok');
+      renderPortHub();
+    });
+
+    secCard.querySelector('#btn-sec-talk').addEventListener('click', async () => {
+      if (portState.busy) return;
+      portState.busy = true;
+      try {
+        const res = await interaction.talkToSecretary({ characterId: secretary.id });
+        await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: secretary.id });
+        uiKit.showToast(`好感 +${res.affDelta}（${res.afterAff}） · 士气 +${res.moraleDelta}`, 'ok');
+      } finally {
+        portState.busy = false;
+        await renderPortHub();
+      }
+    });
+
+    secCard.querySelector('#btn-sec-gift').addEventListener('click', () => openGiftSheet(secretary));
+
+    secCard.querySelector('#btn-sec-event').addEventListener('click', async () => {
+      if (portState.busy) return;
+      portState.busy = true;
+      try {
+        const res = await interaction.triggerDailyPortEvent(secretary.id);
+        await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: secretary.id });
+        uiKit.showToast(`日常事件「${res.title}」：好感 +${res.affDelta}`, 'ok');
+      } finally {
+        portState.busy = false;
+        await renderPortHub();
+      }
+    });
+
+    secCard.querySelector('#btn-sec-oath').addEventListener('click', () => openOathSheet(secretary));
+    secCard.querySelector('#btn-sec-switch').addEventListener('click', () => openSwitchSecretarySheet());
+
+    root.appendChild(secCard);
   }
 
-  // 4. Port Core Operations Card
-  const serviceTargets = fleetState.count > 0 ? formation.getMembers() : flagship ? [flagship] : [];
+  // 4. Port Operations Bar
+  const serviceTargets = fleetState.count > 0 ? formation.getMembers() : secretary ? [secretary] : [];
   const servicePlan = computeFleetServicePlan(serviceTargets);
   const costText = servicePlan.needsService
     ? Object.entries(servicePlan.cost)
         .map(([k, v]) => `${resources.get(k)?.name || k} ${v}`)
         .join(' · ')
-    : '全队状态已满，无需补给或修复';
+    : '出征舰队状态已满，无需补给或修复';
 
   const opsCard = document.createElement('section');
   opsCard.className = 'surface-card lab-stack-sm';
@@ -660,17 +1638,17 @@ async function renderPortHub() {
   opsCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
       <h2 class="section-title">港区指挥中枢</h2>
-      <span class="status-badge badge-muted">出征编队 ${fleetState.count}/${fleetState.cap} 舰</span>
+      <span class="status-badge badge-muted" id="port-fleet-slot-badge">${fleetState.count} / ${fleetState.cap} 席位</span>
     </div>
     <button type="button" id="btn-port-goto-sortie" class="btn-primary port-cta-btn">前往出征（${fleetState.count}舰 · ${escapeHtml(fleetSummary.formationName)}）</button>
     <button type="button" id="btn-port-resupply-repair" class="btn-secondary uikit-touch-target">
       一键补给与入渠修复（${serviceTargets.length}舰）
     </button>
     <p class="muted-text" id="port-service-cost-hint" style="font-size:12px;">整备预计：${escapeHtml(costText)}</p>
-    <div class="lab-divider"></div>
-    <div class="cc-btn-3col">
+    <div class="lab-btn-grid">
       <button type="button" id="btn-port-goto-char" class="btn-secondary uikit-touch-target">角色控制台</button>
       <button type="button" id="btn-port-goto-workshop" class="btn-secondary uikit-touch-target">物资工坊</button>
+      <button type="button" id="btn-port-goto-compendium" class="btn-secondary uikit-touch-target">图鉴与内容台</button>
       <button type="button" id="btn-port-goto-action" class="btn-secondary uikit-touch-target">行动事件台</button>
     </div>
   `;
@@ -687,381 +1665,121 @@ async function renderPortHub() {
   opsCard.querySelector('#btn-port-goto-workshop').addEventListener('click', () => {
     if (modules.has('supply-workshop')) modules.mount('supply-workshop');
   });
+  opsCard.querySelector('#btn-port-goto-compendium').addEventListener('click', () => {
+    if (modules.has('compendium-studio')) modules.mount('compendium-studio');
+  });
   opsCard.querySelector('#btn-port-goto-action').addEventListener('click', () => {
     if (modules.has('action-console')) modules.mount('action-console');
   });
   root.appendChild(opsCard);
 
-  // 5. Sortie Fleet Formation Management Card (3..12 Dynamic Cap + Formations)
-  const fleetCard = document.createElement('section');
-  fleetCard.className = 'surface-card lab-stack-sm';
-  fleetCard.id = 'port-fleet-card';
-  const formationsList = formation.listFormations();
-  const inFleetSet = new Set(fleetState.memberIds);
-  const idleCandidates = roster.filter((c) => !inFleetSet.has(c.id));
+  // 5. Port Buildings & Facilities Grid (Dormitory, Dockyard, Formation, Expedition, Custom Buildings)
+  const buffParts = [];
+  if (globalBuffs.resourceRegenPct > 0) buffParts.push(`资源恢复 +${globalBuffs.resourceRegenPct}%`);
+  if (globalBuffs.expBoostPct > 0) buffParts.push(`经验获取 +${globalBuffs.expBoostPct}%`);
+  if (globalBuffs.moraleBoostPct > 0) buffParts.push(`士气恢复 +${globalBuffs.moraleBoostPct}%`);
+  for (const [k, v] of Object.entries(globalBuffs.statBonuses || {})) {
+    buffParts.push(`${k} +${v}`);
+  }
 
-  fleetCard.innerHTML = `
+  const bldCard = document.createElement('section');
+  bldCard.className = 'surface-card lab-stack-sm';
+  bldCard.id = 'port-buildings-card';
+  bldCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">出征舰队编成（3~12人动态上限）</h2>
-      <span class="status-badge badge-ok" id="port-fleet-slot-badge">${fleetState.count} / ${fleetState.cap} 席位</span>
+      <h2 class="section-title">港区建筑设施（点击管理）</h2>
+      <span class="status-badge badge-ok">${4 + customBlds.length} 座设施</span>
     </div>
+    ${
+      buffParts.length > 0
+        ? `<p class="muted-text" style="font-size:12px;" id="port-custom-buffs-summary">自定义设施全局增益：<strong>${escapeHtml(buffParts.join(' · '))}</strong></p>`
+        : ''
+    }
 
-    <div class="chip-row" id="port-formation-chips">
-      ${formationsList
+    <div class="port-facility-grid-2" id="port-buildings-grid">
+      <button type="button" class="port-building-tile" id="btn-open-dormitory" data-open-facility="dormitory">
+        <div class="port-building-head">
+          <strong>宿舍 · Lv.${dorm.level}</strong>
+          <span class="status-badge badge-ok">${dorm.residents.length}/${dorm.capacity}床</span>
+        </div>
+        <span class="port-building-sub">离线回士气与好感 · 投喂补给</span>
+      </button>
+
+      <button type="button" class="port-building-tile" id="btn-open-dockyard" data-open-facility="dockyard">
+        <div class="port-building-head">
+          <strong>船坞 · Lv.${dock.level}</strong>
+          <span class="status-badge ${dock.queue.length > 0 ? 'badge-warn' : 'badge-ok'}">${dock.queue.length}/${dock.capacity}渠位</span>
+        </div>
+        <span class="port-building-sub">入渠维修队列 · 新舰建造登记</span>
+      </button>
+
+      <button type="button" class="port-building-tile" id="btn-open-formation" data-open-facility="formation">
+        <div class="port-building-head">
+          <strong>舰队编成</strong>
+          <span class="status-badge badge-ok">${fleetState.count}/${fleetState.cap}舰</span>
+        </div>
+        <span class="port-building-sub">当前阵型：${escapeHtml(fleetSummary.formationName)}</span>
+      </button>
+
+      <button type="button" class="port-building-tile" id="btn-open-expedition" data-open-facility="expedition">
+        <div class="port-building-head">
+          <strong>远征中心</strong>
+          <span class="status-badge ${activeExps.length > 0 ? 'badge-warn' : 'badge-muted'}">${activeExps.length}支执行</span>
+        </div>
+        <span class="port-building-sub">离线计时后勤 · 调度 x${cmdProfile.effects.expeditionRewardMultiplier.toFixed(2)}</span>
+      </button>
+
+      ${customBlds
         .map(
-          (f) => `
-        <button type="button" class="preset-chip ${f.active ? 'is-active' : ''}" data-select-formation="${f.id}"
-          style="${f.active ? 'border-color:var(--accent);color:var(--text-primary);background:var(--accent-soft);' : ''}">
-          ${escapeHtml(f.name)}
+          (b) => `
+        <button type="button" class="port-building-tile is-custom" data-open-custom-building="${escapeHtml(b.id)}">
+          <div class="port-building-head">
+            <strong>${escapeHtml(b.name)} · Lv.${b.level}</strong>
+            <span class="status-badge badge-ok">${escapeHtml(b.typeTag)}</span>
+          </div>
+          <span class="port-building-sub">驻守 ${(b.stationedIds || []).length}/${b.stationCap} · ${escapeHtml(b.buffLabel)} +${b.totalBuffValue}</span>
         </button>
       `
         )
         .join('')}
     </div>
-    <div class="muted-text" style="font-size:12px;">
-      ${escapeHtml(fleetState.formation.desc)}
-    </div>
 
-    <div class="port-gear-summary" id="port-fleet-totals">
-      <span class="ns-chip">全队火力 ${fleetSummary.effective.firepower}</span>
-      <span class="ns-chip">全队雷击 ${fleetSummary.effective.torpedo}</span>
-      <span class="ns-chip">均甲 ${fleetSummary.effective.armor}</span>
-      <span class="ns-chip">机动 ${fleetSummary.effective.evasion}</span>
-      <span class="ns-chip">侦查 ${fleetSummary.effective.recon}</span>
-      <span class="ns-chip">防空 ${fleetSummary.effective.aa}</span>
-      <span class="ns-chip">反潜 ${fleetSummary.effective.asw}</span>
-    </div>
-
-    <div class="lab-stack-sm" id="port-fleet-members">
-      ${
-        fleetSummary.members.length === 0
-          ? '<p class="muted-text">当前编队为空，请从下方选择闲置适航舰娘入队。</p>'
-          : fleetSummary.members
-              .map(
-                (m, idx) => `
-          <div class="lab-slot-card" data-fleet-member="${escapeHtml(m.id)}">
-            <div class="lab-slot-head">
-              <strong>${idx === 0 ? '★ 旗舰' : `僚机 #${idx}`} · ${escapeHtml(m.name)}</strong>
-              <span class="status-badge badge-muted">${escapeHtml(m.shipType)} · HP ${m.hp}/${m.maxHp}</span>
-            </div>
-            <div class="lab-btn-row">
-              ${
-                idx > 0
-                  ? `<button type="button" class="btn-secondary uikit-touch-target" data-fleet-promote="${escapeHtml(m.id)}">设为旗舰</button>`
-                  : ''
-              }
-              <button type="button" class="btn-danger uikit-touch-target" data-fleet-remove="${escapeHtml(m.id)}">移出编队</button>
-            </div>
-          </div>
-        `
-              )
-              .join('')
-      }
-    </div>
-
-    ${
-      idleCandidates.length > 0
-        ? `
-      <div class="lab-divider"></div>
-      <span class="form-label">待命舰娘（点击编入出征编队）</span>
-      <div class="lab-stack-sm" id="port-fleet-candidates">
-        ${idleCandidates
-          .map((c) => {
-            const check = formation.canAddMember(c.id);
-            const disp = expeditions.isCharacterDispatched(c.id);
-            return `
-            <div class="lab-slot-card">
-              <div class="lab-slot-head">
-                <strong>${escapeHtml(c.name)}</strong>
-                <span class="status-badge ${disp ? 'badge-warn' : check.ok ? 'badge-ok' : 'badge-muted'}">
-                  ${escapeHtml(c.meta?.shipType || '驱逐舰')} · ${disp ? '远征中' : check.ok ? '可入队' : '暂不可用'}
-                </span>
-              </div>
-              <button type="button" class="btn-secondary uikit-touch-target" data-fleet-add="${escapeHtml(c.id)}" ${check.ok ? '' : 'disabled'}>
-                ${check.ok ? '+ 编入出征舰队' : escapeHtml(check.reason.slice(0, 26))}
-              </button>
-            </div>
-          `;
-          })
-          .join('')}
-      </div>
-    `
-        : ''
-    }
-
-    <div class="lab-btn-grid">
-      <button type="button" id="btn-port-autofill-fleet" class="btn-secondary uikit-touch-target">一键补满编队</button>
-      <button type="button" id="btn-port-edit-formation" class="btn-secondary uikit-touch-target">自定义阵型系数</button>
-    </div>
+    <button type="button" id="btn-port-new-building" class="btn-primary uikit-touch-target">+ 建造新自定义建筑</button>
   `;
 
-  fleetCard.querySelectorAll('[data-select-formation]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      await formation.setFormation(btn.getAttribute('data-select-formation'));
-      await renderPortHub();
-    });
-  });
-  fleetCard.querySelectorAll('[data-fleet-promote]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.getAttribute('data-fleet-promote');
-      await formation.setFlagship(id);
-      await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: id });
-      await renderPortHub();
-    });
-  });
-  fleetCard.querySelectorAll('[data-fleet-remove]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      await formation.removeMember(btn.getAttribute('data-fleet-remove'));
-      await renderPortHub();
-    });
-  });
-  fleetCard.querySelectorAll('[data-fleet-add]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      try {
-        await formation.addMember(btn.getAttribute('data-fleet-add'));
-        uiKit.showToast('已编入出征舰队', 'ok');
-        await renderPortHub();
-      } catch (err) {
-        uiKit.showToast(err instanceof Error ? err.message : '无法加入编队', 'warn');
-      }
-    });
-  });
-  fleetCard.querySelector('#btn-port-autofill-fleet').addEventListener('click', async () => {
-    await formation.autoFillFleet();
-    uiKit.showToast(`当前编队 ${formation.getMemberIds().length}/${formation.getFleetCap()} 舰`, 'ok');
-    await renderPortHub();
-  });
-  fleetCard.querySelector('#btn-port-edit-formation').addEventListener('click', () => openFormationCoeffSheet());
-  root.appendChild(fleetCard);
+  bldCard.querySelector('#btn-open-dormitory').addEventListener('click', () => openDormitorySheet());
+  bldCard.querySelector('#btn-open-dockyard').addEventListener('click', () => openDockyardSheet());
+  bldCard.querySelector('#btn-open-formation').addEventListener('click', () => openFormationSheet());
+  bldCard.querySelector('#btn-open-expedition').addEventListener('click', () => openExpeditionSheet());
+  bldCard.querySelector('#btn-port-new-building').addEventListener('click', () => openCreateCustomBuildingSheet(null));
 
-  // 6. Port Expedition Dispatch Center Card
-  const expCard = document.createElement('section');
-  expCard.className = 'surface-card lab-stack-sm';
-  expCard.id = 'port-expedition-card';
-
-  const missions = expeditions.listMissions();
-  const activeRuns = expeditions.listActiveRuns();
-  const selectedMission =
-    missions.find((m) => m.id === portState.selectedExpMissionId) || missions[0];
-
-  // Clean selectedExpShipIds so only available seaworthy non-dispatched ships remain selected
-  const dispatchableShips = roster.filter(
-    (c) => inventory.checkSeaworthiness(c.id).seaworthy && !expeditions.isCharacterDispatched(c.id)
-  );
-  const validDispIds = new Set(dispatchableShips.map((c) => c.id));
-  portState.selectedExpShipIds = portState.selectedExpShipIds.filter((id) => validDispIds.has(id));
-  if (portState.selectedExpShipIds.length === 0 && dispatchableShips.length > 0) {
-    // Prefer a non-flagship idle ship first if available
-    const preferred =
-      dispatchableShips.find((c) => !inFleetSet.has(c.id)) ||
-      dispatchableShips[dispatchableShips.length - 1];
-    if (preferred) portState.selectedExpShipIds = [preferred.id];
-  }
-
-  expCard.innerHTML = `
-    <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">港区远征派遣中心</h2>
-      <span class="status-badge badge-ok">调度收益 x${cmdProfile.effects.expeditionRewardMultiplier.toFixed(2)}</span>
-    </div>
-
-    ${
-      activeRuns.length > 0
-        ? `
-      <div class="lab-stack-sm" id="port-exp-active-runs">
-        ${activeRuns
-          .map(
-            (run) => `
-          <div class="lab-slot-card" data-exp-run="${escapeHtml(run.id)}">
-            <div class="lab-slot-head">
-              <strong>${escapeHtml(run.missionName)}</strong>
-              <span class="status-badge ${run.ready ? 'badge-ok' : 'badge-warn'}" data-exp-countdown="${escapeHtml(run.id)}">
-                ${escapeHtml(run.remainingText)}
-              </span>
-            </div>
-            <div class="muted-text" style="font-size:12px;">
-              执勤舰船：${escapeHtml(run.ships.map((s) => s.name).join('、'))}
-            </div>
-            <div data-exp-bar="${escapeHtml(run.id)}"></div>
-            <div class="lab-btn-row">
-              <button type="button" class="btn-primary uikit-touch-target" data-exp-claim="${escapeHtml(run.id)}" ${run.ready ? '' : 'disabled'}>
-                ${run.ready ? '一键领取远征物资' : '倒计时进行中…'}
-              </button>
-              <button type="button" class="btn-secondary uikit-touch-target" data-exp-recall="${escapeHtml(run.id)}">提前召回</button>
-            </div>
-          </div>
-        `
-          )
-          .join('')}
-      </div>
-      <div class="lab-divider"></div>
-    `
-        : '<p class="muted-text" style="font-size:12px;">当前无进行中的远征。派遣后关闭或刷新页面仍按真实时间戳继续倒计时。</p>'
-    }
-
-    <div class="form-group">
-      <label class="form-label" for="port-exp-mission-select">选择远征任务</label>
-      <select id="port-exp-mission-select" class="form-select">
-        ${missions
-          .map(
-            (m) => `
-          <option value="${escapeHtml(m.id)}" ${m.id === selectedMission.id ? 'selected' : ''}>
-            ${escapeHtml(m.name)}（${escapeHtml(m.durationText)} · ${m.minShips}~${m.maxShips}舰）
-          </option>
-        `
-          )
-          .join('')}
-      </select>
-    </div>
-
-    <div class="muted-text" style="font-size:12px;">
-      ${escapeHtml(selectedMission.description)}<br>
-      预计回报（含调度加成）：${escapeHtml(
-        Object.entries(selectedMission.projectedRewards)
-          .map(([k, v]) => `${resources.get(k)?.name || k} +${v}`)
-          .join(' / ')
-      )} · 指挥官 EXP +${selectedMission.commanderExp}
-    </div>
-
-    <div class="form-group">
-      <span class="form-label">选择派遣适航舰船（已选 ${portState.selectedExpShipIds.length}/${selectedMission.maxShips}）</span>
-      <div class="chip-row" id="port-exp-ship-picker">
-        ${
-          dispatchableShips.length === 0
-            ? '<span class="muted-text" style="font-size:12px;">暂无空闲适航舰娘可派遣</span>'
-            : dispatchableShips
-                .map((c) => {
-                  const picked = portState.selectedExpShipIds.includes(c.id);
-                  const inSortie = inFleetSet.has(c.id);
-                  return `
-                  <button type="button" class="preset-chip ${picked ? 'is-active' : ''}" data-exp-pick-ship="${escapeHtml(c.id)}"
-                    style="${picked ? 'border-color:var(--accent);color:var(--text-primary);background:var(--accent-soft);' : ''}">
-                    ${escapeHtml(c.name)}${inSortie ? ' (在编)' : ''}
-                  </button>
-                `;
-                })
-                .join('')
-        }
-      </div>
-    </div>
-
-    <button type="button" id="btn-port-dispatch-exp" class="btn-primary uikit-touch-target"
-      ${portState.selectedExpShipIds.length < selectedMission.minShips ? 'disabled' : ''}>
-      派遣远征出发（${escapeHtml(selectedMission.name)}）
-    </button>
-  `;
-
-  // Mount progress bars for active runs
-  for (const run of activeRuns) {
-    const barHost = expCard.querySelector(`[data-exp-bar="${run.id}"]`);
-    if (barHost) {
-      barHost.appendChild(
-        uiKit.createProgressBar({
-          label: '远征进度',
-          value: Math.round(run.progress * 100),
-          max: 100,
-          tone: run.ready ? 'ok' : 'accent',
-        }).element
-      );
-    }
-  }
-
-  expCard.querySelector('#port-exp-mission-select').addEventListener('change', (e) => {
-    portState.selectedExpMissionId = e.target.value;
-    renderPortHub();
+  bldCard.querySelectorAll('[data-open-custom-building]').forEach((btn) => {
+    btn.addEventListener('click', () => openCustomBuildingDetailSheet(btn.getAttribute('data-open-custom-building')));
   });
 
-  expCard.querySelectorAll('[data-exp-pick-ship]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const cid = btn.getAttribute('data-exp-pick-ship');
-      if (portState.selectedExpShipIds.includes(cid)) {
-        portState.selectedExpShipIds = portState.selectedExpShipIds.filter((id) => id !== cid);
-      } else if (portState.selectedExpShipIds.length < selectedMission.maxShips) {
-        portState.selectedExpShipIds.push(cid);
-      }
-      renderPortHub();
-    });
-  });
-
-  expCard.querySelector('#btn-port-dispatch-exp').addEventListener('click', async () => {
-    try {
-      const run = await expeditions.dispatch(selectedMission.id, portState.selectedExpShipIds);
-      portState.selectedExpShipIds = [];
-      uiKit.showToast(`远征「${run.missionName}」已出发！`, 'ok');
-      await renderPortHub();
-    } catch (err) {
-      uiKit.showToast(err instanceof Error ? err.message : '派遣失败', 'warn');
-    }
-  });
-
-  expCard.querySelectorAll('[data-exp-claim]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      try {
-        const res = await expeditions.claim(btn.getAttribute('data-exp-claim'));
-        await persistCharacterRoster({ storage: rootStorage, entities });
-        uiKit.showToast(
-          `远征归港领取成功！指挥官 EXP +${res.commanderExp}${res.leveledUp ? '（升级！）' : ''}`,
-          'ok'
-        );
-        await renderPortHub();
-      } catch (err) {
-        uiKit.showToast(err instanceof Error ? err.message : '领取失败', 'warn');
-      }
-    });
-  });
-
-  expCard.querySelectorAll('[data-exp-recall]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      await expeditions.recall(btn.getAttribute('data-exp-recall'));
-      uiKit.showToast('已召回远征舰船', 'info');
-      await renderPortHub();
-    });
-  });
-
-  root.appendChild(expCard);
+  root.appendChild(bldCard);
   portState.container.appendChild(root);
-}
-
-function tickExpeditionCountdowns() {
-  if (!portState.container || !portState.context?.expeditions) return;
-  const activeRuns = portState.context.expeditions.listActiveRuns();
-  if (activeRuns.length === 0) return;
-  let needsFullRefresh = false;
-  for (const run of activeRuns) {
-    const badge = portState.container.querySelector(`[data-exp-countdown="${run.id}"]`);
-    if (badge) {
-      badge.textContent = run.remainingText;
-    }
-    const claimBtn = portState.container.querySelector(`[data-exp-claim="${run.id}"]`);
-    if (run.ready && claimBtn && claimBtn.disabled) {
-      needsFullRefresh = true;
-    }
-  }
-  if (needsFullRefresh) {
-    renderPortHub();
-  }
 }
 
 export default {
   id: 'port-hub',
   name: '港区大本营',
-  description: '港区大本营主中枢：指挥官角色卡（六维+0初值运气）、旗舰执勤、3~12人舰队编成、远征派遣中心与一键补给修复。',
+  description: '港区大本营主中枢：指挥官角色卡、秘书舰日常互动与誓约舞台、宿舍/船坞/编队/远征与自定义港区建筑设施。',
 
   mount(container, context) {
     portState.container = container;
     portState.context = context;
     portState.avatarCache.clear();
 
-    context.ui.setPlaceholder('港区备忘：输入内容将记录到行动日志...');
-    context.ui.setInputHandler((text) => {
-      const flagship = getFlagship();
-      context.logs.add({
-        category: LOG_CATEGORIES.SYSTEM,
-        actorId: flagship?.id || null,
-        actorName: flagship?.name || '',
-        title: `${flagship ? `[${flagship.name}] ` : ''}港区日志备忘`,
-        detail: text,
-      });
-      context.uiKit.showToast('已记录至行动日志', 'ok');
+    context.ui.setPlaceholder('和秘书舰聊聊任何话题，直接发送即可触发对话...');
+    context.ui.setInputHandler(async (text) => {
+      const sec = context.interaction?.getSecretary();
+      if (sec) {
+        const res = await context.interaction.talkToSecretary({ characterId: sec.id, customTopic: text });
+        await persistCharacterRoster({ storage: context.rootStorage, entities: context.entities, activeCharacterId: sec.id });
+        context.uiKit.showToast(`「${sec.name}」回应了你：好感 +${res.affDelta}`, 'ok');
+        await renderPortHub();
+      }
     });
 
     context.ui.setQuickActions([
@@ -1071,23 +1789,19 @@ export default {
         onClick: () => context.modules.mount('sortie-console'),
       },
       {
-        id: 'port-q-commander',
-        label: '指挥官卡',
-        onClick: () => openCommanderSheet(),
+        id: 'port-q-dorm',
+        label: '宿舍管理',
+        onClick: () => openDormitorySheet(),
       },
       {
-        id: 'port-q-repair',
-        label: '一键补给修复',
-        onClick: () => {
-          const members = context.formation?.getMembers() || [];
-          const targets = members.length > 0 ? members : [getFlagship()].filter(Boolean);
-          if (targets.length > 0) performResupplyAndRepair(targets);
-        },
+        id: 'port-q-dock',
+        label: '船坞维修',
+        onClick: () => openDockyardSheet(),
       },
       {
-        id: 'port-q-char',
-        label: '角色控制台',
-        onClick: () => context.modules.mount('character-console'),
+        id: 'port-q-compendium',
+        label: '图鉴内容台',
+        onClick: () => context.modules.mount('compendium-studio'),
       },
     ]);
 
@@ -1102,6 +1816,10 @@ export default {
       context.bus.on('expedition:dispatched', () => renderPortHub()),
       context.bus.on('expedition:claimed', () => renderPortHub()),
       context.bus.on('expedition:recalled', () => renderPortHub()),
+      context.bus.on('buildings:updated', () => renderPortHub()),
+      context.bus.on('interaction:talked', () => renderPortHub()),
+      context.bus.on('interaction:gifted', () => renderPortHub()),
+      context.bus.on('interaction:oathed', () => renderPortHub()),
       context.bus.on('storage:changed', (detail) => {
         if (detail?.action === 'resetAll' || detail?.action === 'import') {
           renderPortHub();
@@ -1109,7 +1827,16 @@ export default {
       }),
     ];
 
-    portState.timerHandle = setInterval(tickExpeditionCountdowns, 1000);
+    // Periodically auto-settle finished dockyard repairs while user stays in Port Hub
+    portState.timerHandle = setInterval(() => {
+      if (context.buildings) {
+        const dock = context.buildings.getDockyardState();
+        if (dock.queue.some((q) => q.ready)) {
+          context.buildings.settleOfflineBuildings().then(() => renderPortHub());
+        }
+      }
+    }, 3000);
+
     renderPortHub();
   },
 

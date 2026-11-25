@@ -1218,7 +1218,12 @@ async function renderSortieConsole() {
       });
     });
     genCard.querySelector('#btn-sortie-gen-route').addEventListener('click', () => {
-      const fresh = routeGenerator.generateRoute({ difficulty: sortieState.selectedDifficulty, commander });
+      const customEnemies = sortieState.context?.contentManager?.listCustomEnemies() || [];
+      const fresh = routeGenerator.generateRoute({
+        difficulty: sortieState.selectedDifficulty,
+        commander,
+        customEnemies,
+      });
       sortieState.generatedRoute = fresh;
       sortieState.selectedRouteId = fresh.id;
       uiKit.showToast(`已生成「${fresh.name}」（${fresh.nodes.length} 节点 · 海况：${fresh.seaCondition.label}）`, 'ok');

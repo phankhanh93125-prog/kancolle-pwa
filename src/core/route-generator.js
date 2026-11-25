@@ -422,7 +422,7 @@ export class RouteGenerator {
    * Procedurally generate a standardized sortie route (3~6 nodes) for the given difficulty.
    * Accepts optional `commander` so Commander `tactics` reveals ahead-of-time node types (`intelRevealed`).
    */
-  generateRoute({ difficulty = 'low', nodeCount = null, commander = null, rng = Math.random } = {}) {
+  generateRoute({ difficulty = 'low', nodeCount = null, commander = null, customEnemies = [], rng = Math.random } = {}) {
     const tier = SEA_DIFFICULTIES[difficulty] || SEA_DIFFICULTIES.low;
     const totalNodes = nodeCount
       ? clamp(Math.floor(nodeCount), 3, 6)
@@ -467,7 +467,14 @@ export class RouteGenerator {
       }
 
       const isCombat = type === NODE_TYPES.ENCOUNTER || type === NODE_TYPES.ELITE || type === NODE_TYPES.BOSS;
-      const enemyTemplate = isCombat ? buildEnemyTemplate(type, tier, rng) : null;
+      const matchingCustom = isCombat && Array.isArray(customEnemies)
+        ? customEnemies.filter((e) => e && e.tier === type)
+        : [];
+      const enemyTemplate = isCombat
+        ? matchingCustom.length > 0 && rng() < 0.45
+          ? deepClone(pickRandom(matchingCustom, rng))
+          : buildEnemyTemplate(type, tier, rng)
+        : null;
       const name = isCombat ? enemyTemplate.name : pickRandom(NODE_NAMES[type], rng);
       const intelRevealed = i === 0 || isLast || rng() < revealChance;
       if (intelRevealed) revealedCount += 1;

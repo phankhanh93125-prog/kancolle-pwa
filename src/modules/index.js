@@ -2,6 +2,7 @@ import portHubModule from './port-hub.js';
 import sortieConsoleModule from './sortie-console.js';
 import characterConsoleModule from './character-console.js';
 import supplyWorkshopModule from './supply-workshop.js';
+import compendiumStudioModule from './compendium-studio.js';
 import actionConsoleModule from './action-console.js';
 import frameworkLabModule from './framework-lab.js';
 import aiConsoleModule from './ai-console.js';
@@ -15,6 +16,7 @@ export const REGISTERED_MODULES = [
   sortieConsoleModule,
   characterConsoleModule,
   supplyWorkshopModule,
+  compendiumStudioModule,
   actionConsoleModule,
   frameworkLabModule,
   aiConsoleModule,

@@ -19,6 +19,9 @@ import { TacticalCombatEngine } from './core/tactical-combat.js';
 import { CommanderSystem } from './core/commander-system.js';
 import { FormationSystem } from './core/formation-system.js';
 import { ExpeditionSystem } from './core/expedition-system.js';
+import { PortBuildingsSystem } from './core/port-buildings.js';
+import { InteractionSystem } from './core/interaction-system.js';
+import { ContentManager } from './core/content-manager.js';
 import { createUIKit, showToast } from './core/ui-kit.js';
 import { REGISTERED_MODULES } from './modules/index.js';
 import { hydrateCharacterRoster } from './modules/character-console.js';
@@ -74,6 +77,41 @@ const expeditions = new ExpeditionSystem({
   bus,
 });
 formation.setExpeditions(expeditions);
+
+const buildings = new PortBuildingsSystem({
+  storage,
+  entities,
+  inventory,
+  resources,
+  commander,
+  logs,
+  bus,
+});
+
+const interaction = new InteractionSystem({
+  storage,
+  entities,
+  inventory,
+  resources,
+  statRules,
+  commander,
+  narrative,
+  logs,
+  bus,
+});
+
+const contentManager = new ContentManager({
+  storage,
+  entities,
+  inventory,
+  routeGenerator,
+  buildings,
+  interaction,
+  commander,
+  logs,
+  bus,
+});
+interaction.setContentManager(contentManager);
 
 const combat = new TacticalCombatEngine({
   entities,
@@ -218,6 +256,9 @@ const moduleManager = new ModuleManager({
     commander,
     formation,
     expeditions,
+    buildings,
+    interaction,
+    contentManager,
     uiKit,
   },
 });
@@ -575,7 +616,12 @@ async function bootApplication() {
     await commander.init();
     await Promise.all([inventory.init(), resources.init(), logs.init()]);
     await hydrateCharacterRoster({ storage, entities, inventory, statRules, commander });
-    await expeditions.init();
+    await Promise.all([
+      expeditions.init(),
+      buildings.init(),
+      interaction.init(),
+      contentManager.init(),
+    ]);
     await formation.init();
     await Promise.all([
       hydrateActionConsole({ storage, rules }),
@@ -588,7 +634,7 @@ async function bootApplication() {
   logs.attachBusListeners();
   fxStage.attachBusListeners();
 
-  // Trigger Auto-Save snapshot whenever commander, formation, expeditions, equipment, characters, sortie, combat, or resources mutate
+  // Trigger Auto-Save snapshot whenever commander, formation, expeditions, buildings, interaction, content, equipment, characters, sortie, combat, or resources mutate
   saves.bindAutoSaveEvents(
     [
       'commander:updated',
@@ -596,6 +642,12 @@ async function bootApplication() {
       'expedition:dispatched',
       'expedition:claimed',
       'expedition:recalled',
+      'buildings:updated',
+      'interaction:talked',
+      'interaction:gifted',
+      'interaction:oathed',
+      'content:updated',
+      'content:mod-imported',
       'inventory:equipped',
       'inventory:unequipped',
       'inventory:consumed',
@@ -623,6 +675,9 @@ async function bootApplication() {
         commander: commander.serialize(),
         formation: formation.serialize(),
         expeditions: expeditions.serialize(),
+        buildings: buildings.serialize(),
+        interaction: interaction.serialize(),
+        contentManager: contentManager.serialize(),
         entities: entities.serialize(),
         inventory: inventory.serialize(),
         resources: resources.serialize(),
@@ -632,6 +687,7 @@ async function bootApplication() {
         trigger: eventName,
         commanderLevel: commander.getProfile().level,
         fleetCount: formation.getMemberIds().length,
+        customBuildings: buildings.listCustomBuildings().length,
         characters: entities.list({ kind: 'character' }).length,
         items: inventory.listItems().length,
       },
@@ -682,6 +738,9 @@ window.__APP_BASE__ = {
   commander,
   formation,
   expeditions,
+  buildings,
+  interaction,
+  contentManager,
   uiKit,
   modules: moduleManager,
 };
