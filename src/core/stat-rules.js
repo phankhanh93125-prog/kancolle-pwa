@@ -146,6 +146,222 @@ export function getShipClassProfile(shipType = '') {
 }
 
 /**
+ * Authoritative definitions for all Ship-Class Exclusive Tactical Commands + Universal Evade/Retreat.
+ */
+export const TACTICAL_ACTION_DEFS = Object.freeze({
+  torpedo_strike: {
+    id: 'torpedo_strike',
+    label: '鱼雷突击',
+    shortLabel: '鱼雷突击',
+    desc: '近/中距离高破甲暴击打击（近距额外 +30%）',
+    statKey: 'torpedo',
+    kind: 'attack',
+    visualStyle: 'torpedo',
+    tone: 'torpedo',
+    idealRanges: ['close', 'medium'],
+    cost: { fuel: 0, ammo: 10 },
+  },
+  depth_asw: {
+    id: 'depth_asw',
+    label: '深水反潜',
+    shortLabel: '深水反潜',
+    desc: '克制水下潜艇造成巨额克制伤害并压制伏击',
+    statKey: 'asw',
+    kind: 'attack',
+    visualStyle: 'asw',
+    tone: 'scan',
+    idealRanges: ['close', 'medium'],
+    cost: { fuel: 0, ammo: 6 },
+  },
+  smoke_screen: {
+    id: 'smoke_screen',
+    label: '释放烟幕',
+    shortLabel: '释放烟幕',
+    desc: '全队展开烟幕屏障，2 回合内大幅提升闪避与减伤',
+    statKey: 'evasion',
+    kind: 'support',
+    visualStyle: 'smoke',
+    tone: 'support',
+    idealRanges: ['long', 'medium', 'close'],
+    cost: { fuel: 6, ammo: 0 },
+  },
+  full_ahead: {
+    id: 'full_ahead',
+    label: '全速突进',
+    shortLabel: '全速突进',
+    desc: '拉近交战距离（远→中→近）并提升自身机动闪避',
+    statKey: 'evasion',
+    kind: 'maneuver',
+    visualStyle: 'advance',
+    tone: 'maneuver',
+    idealRanges: ['long', 'medium'],
+    cost: { fuel: 8, ammo: 0 },
+  },
+  tactical_shelling: {
+    id: 'tactical_shelling',
+    label: '战术炮击',
+    shortLabel: '战术炮击',
+    desc: '均衡精准炮击，对常规水面目标稳定输出',
+    statKey: 'firepower',
+    kind: 'attack',
+    visualStyle: 'shelling',
+    tone: 'shelling',
+    idealRanges: ['medium', 'close'],
+    cost: { fuel: 0, ammo: 8 },
+  },
+  aa_alert: {
+    id: 'aa_alert',
+    label: '防空警戒',
+    shortLabel: '防空警戒',
+    desc: '2 回合内大幅削减敌方空袭伤害并击落来袭敌机',
+    statKey: 'aa',
+    kind: 'support',
+    visualStyle: 'aa',
+    tone: 'support',
+    idealRanges: ['long', 'medium', 'close'],
+    cost: { fuel: 0, ammo: 6 },
+  },
+  radar_scan: {
+    id: 'radar_scan',
+    label: '雷达扫描',
+    shortLabel: '雷达扫描',
+    desc: '揭露敌舰完整护甲/弱点/意图，全队锁定命中 +3',
+    statKey: 'recon',
+    kind: 'recon',
+    visualStyle: 'scan',
+    tone: 'scan',
+    idealRanges: ['long', 'medium', 'close'],
+    cost: { fuel: 4, ammo: 0 },
+  },
+  heavy_shelling: {
+    id: 'heavy_shelling',
+    label: '重炮射击',
+    shortLabel: '重炮射击',
+    desc: '高威力重巡主炮射击，中近距穿甲稳定打击',
+    statKey: 'firepower',
+    kind: 'attack',
+    visualStyle: 'shelling',
+    tone: 'shelling',
+    idealRanges: ['medium', 'long'],
+    cost: { fuel: 0, ammo: 10 },
+  },
+  vanguard_guard: {
+    id: 'vanguard_guard',
+    label: '前排援护',
+    shortLabel: '前排援护',
+    desc: '2 回合内为低血量队友构筑护盾分担 60% 伤害',
+    statKey: 'armor',
+    kind: 'support',
+    visualStyle: 'guard',
+    tone: 'support',
+    idealRanges: ['long', 'medium', 'close'],
+    cost: { fuel: 4, ammo: 0 },
+  },
+  main_salvo: {
+    id: 'main_salvo',
+    label: '主炮齐射',
+    shortLabel: '主炮齐射',
+    desc: '无视 45% 护甲的高额远程战列齐射（远/中距最佳）',
+    statKey: 'firepower',
+    kind: 'attack',
+    visualStyle: 'shelling',
+    tone: 'shelling',
+    idealRanges: ['long', 'medium'],
+    cost: { fuel: 0, ammo: 14 },
+  },
+  fire_suppress: {
+    id: 'fire_suppress',
+    label: '火力压制',
+    shortLabel: '火力压制',
+    desc: '重炮覆盖射击并大幅降低敌方下回合命中与火力',
+    statKey: 'firepower',
+    kind: 'attack',
+    visualStyle: 'shelling',
+    tone: 'support',
+    idealRanges: ['long', 'medium'],
+    cost: { fuel: 0, ammo: 12 },
+  },
+  carrier_airstrike: {
+    id: 'carrier_airstrike',
+    label: '舰载机空袭',
+    shortLabel: '舰载机空袭',
+    desc: '远程无视前排护甲精确轰炸（受敌方防空削减）',
+    statKey: 'firepower',
+    kind: 'attack',
+    visualStyle: 'airstrike',
+    tone: 'airstrike',
+    idealRanges: ['long', 'medium'],
+    cost: { fuel: 4, ammo: 10 },
+  },
+  carrier_recon: {
+    id: 'carrier_recon',
+    label: '舰载侦察',
+    shortLabel: '舰载侦察',
+    desc: '大范围揭露全部敌舰情报告并提升全队暴击 +20%',
+    statKey: 'recon',
+    kind: 'recon',
+    visualStyle: 'scan',
+    tone: 'scan',
+    idealRanges: ['long', 'medium', 'close'],
+    cost: { fuel: 4, ammo: 0 },
+  },
+  evade_retreat: {
+    id: 'evade_retreat',
+    label: '机动迂回/撤退',
+    shortLabel: '迂回/撤退',
+    desc: '非 BOSS 尝试全队无伤脱离；BOSS 战大幅提升闪避',
+    statKey: 'evasion',
+    kind: 'maneuver',
+    visualStyle: 'evade',
+    tone: 'maneuver',
+    idealRanges: ['long', 'medium', 'close'],
+    cost: { fuel: 10, ammo: 0 },
+    universal: true,
+  },
+});
+
+export const SHIP_CLASS_EXCLUSIVE_ACTIONS = Object.freeze({
+  DD: ['torpedo_strike', 'depth_asw', 'smoke_screen', 'full_ahead'],
+  CL: ['tactical_shelling', 'torpedo_strike', 'aa_alert', 'radar_scan'],
+  CA: ['heavy_shelling', 'vanguard_guard', 'full_ahead'],
+  BB: ['main_salvo', 'fire_suppress'],
+  CV: ['carrier_airstrike', 'carrier_recon'],
+});
+
+/**
+ * Return the ordered list of tactical action definitions for a shipgirl's class,
+ * plus the universal 'evade_retreat' option.
+ */
+export function getShipClassTacticalActions(shipType = '', { includeUniversal = true, phase = 'day' } = {}) {
+  const code = resolveShipClass(shipType);
+  const ids = [...(SHIP_CLASS_EXCLUSIVE_ACTIONS[code] || SHIP_CLASS_EXCLUSIVE_ACTIONS.CL)];
+  // During night battle, CV can still perform night recon & tactical support strikes
+  if (includeUniversal) {
+    ids.push('evade_retreat');
+  }
+  return ids
+    .map((id) => TACTICAL_ACTION_DEFS[id])
+    .filter(Boolean)
+    .map((def) => {
+      if (phase === 'night' && def.id === 'carrier_airstrike') {
+        return {
+          ...def,
+          label: '夜间舰载突袭',
+          desc: '夜战照明弹引导下的舰载机精确补刀（威力略降）',
+        };
+      }
+      if (phase === 'night' && def.id === 'torpedo_strike') {
+        return {
+          ...def,
+          label: '夜战雷击突击',
+          desc: '夜战核心爆发！伤害 +45%、暴击率大幅提升',
+        };
+      }
+      return { ...def };
+    });
+}
+
+/**
  * Pure-vector geometric SVG emblem for each ship class (zero external image dependencies).
  */
 export function getShipClassSvg(shipType = '', { size = 18 } = {}) {

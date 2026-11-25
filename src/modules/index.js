@@ -1,4 +1,10 @@
 import portHubModule from './port-hub.js';
+import {
+  portDormitoryModule,
+  portDockyardModule,
+  portFormationModule,
+  portExpeditionModule,
+} from './port-facilities.js';
 import sortieConsoleModule from './sortie-console.js';
 import characterConsoleModule from './character-console.js';
 import supplyWorkshopModule from './supply-workshop.js';
@@ -9,7 +15,8 @@ import aiConsoleModule from './ai-console.js';
 
 /**
  * Central pluggable module registry.
- * The first module (port-hub) is mounted as the default home page unless the user pins another default.
+ * Top-level pages appear in the horizontal nav strip; dedicated full-screen facility pages (`isSubpage: true`)
+ * are opened from the Port Hub facility grid and return via their unified `← 返回港区` top bar.
  */
 export const REGISTERED_MODULES = [
   portHubModule,
@@ -18,6 +25,10 @@ export const REGISTERED_MODULES = [
   supplyWorkshopModule,
   compendiumStudioModule,
   actionConsoleModule,
+  portFormationModule,
+  portDormitoryModule,
+  portDockyardModule,
+  portExpeditionModule,
   frameworkLabModule,
   aiConsoleModule,
 ];

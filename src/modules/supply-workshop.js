@@ -939,6 +939,17 @@ function renderWorkshop() {
   const root = document.createElement('div');
   root.className = 'sw-root';
 
+  root.appendChild(
+    uiKit.createSubpageHeader({
+      title: '仓库与工坊',
+      subtitle: '分类装备仓储 · 强化与补给商店',
+      modules,
+      resources,
+      resourceKeys: ['steel', 'bauxite', 'silver'],
+      id: 'sw-subpage-header',
+    })
+  );
+
   // 1. Unified 6-Resource & Dual-Currency Overview Bar
   root.appendChild(createResourceOverviewBar(resources, { showCaps: true, id: 'sw-resource-bar' }));
 

@@ -1266,11 +1266,22 @@ async function renderStoryPacksTab(host) {
 
 function renderCompendiumStudio() {
   if (!csState.container || !csState.context) return;
-  const { resources, modules } = csState.context;
+  const { resources, modules, uiKit } = csState.context;
 
   csState.container.innerHTML = '';
   const root = document.createElement('div');
   root.className = 'module-stack';
+
+  root.appendChild(
+    uiKit.createSubpageHeader({
+      title: '图鉴与内容库',
+      subtitle: '全要素图鉴 · 剧情包与模组导入',
+      modules,
+      resources,
+      resourceKeys: ['silver', 'gold'],
+      id: 'cs-subpage-header',
+    })
+  );
 
   root.appendChild(createResourceOverviewBar(resources, { id: 'cs-resource-bar' }));
 

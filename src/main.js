@@ -183,6 +183,7 @@ const els = {
 // ------------------------------------------------------------
 let activeInputHandler = null;
 let inputBusy = false;
+let swipeLockedByModule = false;
 
 function autoResizeInput() {
   const el = els.inputField;
@@ -192,6 +193,24 @@ function autoResizeInput() {
 
 const ui = {
   showToast,
+
+  setSwipeLocked(locked) {
+    swipeLockedByModule = Boolean(locked);
+    document.body.dataset.swipeLocked = swipeLockedByModule ? 'true' : 'false';
+  },
+
+  isSwipeLocked() {
+    return swipeLockedByModule;
+  },
+
+  setImmersiveBattle(active) {
+    const flag = Boolean(active);
+    document.body.classList.toggle('is-immersive-battle', flag);
+    ui.setSwipeLocked(flag);
+    if (els.moduleNavStrip) {
+      els.moduleNavStrip.hidden = flag;
+    }
+  },
 
   setPlaceholder(text) {
     els.inputField.placeholder = text || '输入指令或消息...';
@@ -227,6 +246,7 @@ const ui = {
   resetModuleBindings() {
     activeInputHandler = null;
     ui.setInputBusy(false);
+    ui.setImmersiveBattle(false);
     ui.setPlaceholder('输入指令或消息...');
     els.quickActionsSlot.innerHTML = '';
   },
@@ -320,10 +340,41 @@ function isAnyModalOpen() {
   return false;
 }
 
+const SWIPE_LOCKED_MODULE_IDS = new Set([
+  'port-dormitory',
+  'port-dockyard',
+  'port-formation',
+  'port-expedition',
+  'character-console',
+]);
+
+function getTopLevelModules() {
+  return moduleManager.list().filter((m) => !m.isSubpage);
+}
+
+function isSwipeBlockedNow() {
+  if (isAnyModalOpen()) return true;
+  if (swipeLockedByModule) return true;
+  if (combat && combat.isActive()) return true;
+  const active = moduleManager.getActive();
+  if (!active) return false;
+  if (active.isSubpage || active.lockSwipe || SWIPE_LOCKED_MODULE_IDS.has(active.id)) {
+    return true;
+  }
+  return false;
+}
+
 function renderModuleNavStrip(activeId = null) {
   if (!els.moduleNavStrip) return;
-  const list = moduleManager.list();
-  const curId = activeId || moduleManager.getActive()?.id || list[0]?.id;
+  const activeMod = moduleManager.getActive();
+  const curId = activeId || activeMod?.id || null;
+  const isSubpage = Boolean(activeMod?.isSubpage) || document.body.classList.contains('is-immersive-battle');
+
+  // Dedicated full-screen facility pages & immersive battle use their own `← 返回港区` header
+  els.moduleNavStrip.hidden = isSubpage;
+  if (isSubpage) return;
+
+  const list = getTopLevelModules();
   els.moduleNavStrip.innerHTML = '';
 
   for (const mod of list) {
@@ -373,7 +424,7 @@ function attachStageSwipeNavigation() {
   els.stage.addEventListener(
     'touchstart',
     (e) => {
-      if (isAnyModalOpen()) {
+      if (isSwipeBlockedNow()) {
         touchState = null;
         return;
       }
@@ -402,7 +453,7 @@ function attachStageSwipeNavigation() {
     'touchmove',
     (e) => {
       if (!touchState || touchState.cancelled) return;
-      if (isAnyModalOpen() || !e.touches || e.touches.length !== 1) {
+      if (isSwipeBlockedNow() || !e.touches || e.touches.length !== 1) {
         touchState.cancelled = true;
         return;
       }
@@ -424,7 +475,7 @@ function attachStageSwipeNavigation() {
   els.stage.addEventListener(
     'touchend',
     (e) => {
-      if (!touchState || touchState.cancelled || isAnyModalOpen()) {
+      if (!touchState || touchState.cancelled || isSwipeBlockedNow()) {
         touchState = null;
         return;
       }
@@ -441,16 +492,16 @@ function attachStageSwipeNavigation() {
       if (Math.abs(dy) >= Math.abs(dx)) return;
       if (Math.abs(dx) < 60) return;
 
-      const list = moduleManager.list();
+      const list = getTopLevelModules();
       const curId = moduleManager.getActive()?.id;
       const curIdx = list.findIndex((m) => m.id === curId);
       if (curIdx < 0) return;
 
       if (dx <= -60 && curIdx < list.length - 1) {
-        // Swipe left -> Next module
+        // Swipe left -> Next top-level module
         moduleManager.mount(list[curIdx + 1].id, { transition: 'left' });
       } else if (dx >= 60 && curIdx > 0) {
-        // Swipe right -> Previous module
+        // Swipe right -> Previous top-level module
         moduleManager.mount(list[curIdx - 1].id, { transition: 'right' });
       }
     },
@@ -460,6 +511,8 @@ function attachStageSwipeNavigation() {
 
 bus.on('module:changed', (mod) => {
   els.activeModuleName.textContent = mod.name;
+  document.body.dataset.activeModule = mod.id;
+  document.body.dataset.swipeLocked = isSwipeBlockedNow() ? 'true' : 'false';
   renderModuleNavStrip(mod.id);
 });
 

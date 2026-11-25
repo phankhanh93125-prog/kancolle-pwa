@@ -2387,6 +2387,18 @@ async function renderConsole() {
   const root = document.createElement('div');
   root.className = 'cc-root';
 
+  // Unified Full-Screen Subpage Top Bar (`← 返回港区` + Title + Core Resource Pills)
+  root.appendChild(
+    uiKit.createSubpageHeader({
+      title: `舰娘角色卡 · ${char.name}`,
+      subtitle: `${char.meta?.shipType || '驱逐舰'} · 防误触已锁定滑动`,
+      modules: consoleState.context.modules,
+      resources,
+      resourceKeys: ['fuel', 'ammo', 'silver'],
+      id: 'cc-subpage-header',
+    })
+  );
+
   // 0. Unified 6-Resource & Dual-Currency Overview Bar
   root.appendChild(createResourceOverviewBar(resources, { id: 'cc-resource-bar' }));
 

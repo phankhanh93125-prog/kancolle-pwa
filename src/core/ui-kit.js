@@ -474,6 +474,81 @@ export function createCollapsibleCard({
   };
 }
 
+/**
+ * Unified Full-Screen Sub-Page Top Header (`← 返回港区` + Module Title + Key Resource Balances).
+ */
+export function createSubpageHeader({
+  title,
+  subtitle = '',
+  backLabel = '← 返回港区',
+  onBack = null,
+  modules = null,
+  resources = null,
+  resourceKeys = ['fuel', 'ammo'],
+  rightSlot = null,
+  id = '',
+} = {}) {
+  const header = document.createElement('div');
+  header.className = 'subpage-topbar';
+  if (id) header.id = id;
+
+  const backBtn = document.createElement('button');
+  backBtn.type = 'button';
+  backBtn.className = 'subpage-back-btn';
+  backBtn.id = 'btn-subpage-back';
+  backBtn.textContent = backLabel;
+  backBtn.addEventListener('click', () => {
+    if (typeof onBack === 'function') {
+      onBack();
+    } else if (modules && modules.has('port-hub')) {
+      modules.mount('port-hub', { transition: 'right' });
+    }
+  });
+
+  const titleBox = document.createElement('div');
+  titleBox.className = 'subpage-title-box';
+  const titleEl = document.createElement('h1');
+  titleEl.className = 'subpage-title';
+  titleEl.textContent = title || '设施界面';
+  titleBox.appendChild(titleEl);
+  if (subtitle) {
+    const subEl = document.createElement('span');
+    subEl.className = 'subpage-subtitle';
+    subEl.textContent = subtitle;
+    titleBox.appendChild(subEl);
+  }
+
+  const rightBox = document.createElement('div');
+  rightBox.className = 'subpage-right-box';
+  if (rightSlot instanceof Node) {
+    rightBox.appendChild(rightSlot);
+  } else if (resources && Array.isArray(resourceKeys) && resourceKeys.length > 0) {
+    const shortLabels = {
+      fuel: '油',
+      ammo: '弹',
+      steel: '钢',
+      bauxite: '铝',
+      silver: '银',
+      gold: '金',
+    };
+    for (const key of resourceKeys.slice(0, 3)) {
+      const r = resources.get(key);
+      if (!r) continue;
+      const pill = document.createElement('span');
+      pill.className = 'subpage-res-pill';
+      pill.dataset.subpageRes = key;
+      pill.textContent = `${shortLabels[key] || r.name}${Math.floor(r.amount)}`;
+      rightBox.appendChild(pill);
+    }
+  }
+
+  header.appendChild(backBtn);
+  header.appendChild(titleBox);
+  header.appendChild(rightBox);
+
+  return header;
+}
+
 export function createUIKit() {
   return {
     showToast,
@@ -482,5 +557,6 @@ export function createUIKit() {
     createProgressBar,
     createTabs,
     createCollapsibleCard,
+    createSubpageHeader,
   };
 }

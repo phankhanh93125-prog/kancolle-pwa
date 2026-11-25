@@ -19,12 +19,14 @@ import { createResourceOverviewBar } from '../core/resource-manager.js';
 import { NARRATIVE_MODES } from '../core/prompt-pipeline.js';
 import { LOG_CATEGORIES } from '../core/log-system.js';
 import {
+  BRANCH_LANE_META,
   NODE_TYPES,
   NODE_TYPE_LABELS,
   SEA_DIFFICULTIES,
 } from '../core/route-generator.js';
 import { COMBAT_COMMANDS } from '../core/tactical-combat.js';
 import { getActiveCharacterId, persistCharacterRoster } from './character-console.js';
+import { playBattleStepChoreography, renderFullScreenBattleView } from './battle-screen.js';
 import { clamp } from '../core/calc-engine.js';
 
 const SORTIE_STORAGE_NS = 'core-sortie';
@@ -55,10 +57,12 @@ function isCombatNodeType(type) {
 let sortieState = {
   container: null,
   context: null,
-  selectedDifficulty: 'low',
+  selectedDifficulty: 'medium',
   generatedRoute: null,
   selectedRouteId: null,
   activeRun: null,
+  postBattleSettlement: null,
+  autoRunning: false,
   busy: false,
   hydrated: false,
   unsubs: [],
@@ -207,10 +211,13 @@ async function launchSortie(route) {
   };
 
   combat.clearSession();
+  sortieState.postBattleSettlement = null;
+  sortieState.autoRunning = false;
   sortieState.activeRun = {
     routeId: route.id,
     routeName: route.name,
     difficultyLabel: route.difficultyLabel || '标准海域',
+    hasBranches: Boolean(route.hasBranches),
     seaCondition: route.seaCondition ? deepClone(route.seaCondition) : null,
     characterId: lead.id,
     characterName: lead.name,
@@ -221,6 +228,8 @@ async function launchSortie(route) {
     nodes: deepClone(route.nodes),
     nextNodeIndex: 0,
     clearedIndices: [],
+    awaitingBranchChoices: null,
+    pendingAnchorage: null,
     loot: { fuel: 0, ammo: 0, steel: 0, bauxite: 0, silver: 0, gold: 0 },
     reports: [],
     completed: false,
@@ -238,6 +247,140 @@ async function launchSortie(route) {
   });
   bus.emit('sortie:launched', { routeId: route.id, characterId: lead.id, fleetSize: fleetMembers.length });
   uiKit.showToast(`编队（${fleetMembers.length}舰 · ${activeFormation.name}）已启航！单步 油${effStepCost.fuel}/弹${effStepCost.ammo}`, 'ok');
+  await renderSortieConsole();
+}
+
+function resolveNextStepAfterNode(run, clearedIdx) {
+  if (!run || !Array.isArray(run.nodes)) return;
+  if (!run.clearedIndices.includes(clearedIdx)) {
+    run.clearedIndices.push(clearedIdx);
+  }
+  const node = run.nodes[clearedIdx];
+  const nextCodes = Array.isArray(node?.nextCodes) ? node.nextCodes.filter(Boolean) : [];
+
+  if (nextCodes.length >= 2) {
+    // Fork decision point! Present branching lane choices on the sea chart.
+    run.awaitingBranchChoices = Array.isArray(node.branchChoices) && node.branchChoices.length >= 2
+      ? deepClone(node.branchChoices)
+      : nextCodes.map((code) => {
+          const target = run.nodes.find((n) => n.code === code);
+          const lane = target?.lane || 'main';
+          return {
+            targetCode: code,
+            lane,
+            label: BRANCH_LANE_META[lane]?.label || `航道 ${code}`,
+            desc: BRANCH_LANE_META[lane]?.desc || `前往节点 ${code}`,
+            badge: lane === 'assault' ? '高危高回报' : '隐蔽/反潜',
+          };
+        });
+    run.nextNodeIndex = clearedIdx;
+    return;
+  }
+
+  run.awaitingBranchChoices = null;
+  if (nextCodes.length === 1) {
+    const nextIdx = run.nodes.findIndex((n) => n.code === nextCodes[0]);
+    if (nextIdx >= 0) {
+      run.nextNodeIndex = nextIdx;
+      return;
+    }
+  }
+
+  // Fallback for legacy linear routes or final node
+  if (node?.type === NODE_TYPES.BOSS || clearedIdx + 1 >= run.nodes.length || nextCodes.length === 0 && run.hasBranches) {
+    run.completed = true;
+    run.nextNodeIndex = run.nodes.length;
+  } else {
+    run.nextNodeIndex = clearedIdx + 1;
+    if (run.nextNodeIndex >= run.nodes.length) run.completed = true;
+  }
+}
+
+async function chooseBranchPath(targetCode) {
+  const run = sortieState.activeRun;
+  if (!run || !Array.isArray(run.awaitingBranchChoices)) return;
+  const idx = run.nodes.findIndex((n) => n.code === targetCode);
+  if (idx < 0) return;
+  const chosen = run.awaitingBranchChoices.find((c) => c.targetCode === targetCode);
+  run.awaitingBranchChoices = null;
+  run.chosenLane = chosen?.lane || run.nodes[idx]?.lane || 'main';
+  run.nextNodeIndex = idx;
+  run.nodes[idx].intelRevealed = true;
+  await persistActiveRun();
+  sortieState.context?.uiKit?.showToast(
+    `已抉择进入【${chosen?.label || targetCode}】（下一节点 ${targetCode}）`,
+    'ok'
+  );
+  await renderSortieConsole();
+}
+
+async function resolveAnchorageAction(doRest = true) {
+  const run = sortieState.activeRun;
+  if (!run || !run.pendingAnchorage) return;
+  const { entities, resources, rootStorage, logs, bus, uiKit } = sortieState.context;
+  const nodeIdx = run.pendingAnchorage.nodeIndex;
+  const node = run.nodes[nodeIdx];
+  const cfg = node?.anchorageConfig || { cost: { fuel: 22, steel: 18, silver: 20 }, healPct: 0.35, moraleGain: 20 };
+
+  const memberIds =
+    Array.isArray(run.fleetMemberIds) && run.fleetMemberIds.length > 0 ? run.fleetMemberIds : [run.characterId];
+  const fleetMembers = memberIds.map((id) => entities.get(id)).filter(Boolean);
+  const char = fleetMembers[0] || getFlagship();
+
+  if (doRest) {
+    const spend = await resources.spendBatch(cfg.cost, { reason: `临时锚地整备休整（${node.code}）` });
+    if (!spend.ok) {
+      uiKit.showToast(`资源不足无法锚地补给：${spend.reason}`, 'warn');
+      return;
+    }
+    let totalHeal = 0;
+    for (const m of fleetMembers) {
+      const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(m.id, 'maxHp', { round: 'round' }).final));
+      const curHp = Math.round(Number(m.stats.hp ?? effMaxHp));
+      const healAmt = Math.max(10, Math.round(effMaxHp * (cfg.healPct || 0.35)));
+      if (curHp < effMaxHp) {
+        entities.adjustStat(m.id, 'hp', healAmt, { min: 0, max: effMaxHp });
+        totalHeal += Math.min(healAmt, effMaxHp - curHp);
+      }
+      entities.adjustStat(m.id, 'morale', cfg.moraleGain || 20, { min: 0, max: 100 });
+    }
+    if (char) {
+      await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
+    }
+    run.reports.unshift({
+      id: `anc_${Date.now()}`,
+      nodeCode: node.code,
+      nodeName: node.name,
+      nodeType: '临时锚地休整',
+      text: `舰队在「${node.name}」抛锚应急整备：全队恢复耐久 +${totalHeal}、士气 +${cfg.moraleGain || 20}。`,
+      chips: [{ text: `耐久 +${totalHeal}` }, { text: `士气 +${cfg.moraleGain || 20}` }],
+      timestamp: Date.now(),
+    });
+    logs.add({
+      category: LOG_CATEGORIES.STAT,
+      actorId: char?.id || null,
+      actorName: char?.name || '',
+      title: `[临时锚地] ${node.name} 应急休整完成`,
+      detail: `恢复耐久 +${totalHeal} · 士气 +${cfg.moraleGain || 20}`,
+    });
+    uiKit.showToast(`锚地休整完成！全队耐久 +${totalHeal} · 士气 +${cfg.moraleGain || 20}`, 'ok');
+  } else {
+    run.reports.unshift({
+      id: `anc_skip_${Date.now()}`,
+      nodeCode: node.code,
+      nodeName: node.name,
+      nodeType: '临时锚地通过',
+      text: `舰队保持静默航速掠过「${node.name}」，未消耗额外物资。`,
+      chips: [{ text: '免消耗通过' }],
+      timestamp: Date.now(),
+    });
+    uiKit.showToast(`已掠过临时锚地 ${node.code}`, 'info');
+  }
+
+  run.pendingAnchorage = null;
+  resolveNextStepAfterNode(run, nodeIdx);
+  await persistActiveRun();
+  bus.emit('sortie:node-resolved', { routeId: run.routeId, nodeCode: node.code, completed: run.completed });
   await renderSortieConsole();
 }
 
@@ -259,7 +402,9 @@ async function advanceNextNode() {
     uiKit,
   } = sortieState.context;
 
-  if (combat.isActive() || run.completed || run.nextNodeIndex >= run.nodes.length) return;
+  if (combat.isActive() || run.completed || run.awaitingBranchChoices || run.pendingAnchorage || run.nextNodeIndex >= run.nodes.length) {
+    return;
+  }
 
   const memberIds =
     Array.isArray(run.fleetMemberIds) && run.fleetMemberIds.length > 0 ? run.fleetMemberIds : [run.characterId];
@@ -288,24 +433,37 @@ async function advanceNextNode() {
     if (!confirmed) return;
   }
 
-  // Deduct single-step fuel & ammo
+  const nodeIdx = run.nextNodeIndex;
+  const node = run.nodes[nodeIdx];
+  node.intelRevealed = true;
+
+  // Deduct single-step fuel & ammo (stealth lane saves 15% fuel)
+  const stealthDisc = node.lane === 'stealth' ? 0.85 : 1.0;
   const stepCost = {
-    fuel: Math.max(0, Number(run.stepCost?.fuel) || 0),
+    fuel: Math.max(0, Math.round((Number(run.stepCost?.fuel) || 0) * stealthDisc)),
     ammo: Math.max(0, Number(run.stepCost?.ammo) || 0),
   };
-  const spend = await resources.spendBatch(stepCost, { reason: `出征推进 ${run.routeName}` });
+  const spend = await resources.spendBatch(stepCost, { reason: `出征推进 ${run.routeName} (${node.code})` });
   if (!spend.ok) {
     uiKit.showToast(`油弹不足，无法继续推进：${spend.reason}`, 'error');
     return;
   }
 
-  const nodeIdx = run.nextNodeIndex;
-  const node = run.nodes[nodeIdx];
-  node.intelRevealed = true;
   turnStepper.advance({ steps: 1, reason: `sortie-node-${node.code}` });
 
-  // Branch A: Combat Node (encounter / elite / boss) -> Launch Full-Fleet Tactical Combat Panel!
+  // Branch A: Temporary Anchorage Node -> Present Rest/Skip choice on Sea Chart!
+  if (node.type === NODE_TYPES.ANCHORAGE) {
+    run.pendingAnchorage = { nodeIndex: nodeIdx, code: node.code, name: node.name };
+    await persistActiveRun();
+    uiKit.showToast(`抵达临时锚地「${node.name}」，可消耗少量物资休整`, 'ok');
+    await renderSortieConsole();
+    return;
+  }
+
+  // Branch B: Combat Node (encounter / elite / boss) -> Launch Independent Full-Screen Tactical Battle Screen!
   if (isCombatNodeType(node.type)) {
+    sortieState.postBattleSettlement = null;
+    sortieState.autoRunning = false;
     combat.startEncounter({
       characterId: char.id,
       fleetMemberIds: memberIds,
@@ -314,12 +472,12 @@ async function advanceNextNode() {
       seaCondition: run.seaCondition,
     });
     await persistActiveRun();
-    uiKit.showToast(`节点 ${node.code} 遇敌：${node.name}！全队进入战术交战`, 'warn');
+    uiKit.showToast(`节点 ${node.code} 遇敌：${node.name}！已切换至独立全屏战斗界面`, 'warn');
     await renderSortieConsole();
     return;
   }
 
-  // Branch B: Non-combat Resource / Weather-Recon Node -> Auto Salvage & Settlement
+  // Branch C: Non-combat Resource / Weather-Recon Node -> Auto Salvage & Settlement
   sortieState.busy = true;
   await renderSortieConsole();
   try {
@@ -428,9 +586,7 @@ async function advanceNextNode() {
       polishInstruction: `请简短润色节点 ${node.code} 的打捞/气象侦察战报，保留全部客观数字：`,
     });
 
-    run.clearedIndices.push(nodeIdx);
-    run.nextNodeIndex = nodeIdx + 1;
-    if (run.nextNodeIndex >= run.nodes.length) run.completed = true;
+    resolveNextStepAfterNode(run, nodeIdx);
 
     run.reports.unshift({
       id: `sr_${Date.now()}_${nodeIdx}`,
@@ -652,117 +808,265 @@ async function playCombatChoreography(turnEntry, session) {
   }
 }
 
-async function handleTacticalCommand(commandId) {
-  if (sortieState.busy || !sortieState.activeRun) return;
+async function finalizeBattleOutcome(session) {
   const run = sortieState.activeRun;
-  const { combat, entities, resources, commander, rootStorage, logs, bus, uiKit } = sortieState.context;
-  if (!combat.isActive()) return;
+  if (!run || !session) return;
+  const { combat, entities, resources, statRules, commander, rootStorage, logs, bus, uiKit } = sortieState.context;
+  const nodeIdx = run.nextNodeIndex;
+  const node = run.nodes[nodeIdx];
+  const memberIds =
+    Array.isArray(run.fleetMemberIds) && run.fleetMemberIds.length > 0 ? run.fleetMemberIds : [run.characterId];
+  const fleetMembers = memberIds.map((id) => entities.get(id)).filter(Boolean);
+  const char = fleetMembers[0] || getFlagship();
+
+  if (session.status === 'victory' || session.status === 'bypassed' || session.status === 'day_ended') {
+    const gained = {};
+    const luckDropBonus = commander ? commander.getLuckEffects().rareDropBonus : 0;
+    const affMult = commander ? commander.getAffinityGainMultiplier() : 1.0;
+    const rewardFactor = session.status === 'victory' ? 1.0 : session.status === 'day_ended' ? 0.55 : 0;
+
+    if (rewardFactor > 0) {
+      for (const [rk, rawVal] of Object.entries(node.loot || {})) {
+        const val = Math.round((Number(rawVal) || 0) * rewardFactor * (1 + Math.max(-0.2, luckDropBonus)));
+        if (val <= 0) continue;
+        await resources.add(rk, val, { reason: `节点 ${node.code}·${node.name} 战利品` });
+        run.loot[rk] = (run.loot[rk] || 0) + val;
+        gained[rk] = val;
+      }
+      const aff = Math.max(1, Math.round((Number(node.affinityGain) || 3) * affMult));
+      const shipExp = node.type === NODE_TYPES.BOSS ? 65 : node.type === NODE_TYPES.ELITE ? 45 : 28;
+      for (const m of fleetMembers) {
+        entities.adjustStat(m.id, 'affinity', aff, { min: 0, max: 100 });
+        entities.adjustStat(m.id, 'morale', session.status === 'victory' ? 4 : 1, { min: 0, max: 100 });
+        if (statRules && typeof statRules.grantShipExp === 'function') {
+          statRules.grantShipExp(entities, m.id, Math.round(shipExp * rewardFactor), {
+            reason: `节点 ${node.code}·${node.name} 战斗结算`,
+          });
+        }
+      }
+    }
+
+    if (commander) {
+      const expGain = node.type === NODE_TYPES.BOSS ? 45 : node.type === NODE_TYPES.ELITE ? 30 : 20;
+      await commander.grantExp(expGain, `节点 ${node.code} 结算`);
+    }
+
+    resolveNextStepAfterNode(run, nodeIdx);
+    const lootText = formatLootSummary(gained, resources);
+
+    logs.add({
+      category: LOG_CATEGORIES.STAT,
+      actorId: char?.id || null,
+      actorName: char?.name || '',
+      title: `[${char?.name || ''}等] 节点 ${node.code}·${node.name} ${
+        session.status === 'victory' ? '交战胜利' : session.status === 'day_ended' ? '昼战收兵' : '迂回通过'
+      }`,
+      detail: rewardFactor > 0 ? `战利品：${lootText}` : '全队无伤绕过敌方封锁',
+    });
+    bus.emit('sortie:node-resolved', {
+      routeId: run.routeId,
+      nodeCode: node.code,
+      status: session.status,
+      completed: run.completed,
+    });
+
+    sortieState.postBattleSettlement = {
+      sessionSnapshot: deepClone(session),
+      headline:
+        session.status === 'victory'
+          ? `节点 ${node.code} 战斗大捷！`
+          : session.status === 'day_ended'
+          ? `节点 ${node.code} 昼战收兵`
+          : `节点 ${node.code} 成功迂回脱离`,
+      badge: session.status === 'victory' ? '胜利结算' : session.status === 'day_ended' ? '部分战果' : '无伤脱离',
+      tone: session.status === 'victory' ? 'ok' : 'warn',
+      summary:
+        rewardFactor > 0
+          ? `获得战利品：${lootText}。${run.completed ? '已击破本海域全部目标，可凯旋返航！' : '可返回分岔海图继续推进或直达船坞整备。'}`
+          : '全队保持完整耐久绕过封锁，可继续推进海图。',
+      continueLabel: run.completed ? '返回海图并凯旋返航' : '继续分岔雷达海图航行',
+    };
+
+    uiKit.showToast(
+      session.status === 'victory' ? `战斗胜利！打捞：${lootText}` : `节点 ${node.code} 战斗已结算`,
+      'ok'
+    );
+  } else if (session.status === 'defeated') {
+    sortieState.postBattleSettlement = {
+      sessionSnapshot: deepClone(session),
+      headline: '编队失利 · 紧急脱离',
+      badge: '急需入渠',
+      tone: 'danger',
+      summary: '编队全员耐久耗尽，建议立即前往「船坞整备」或执行「一键补给全队」恢复战力。',
+      continueLabel: '返回海图准备返航',
+    };
+    uiKit.showToast('编队全员耐久归零！建议立即直达船坞整备', 'error');
+  }
+
+  combat.clearSession();
+  if (char) {
+    await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
+  }
+  await persistActiveRun();
+}
+
+async function handleBattleShipAction(actionId, { silentRender = false } = {}) {
+  if (sortieState.busy || !sortieState.activeRun) return null;
+  const run = sortieState.activeRun;
+  const { combat, entities, fxStage, rootStorage, uiKit } = sortieState.context;
+  if (!combat.isActive()) return null;
 
   sortieState.busy = true;
-  // Lock command buttons in place without wiping the battlefield DOM so SVG choreography plays smoothly
-  sortieState.container?.querySelectorAll('[data-combat-cmd]').forEach((btn) => {
+  sortieState.container?.querySelectorAll('[data-battle-action]').forEach((btn) => {
     btn.disabled = true;
   });
 
   try {
-    const res = await combat.executeCommand(commandId);
+    const res = await combat.executeShipAction(actionId);
     if (!res.ok) {
       uiKit.showToast(res.reason || '无法执行战术指令', 'warn');
-      return;
+      return null;
     }
 
     const { turnEntry, session } = res;
-
-    // Play 4-stage slow-motion pure-SVG tactical choreography (scaled by 1x/2x speed)
-    await playCombatChoreography(turnEntry, session);
+    const stageRoot = sortieState.container?.querySelector('#battle-fullscreen-stage');
+    if (stageRoot) {
+      await playBattleStepChoreography(stageRoot, { turnEntry, fxStage });
+    }
 
     const nodeIdx = run.nextNodeIndex;
-    const node = run.nodes[nodeIdx];
-    const memberIds =
-      Array.isArray(run.fleetMemberIds) && run.fleetMemberIds.length > 0 ? run.fleetMemberIds : [run.characterId];
-    const fleetMembers = memberIds.map((id) => entities.get(id)).filter(Boolean);
-    const char = fleetMembers[0] || getFlagship();
-
-    // Push combat turn report to sortie reports
+    const node = run.nodes[nodeIdx] || { code: session.nodeCode, name: session.nodeName };
     run.reports.unshift({
       id: `cmbr_${Date.now()}_${turnEntry.turn}`,
       nodeCode: node.code,
-      nodeName: `${node.name} · T${turnEntry.turn} ${turnEntry.commandLabel}`,
+      nodeName: `${node.name} · R${turnEntry.round} ${turnEntry.actorName}·${turnEntry.commandLabel}`,
       nodeType: turnEntry.outcomeTag,
       text: turnEntry.text,
       source: turnEntry.source,
       degraded: turnEntry.degraded,
       check: turnEntry.check,
-      chips: turnEntry.chips,
-      timestamp: turnEntry.timestamp,
+      chips: turnEntry.damageDealt > 0 ? [{ text: `伤害 ${turnEntry.damageDealt}` }] : [],
+      timestamp: Date.now(),
     });
 
-    if (session.status === 'victory' || session.status === 'bypassed') {
-      const gained = {};
-      const luckDropBonus = commander ? commander.getLuckEffects().rareDropBonus : 0;
-      const affMult = commander ? commander.getAffinityGainMultiplier() : 1.0;
-
-      if (session.status === 'victory') {
-        for (const [rk, rawVal] of Object.entries(node.loot || {})) {
-          const val = Math.round((Number(rawVal) || 0) * (1 + Math.max(-0.2, luckDropBonus)));
-          if (val <= 0) continue;
-          await resources.add(rk, val, { reason: `击破节点 ${node.code}·${node.name} 战利品` });
-          run.loot[rk] = (run.loot[rk] || 0) + val;
-          gained[rk] = val;
-        }
-        const aff = Math.max(1, Math.round((Number(node.affinityGain) || 3) * affMult));
-        for (const m of fleetMembers) {
-          entities.adjustStat(m.id, 'affinity', aff, { min: 0, max: 100 });
-          entities.adjustStat(m.id, 'morale', 4, { min: 0, max: 100 });
-        }
-      }
-
-      if (commander) {
-        const expGain = node.type === NODE_TYPES.BOSS ? 45 : node.type === NODE_TYPES.ELITE ? 30 : 20;
-        await commander.grantExp(expGain, `节点 ${node.code} ${session.status === 'victory' ? '胜利' : '迂回'}`);
-      }
-
-      run.clearedIndices.push(nodeIdx);
-      run.nextNodeIndex = nodeIdx + 1;
-      if (run.nextNodeIndex >= run.nodes.length) run.completed = true;
-      combat.clearSession();
-
-      const lootText = formatLootSummary(gained, resources);
-      logs.add({
-        category: LOG_CATEGORIES.STAT,
-        actorId: char?.id || null,
-        actorName: char?.name || '',
-        title: `[${char?.name || ''}等] 节点 ${node.code}·${node.name} ${session.status === 'victory' ? '交战胜利' : '迂回通过'}`,
-        detail: session.status === 'victory' ? `战利品：${lootText}` : '全队无伤绕过敌方封锁',
-      });
-      bus.emit('sortie:node-resolved', {
-        routeId: run.routeId,
-        nodeCode: node.code,
-        status: session.status,
-        completed: run.completed,
-      });
-
-      uiKit.showToast(
-        session.status === 'victory'
-          ? `战斗胜利！打捞：${lootText}`
-          : `全队成功迂回绕过节点 ${node.code}！`,
-        'ok'
-      );
-    } else if (session.status === 'defeated') {
-      combat.clearSession();
-      uiKit.showToast('编队全员耐久归零！请立即返航回港区入渠修复', 'error');
+    if (
+      session.status === 'victory' ||
+      session.status === 'bypassed' ||
+      session.status === 'day_ended' ||
+      session.status === 'defeated'
+    ) {
+      sortieState.autoRunning = false;
+      await finalizeBattleOutcome(session);
+    } else if (session.status === 'night_prompt') {
+      sortieState.autoRunning = false;
+      uiKit.showToast('昼战结束！请抉择是否追击进入夜战', 'warn');
+      await persistActiveRun();
     } else {
-      uiKit.showToast(`${turnEntry.commandLabel}：${turnEntry.outcomeTag}`, turnEntry.damageDealt > 0 ? 'ok' : 'info');
+      const char = getFlagship();
+      if (char) {
+        await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
+      }
+      await persistActiveRun();
     }
-
-    if (char) {
-      await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
-    }
-    await persistActiveRun();
+    return res;
   } finally {
     sortieState.busy = false;
-    await renderSortieConsole();
+    if (!silentRender) {
+      await renderSortieConsole();
+    }
   }
+}
+
+async function handleBattleToggleAuto() {
+  const { combat, uiKit } = sortieState.context;
+  if (!combat.isActive()) return;
+  if (sortieState.autoRunning) {
+    sortieState.autoRunning = false;
+    combat.setAutoDelegate(false);
+    uiKit.showToast('已暂停本回合自动托管', 'info');
+    await renderSortieConsole();
+    return;
+  }
+
+  sortieState.autoRunning = true;
+  combat.setAutoDelegate(true);
+  uiKit.showToast('本回合托管启动：按机动顺序自动执行各舰种专属指令', 'ok');
+  await renderSortieConsole();
+
+  const startRound = combat.getSession()?.round || 1;
+  let guardSteps = 0;
+  while (sortieState.autoRunning && combat.isActive() && guardSteps < 14) {
+    const sess = combat.getSession();
+    if (!sess || sess.status !== 'active' || sess.round !== startRound) break;
+    const actor = combat.getCurrentActor();
+    if (!actor) break;
+    const picked = combat.pickAutoActionForActor(actor);
+    const res = await handleBattleShipAction(picked, { silentRender: true });
+    if (!res || !res.ok) break;
+    await renderSortieConsole();
+    if (res.turnEntry?.roundCompleted || res.session?.status !== 'active') break;
+    guardSteps += 1;
+  }
+
+  sortieState.autoRunning = false;
+  combat.setAutoDelegate(false);
+  await renderSortieConsole();
+}
+
+async function handleBattleEnterNight() {
+  const { combat, uiKit } = sortieState.context;
+  const res = combat.enterNightBattle();
+  if (!res.ok) {
+    uiKit.showToast(res.reason || '无法进入夜战', 'warn');
+    return;
+  }
+  await persistActiveRun();
+  uiKit.showToast('★ 追击进入夜战！交战拉近至近距离，雷击与近战暴击大幅强化', 'ok');
+  await renderSortieConsole();
+}
+
+async function handleBattleFinishEarly() {
+  const { combat } = sortieState.context;
+  const res = combat.finishBattleEarly();
+  if (res.ok && res.session) {
+    await finalizeBattleOutcome(res.session);
+  }
+  await renderSortieConsole();
+}
+
+async function performQuickFleetResupply() {
+  const { entities, resources, formation, rootStorage, uiKit } = sortieState.context;
+  const members = formation ? formation.getMembers() : [getFlagship()].filter(Boolean);
+  if (members.length === 0) return;
+
+  let fuelNeed = 0;
+  let steelNeed = 0;
+  for (const m of members) {
+    const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(m.id, 'maxHp', { round: 'round' }).final));
+    const missingHp = Math.max(0, effMaxHp - Math.round(Number(m.stats.hp ?? effMaxHp)));
+    const missingAp = Math.max(0, Number(m.stats.maxAp ?? 100) - Math.round(Number(m.stats.ap ?? 100)));
+    fuelNeed += Math.ceil(missingAp * 0.4);
+    steelNeed += Math.ceil(missingHp * 0.6);
+  }
+  const cost = {};
+  if (fuelNeed > 0) cost.fuel = fuelNeed;
+  if (steelNeed > 0) cost.steel = steelNeed;
+  if (Object.keys(cost).length > 0) {
+    const spend = await resources.spendBatch(cost, { reason: '战后一键补给全队' });
+    if (!spend.ok) {
+      uiKit.showToast(`一键补给失败：${spend.reason}`, 'warn');
+      return;
+    }
+  }
+  for (const m of members) {
+    const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(m.id, 'maxHp', { round: 'round' }).final));
+    entities.setStat(m.id, 'hp', effMaxHp);
+    entities.setStat(m.id, 'ap', Number(m.stats.maxAp ?? 100));
+    entities.adjustStat(m.id, 'morale', 12, { min: 0, max: 100 });
+  }
+  await persistCharacterRoster({ storage: rootStorage, entities });
+  uiKit.showToast(`已完成全队（${members.length}舰）一键补给与应急修复！`, 'ok');
+  await renderSortieConsole();
 }
 
 async function retreatToPort() {
@@ -1047,32 +1351,85 @@ function createRadarSeaChartElement(
   wrap.id = enableFog ? 'sortie-radar-chart' : undefined;
 
   const clearedSet = new Set(clearedIndices);
-  const count = Math.max(1, nodes.length);
+  const hasBranches = nodes.some((n) => n.lane === 'assault' || n.lane === 'stealth' || (Array.isArray(n.nextCodes) && n.nextCodes.length >= 2));
+  const maxCol = Math.max(
+    1,
+    ...nodes.map((n, idx) => (typeof n.col === 'number' ? n.col : idx))
+  );
   const svgW = 340;
-  const svgH = 44;
-  const stepX = count > 1 ? (svgW - 44) / (count - 1) : 0;
+  const svgH = hasBranches ? 82 : 46;
+  const stepX = maxCol > 0 ? (svgW - 44) / maxCol : 0;
 
-  const pts = nodes.map((_, idx) => {
-    const x = count === 1 ? svgW / 2 : 22 + idx * stepX;
-    const y = idx % 2 === 0 ? 18 : 28;
-    return { x: Math.round(x), y };
+  const codeToPt = new Map();
+  const pts = nodes.map((node, idx) => {
+    const col = typeof node.col === 'number' ? node.col : idx;
+    const x = Math.round(22 + col * stepX);
+    let y = hasBranches ? 41 : idx % 2 === 0 ? 18 : 28;
+    if (hasBranches) {
+      if (node.lane === 'assault') y = 16;
+      else if (node.lane === 'stealth') y = 66;
+      else y = 41;
+    }
+    const pt = { x, y, idx, node };
+    codeToPt.set(node.code, pt);
+    return pt;
   });
 
-  const pathD = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+  // Build SVG connecting edges (DAG nextCodes if present, else sequential)
+  const edgeLines = [];
+  for (let i = 0; i < pts.length; i++) {
+    const from = pts[i];
+    const nextCodes = Array.isArray(from.node.nextCodes) ? from.node.nextCodes : [];
+    if (nextCodes.length > 0) {
+      for (const nc of nextCodes) {
+        const to = codeToPt.get(nc);
+        if (to) {
+          const laneStroke =
+            to.node.lane === 'assault'
+              ? 'rgba(249,115,22,0.75)'
+              : to.node.lane === 'stealth'
+              ? 'rgba(34,211,238,0.75)'
+              : 'rgba(56,189,248,0.65)';
+          edgeLines.push(
+            `<line x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" stroke="${laneStroke}" stroke-width="2" stroke-dasharray="5 3" />`
+          );
+        }
+      }
+    } else if (!hasBranches && i < pts.length - 1) {
+      const to = pts[i + 1];
+      edgeLines.push(
+        `<line x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" class="radar-track-line" stroke-width="2" stroke-dasharray="5 3" />`
+      );
+    }
+  }
+
   const activePt = nextNodeIndex >= 0 && nextNodeIndex < pts.length ? pts[nextNodeIndex] : null;
+  const activeCol = activePt ? (typeof activePt.node.col === 'number' ? activePt.node.col : activePt.idx) : -1;
 
   wrap.innerHTML = `
     <div class="radar-chart-header">
-      <span class="radar-chart-title">战术海图 · 雷达航迹</span>
-      <span class="radar-chart-vision">视野半径 ${visionRange} 节点${enableFog ? ' · 迷雾生效' : ''}</span>
+      <span class="radar-chart-title">${hasBranches ? '分岔雷达海图（上:强攻 / 下:隐蔽）' : '战术海图 · 雷达航迹'}</span>
+      <span class="radar-chart-vision">${nodes.length}节点 · 视野${visionRange}格${enableFog ? ' · 迷雾' : ''}</span>
     </div>
-    <svg class="radar-track-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="none" aria-hidden="true">
-      <path d="${pathD}" class="radar-track-line" fill="none" stroke-width="2" stroke-dasharray="6 4"/>
+    <svg class="radar-track-svg" style="height:${svgH}px;" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="none" aria-hidden="true">
+      ${edgeLines.join('')}
       ${pts
-        .map((p, idx) => {
-          const isCleared = clearedSet.has(idx);
-          const isCur = idx === nextNodeIndex;
-          const fill = isCleared ? '#34d399' : isCur ? '#38bdf8' : '#64748b';
+        .map((p) => {
+          const isCleared = clearedSet.has(p.idx);
+          const isCur = p.idx === nextNodeIndex;
+          const fill = isCleared
+            ? '#34d399'
+            : isCur
+            ? '#38bdf8'
+            : p.node.type === NODE_TYPES.ANCHORAGE
+            ? '#facc15'
+            : p.node.type === NODE_TYPES.BOSS
+            ? '#f87171'
+            : p.node.lane === 'assault'
+            ? '#fb923c'
+            : p.node.lane === 'stealth'
+            ? '#22d3ee'
+            : '#64748b';
           return `<circle cx="${p.x}" cy="${p.y}" r="${isCur ? 5.5 : 4}" fill="${fill}" stroke="#0f172a" stroke-width="1.5"/>`;
         })
         .join('')}
@@ -1092,29 +1449,37 @@ function createRadarSeaChartElement(
   nodes.forEach((node, idx) => {
     const isCleared = clearedSet.has(idx);
     const isCurrent = idx === nextNodeIndex;
+    const nodeCol = typeof node.col === 'number' ? node.col : idx;
     const isFogged =
       enableFog &&
       !isCleared &&
       !isCurrent &&
       !node.intelRevealed &&
-      nextNodeIndex >= 0 &&
-      idx > nextNodeIndex + visionRange;
+      activeCol >= 0 &&
+      nodeCol > activeCol + visionRange;
+
+    const laneTag =
+      node.lane === 'assault' ? '强攻' : node.lane === 'stealth' ? '隐蔽' : '';
 
     const step = document.createElement('div');
     step.className = `radar-node sortie-node-step ${isCleared ? 'is-cleared' : ''} ${
       isCurrent ? 'is-current' : ''
-    } ${node.type === NODE_TYPES.BOSS && !isFogged ? 'is-boss' : ''} ${isFogged ? 'is-fogged' : ''}`;
+    } ${node.type === NODE_TYPES.BOSS && !isFogged ? 'is-boss' : ''} ${
+      node.type === NODE_TYPES.ANCHORAGE && !isFogged ? 'is-anchorage' : ''
+    } ${node.lane === 'assault' ? 'is-lane-assault' : node.lane === 'stealth' ? 'is-lane-stealth' : ''} ${
+      isFogged ? 'is-fogged' : ''
+    }`;
     step.dataset.nodeCode = node.code;
     step.dataset.nodeType = isFogged ? 'fog' : node.type;
     step.innerHTML = isFogged
       ? `
       <span class="sortie-node-code">${escapeHtml(node.code)}</span>
-      <span class="sortie-node-type">迷雾海域</span>
-      <span class="sortie-node-name">???（需推进/高侦查）</span>
+      <span class="sortie-node-type">${laneTag ? `${laneTag}·` : ''}迷雾</span>
+      <span class="sortie-node-name">???</span>
     `
       : `
       <span class="sortie-node-code">${isCleared ? '✓' : escapeHtml(node.code)}</span>
-      <span class="sortie-node-type">${escapeHtml(NODE_TYPE_LABELS[node.type] || node.type)}</span>
+      <span class="sortie-node-type">${laneTag ? `${laneTag}·` : ''}${escapeHtml(NODE_TYPE_LABELS[node.type] || node.type)}</span>
       <span class="sortie-node-name">${escapeHtml(node.name)}</span>
     `;
     grid.appendChild(step);
@@ -1140,12 +1505,13 @@ async function renderSortieConsole() {
     formation,
     commander,
     fxStage,
-    assets,
     modules,
+    ui,
     uiKit,
   } = sortieState.context;
   const char = getFlagship();
   if (!char) {
+    ui.setImmersiveBattle(false);
     sortieState.container.innerHTML = `
       <section class="surface-card">
         <h2 class="section-title">暂无可用出征编队</h2>
@@ -1160,6 +1526,62 @@ async function renderSortieConsole() {
   const fleetSummary = formation
     ? formation.computeFleetSummary(runMemberIds, runFormationId)
     : null;
+
+  // ============================================================
+  // IMMERSIVE FULL-SCREEN BATTLE SCREEN MODE
+  // Automatically hides the sea chart & locks horizontal swipe!
+  // ============================================================
+  const activeCombatSession = combat.isInBattleScreen() ? combat.getSession() : null;
+  if (activeCombatSession || sortieState.postBattleSettlement) {
+    ui.setImmersiveBattle(true);
+    const displaySession = activeCombatSession || sortieState.postBattleSettlement.sessionSnapshot;
+    const currentActor = activeCombatSession ? combat.getCurrentActor() : null;
+    const availableActions = activeCombatSession ? combat.getAvailableActionsForCurrentActor() : [];
+
+    renderFullScreenBattleView({
+      host: sortieState.container,
+      session: displaySession,
+      fleetSummary,
+      currentActor,
+      availableActions,
+      busy: sortieState.busy,
+      autoRunning: sortieState.autoRunning,
+      fxStage,
+      uiKit,
+      settlementInfo: activeCombatSession ? null : sortieState.postBattleSettlement,
+      onSelectTarget: (enemyId) => {
+        combat.setTargetEnemy(enemyId);
+        renderSortieConsole();
+      },
+      onExecuteAction: (actionId) => handleBattleShipAction(actionId),
+      onToggleAuto: () => handleBattleToggleAuto(),
+      onToggleSpeed: () => {
+        if (fxStage && typeof fxStage.toggleBattleSpeed === 'function') {
+          const nextSpd = fxStage.toggleBattleSpeed();
+          uiKit.showToast(`战斗演出倍速切换为 ${nextSpd}x`, 'info');
+          renderSortieConsole();
+        }
+      },
+      onEnterNight: () => handleBattleEnterNight(),
+      onFinishEarly: () => handleBattleFinishEarly(),
+      onPostBattleContinue: () => {
+        sortieState.postBattleSettlement = null;
+        ui.setImmersiveBattle(false);
+        renderSortieConsole();
+      },
+      onPostBattleDockyard: () => {
+        sortieState.postBattleSettlement = null;
+        ui.setImmersiveBattle(false);
+        if (modules.has('port-dockyard')) modules.mount('port-dockyard', { transition: 'left' });
+      },
+      onPostBattleResupply: () => performQuickFleetResupply(),
+    });
+    return;
+  }
+
+  // Normal Sea-Chart Mode (unlock immersive battle)
+  ui.setImmersiveBattle(false);
+
   const fleetCap = formation ? formation.getFleetCap() : 3;
   const visionRange = fleetSummary?.visionRange ?? 2;
   const staggeredCost = fleetSummary?.staggeredStepCost || { fuel: 20, ammo: 18 };
@@ -1173,16 +1595,21 @@ async function renderSortieConsole() {
   const curHp = Math.min(effMaxHp, Math.round(Number(char.stats.hp ?? effMaxHp)));
   const isHeavyDamage = curHp / effMaxHp < 0.25;
 
-  const flagshipAvatarRes = assets
-    ? await assets.getAssetUrl(char.meta?.avatarAssetId || null, {
-        fallbackSeed: char.id,
-        fallbackLabel: char.name.slice(0, 6),
-      })
-    : { url: '' };
-
   sortieState.container.innerHTML = '';
   const root = document.createElement('div');
   root.className = 'sortie-root';
+
+  // Unified Full-Screen Subpage Top Bar (`← 返回港区` + Title + Fuel/Ammo)
+  root.appendChild(
+    uiKit.createSubpageHeader({
+      title: '出征分岔海图',
+      subtitle: '8~15 节点雷达海图 · 遇敌自动进入全屏战斗',
+      modules,
+      resources,
+      resourceKeys: ['fuel', 'ammo', 'steel'],
+      id: 'sortie-subpage-header',
+    })
+  );
 
   // 1. Unified 6-Resource Bar
   root.appendChild(createResourceOverviewBar(resources, { id: 'sortie-resource-bar' }));
@@ -1323,150 +1750,59 @@ async function renderSortieConsole() {
       })
     );
 
-    // Sub-panel A: Zero-Illustration Pure-SVG Slow-Motion Tactical Battlefield
-    if (combatSession) {
-      const enemy = combatSession.enemy;
-      const curSpeed = fxStage && typeof fxStage.getBattleSpeed === 'function' ? fxStage.getBattleSpeed() : 1;
-      const hasCarrier = Boolean(fleetSummary?.hasCarrier);
-      const combatPanel = document.createElement('div');
-      combatPanel.className = 'enemy-hud-card bf-stage';
-      combatPanel.id = 'sortie-combat-panel';
-
-      combatPanel.innerHTML = `
-        <div id="sortie-battlefield" class="bf-battlefield-wrap">
-          <div class="bf-topbar">
-            <span class="status-badge badge-danger">
-              ${enemy.forcedEngagement ? '主力决战 · 强制交战' : NODE_TYPE_LABELS[enemy.tier] || '战术遭遇'} · 第 ${combatSession.turn} 回合
-            </span>
-            <button type="button" id="btn-combat-speed-toggle" class="btn-secondary uikit-touch-target bf-speed-btn">
-              演出倍速：${curSpeed}x
-            </button>
-          </div>
-
-          <!-- Upper Unit Card: Enemy Force -->
-          <div class="bf-unit-card is-enemy" id="bf-enemy-card">
-            <div class="bf-unit-head">
-              <div class="bf-unit-identity">
-                <div class="bf-emblem-box">${buildEnemyEmblemSvg(enemy.tier)}</div>
-                <div class="bf-unit-meta">
-                  <strong class="bf-unit-name">${escapeHtml(enemy.name)}</strong>
-                  <span class="bf-unit-sub">${enemy.scanned ? `护甲 ${enemy.armor} · ${escapeHtml(enemy.threatLabel || '水面编队')}` : '护甲 ??? · 执行「扫描」揭露弱点'}</span>
-                </div>
-              </div>
-              <span class="status-badge ${enemy.scanned ? 'badge-warn' : 'badge-muted'}">
-                ${enemy.scanned ? `弱点：${escapeHtml(enemy.weaknessLabel)}` : '未扫描'}
-              </span>
+    // Sub-panel A: Branching Lane Fork Decision Card
+    if (Array.isArray(run.awaitingBranchChoices) && run.awaitingBranchChoices.length >= 2) {
+      const forkBox = document.createElement('div');
+      forkBox.className = 'sortie-branch-panel lab-stack-sm';
+      forkBox.id = 'sortie-branch-choices';
+      forkBox.innerHTML = `
+        <div class="section-header-row" style="margin-bottom:0;">
+          <strong style="font-size:14px;">航线分岔抉择 · 请选择前进航道</strong>
+          <span class="status-badge badge-warn">分岔节点</span>
+        </div>
+        ${run.awaitingBranchChoices
+          .map(
+            (ch) => `
+          <button type="button" class="sortie-branch-btn is-lane-${escapeHtml(ch.lane || 'main')}" data-choose-branch="${escapeHtml(ch.targetCode)}">
+            <div class="lab-slot-head">
+              <strong>${escapeHtml(ch.label)}（→ ${escapeHtml(ch.targetCode)}）</strong>
+              <span class="status-badge ${ch.lane === 'assault' ? 'badge-danger' : 'badge-ok'}">${escapeHtml(ch.badge || '可选航道')}</span>
             </div>
-            <div id="bf-enemy-hp-bar"></div>
-            <div class="cc-badge-row" id="sortie-enemy-intel">
-              ${
-                enemy.scanned
-                  ? `
-                <span class="status-badge badge-ok">已扫描 · 护甲 ${enemy.armor}</span>
-                <span class="status-badge badge-warn">弱点：${escapeHtml(enemy.weaknessLabel)}</span>
-                <span class="status-badge badge-danger">${escapeHtml(enemy.threatLabel || '水面编队')}${enemy.airThreat > 0 ? ` · 空袭${enemy.airThreat}` : ''}${enemy.subThreat > 0 ? ` · 潜艇${enemy.subThreat}` : ''}</span>
-              `
-                  : '<span class="status-badge badge-muted">护甲：??? · 威胁/弱点：???（执行「扫描」揭露）</span>'
-              }
-            </div>
-          </div>
-
-          <!-- Center Pure-SVG Trajectory & Choreography Arena -->
-          <div class="bf-arena" id="bf-svg-stage">
-            <div class="bf-banner" id="bf-banner" aria-live="polite">待命中 · 请下达战术指令</div>
-            <svg id="bf-svg-canvas" class="bf-svg-layer" viewBox="0 0 360 140" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
-            <div class="bf-callout" id="bf-callout" aria-live="polite"></div>
-          </div>
-
-          <!-- Lower Unit Card: Player Fleet -->
-          <div class="bf-unit-card is-player" id="bf-player-card">
-            <div class="bf-unit-head">
-              <div class="bf-unit-identity">
-                <img class="bf-avatar" src="${flagshipAvatarRes.url}" alt="${escapeHtml(char.name)}">
-                <div class="bf-unit-meta">
-                  <div class="bf-name-line">
-                    <span class="ship-class-ico">${getShipClassSvg(flagshipClass, { size: 18 })}</span>
-                    <strong class="bf-unit-name">${escapeHtml(char.name)}</strong>
-                  </div>
-                  <span class="bf-unit-sub">${fleetSummary ? `${fleetSummary.count}舰编队 · ${escapeHtml(fleetSummary.formationName)}` : '单舰突击'}${hasCarrier ? ' · 航母制空' : ''}</span>
-                </div>
-              </div>
-              <div class="cc-badge-row">
-                ${
-                  combatSession.lockOnBonus > 0
-                    ? `<span class="status-badge badge-ok" id="sortie-lockon-badge">锁定 +${combatSession.lockOnBonus}</span>`
-                    : ''
-                }
-                ${
-                  combatSession.evasionBuffTurns > 0
-                    ? `<span class="status-badge badge-ok">闪避减伤 (${combatSession.evasionBuffTurns}T)</span>`
-                    : ''
-                }
-              </div>
-            </div>
-            <div id="bf-player-hp-bar"></div>
-          </div>
-
-          <!-- Tactical Command Buttons -->
-          <div class="tactical-cmd-grid" id="sortie-tactical-cmds">
-            <button type="button" id="btn-cmd-scan" class="tactical-cmd-btn" data-combat-cmd="scan" ${sortieState.busy ? 'disabled' : ''}>
-              <span class="tactical-cmd-title">扫描（Scan）</span>
-              <span class="tactical-cmd-sub">全队侦查+轻巡强化 · 揭露弱点+锁定</span>
-            </button>
-            <button type="button" id="btn-cmd-evade" class="tactical-cmd-btn" data-combat-cmd="evade" ${sortieState.busy ? 'disabled' : ''}>
-              <span class="tactical-cmd-title">迂回（Evade）</span>
-              <span class="tactical-cmd-sub">全队机动+战术 · ${enemy.forcedEngagement ? '先手闪避减伤' : '全队无伤绕过'}</span>
-            </button>
-            <button type="button" id="btn-cmd-shelling" class="tactical-cmd-btn is-shelling" data-combat-cmd="shelling" ${sortieState.busy ? 'disabled' : ''}>
-              <span class="tactical-cmd-title">${hasCarrier ? '舰载机空袭（CV）' : '炮击（Shelling）'}</span>
-              <span class="tactical-cmd-sub">${hasCarrier ? '航母无视前排护甲 · 火力+侦查空袭' : '全队火力+防空/反潜 · 战列破甲齐射'}</span>
-            </button>
-            <button type="button" id="btn-cmd-torpedo" class="tactical-cmd-btn is-torpedo" data-combat-cmd="torpedo" ${sortieState.busy ? 'disabled' : ''}>
-              <span class="tactical-cmd-title">鱼雷（Torpedo）</span>
-              <span class="tactical-cmd-sub">驱逐高破甲暴击 · 反潜克制水下威胁</span>
-            </button>
-          </div>
+            <span class="cc-stat-sub">${escapeHtml(ch.desc || '')}</span>
+          </button>
+        `
+          )
+          .join('')}
+      `;
+      forkBox.querySelectorAll('[data-choose-branch]').forEach((btn) => {
+        btn.addEventListener('click', () => chooseBranchPath(btn.getAttribute('data-choose-branch')));
+      });
+      activeCard.appendChild(forkBox);
+    } else if (run.pendingAnchorage) {
+      // Sub-panel B: Temporary Anchorage Rest & Resupply Decision Card
+      const ancNode = run.nodes[run.pendingAnchorage.nodeIndex];
+      const cfg = ancNode?.anchorageConfig || { cost: { fuel: 22, steel: 18, silver: 20 }, healPct: 0.35, moraleGain: 20 };
+      const ancBox = document.createElement('div');
+      ancBox.className = 'sortie-anchorage-panel lab-stack-sm';
+      ancBox.id = 'sortie-anchorage-panel';
+      ancBox.innerHTML = `
+        <div class="section-header-row" style="margin-bottom:0;">
+          <strong>临时锚地：${escapeHtml(ancNode?.name || '避风锚地')}</strong>
+          <span class="status-badge badge-ok">应急休整点</span>
+        </div>
+        <p class="muted-text" style="font-size:12px; margin:0;">
+          可消耗少量物资（燃油 ${cfg.cost.fuel} / 钢材 ${cfg.cost.steel} / 银条 ${cfg.cost.silver}）为全队恢复 ${Math.round((cfg.healPct || 0.35) * 100)}% 耐久与 +${cfg.moraleGain || 20} 士气，或免消耗轻装继续航行。
+        </p>
+        <div class="lab-btn-grid">
+          <button type="button" id="btn-anchorage-rest" class="btn-primary uikit-touch-target">锚地整备恢复</button>
+          <button type="button" id="btn-anchorage-skip" class="btn-secondary uikit-touch-target">免消耗继续航行</button>
         </div>
       `;
-
-      const enemyBar = uiKit.createProgressBar({
-        label: '敌方耐久',
-        value: enemy.scanned ? enemy.hp : enemy.maxHp,
-        max: enemy.maxHp,
-        tone: 'danger',
-        showPercent: false,
-        sublabel: enemy.scanned ? `${enemy.hp} / ${enemy.maxHp}` : '??? / ???（未扫描）',
-      });
-      combatPanel.querySelector('#bf-enemy-hp-bar').appendChild(enemyBar.element);
-
-      const totalHp = fleetSummary ? fleetSummary.totalHp : curHp;
-      const totalMaxHp = fleetSummary ? Math.max(1, fleetSummary.totalMaxHp) : effMaxHp;
-      const playerBar = uiKit.createProgressBar({
-        label: '我方编队总耐久',
-        value: totalHp,
-        max: totalMaxHp,
-        tone: totalHp / totalMaxHp < 0.3 ? 'danger' : 'accent',
-        showPercent: false,
-        sublabel: `${totalHp} / ${totalMaxHp}`,
-      });
-      combatPanel.querySelector('#bf-player-hp-bar').appendChild(playerBar.element);
-
-      combatPanel.querySelector('#btn-combat-speed-toggle').addEventListener('click', () => {
-        if (fxStage && typeof fxStage.toggleBattleSpeed === 'function') {
-          const nextSpd = fxStage.toggleBattleSpeed();
-          const btn = combatPanel.querySelector('#btn-combat-speed-toggle');
-          if (btn) btn.textContent = `演出倍速：${nextSpd}x`;
-          uiKit.showToast(`战斗慢放演出已切换为 ${nextSpd}x`, 'info');
-        }
-      });
-
-      combatPanel.querySelectorAll('[data-combat-cmd]').forEach((btn) => {
-        btn.addEventListener('click', () => handleTacticalCommand(btn.getAttribute('data-combat-cmd')));
-      });
-
-      activeCard.appendChild(combatPanel);
+      ancBox.querySelector('#btn-anchorage-rest').addEventListener('click', () => resolveAnchorageAction(true));
+      ancBox.querySelector('#btn-anchorage-skip').addEventListener('click', () => resolveAnchorageAction(false));
+      activeCard.appendChild(ancBox);
     } else {
-      // Sub-panel B: Advance / Retreat Decision Controls
+      // Sub-panel C: Advance / Retreat & Post-Sortie Dockyard/Resupply Shortcuts
       if (isHeavyDamage && !run.completed) {
         const warn = document.createElement('div');
         warn.className = 'seaworthy-alert';
@@ -1479,7 +1815,7 @@ async function renderSortieConsole() {
       btnStack.className = 'lab-stack-sm';
       btnStack.id = 'sortie-decision-btns';
 
-      if (!run.completed) {
+      if (!run.completed && run.nodes[run.nextNodeIndex]) {
         const nextNode = run.nodes[run.nextNodeIndex];
         const advBtn = document.createElement('button');
         advBtn.type = 'button';
@@ -1501,6 +1837,22 @@ async function renderSortieConsole() {
       retBtn.textContent = run.completed ? '胜利凯旋 · 携带战利品返航回港区' : '携带战利品返航回港区';
       retBtn.addEventListener('click', () => retreatToPort());
       btnStack.appendChild(retBtn);
+
+      if (run.completed) {
+        const postRow = document.createElement('div');
+        postRow.className = 'lab-btn-grid';
+        postRow.innerHTML = `
+          <button type="button" id="btn-sortie-goto-dockyard" class="btn-secondary uikit-touch-target">直达船坞整备</button>
+          <button type="button" id="btn-sortie-quick-resupply" class="btn-secondary uikit-touch-target">一键补给全队</button>
+        `;
+        postRow.querySelector('#btn-sortie-goto-dockyard').addEventListener('click', async () => {
+          await retreatToPort();
+          if (modules.has('port-dockyard')) modules.mount('port-dockyard', { transition: 'left' });
+        });
+        postRow.querySelector('#btn-sortie-quick-resupply').addEventListener('click', () => performQuickFleetResupply());
+        btnStack.appendChild(postRow);
+      }
+
       activeCard.appendChild(btnStack);
     }
 
@@ -1560,8 +1912,8 @@ async function renderSortieConsole() {
     genCard.id = 'sortie-generator-card';
     genCard.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
-        <h2 class="section-title">随机航线生成器</h2>
-        <span class="status-badge badge-ok">3~6 节点 + 随机海况</span>
+        <h2 class="section-title">随机分岔海图生成器</h2>
+        <span class="status-badge badge-ok">8~15 节点 + 分岔/锚地</span>
       </div>
       <div class="cc-btn-3col" id="sortie-diff-chips">
         ${Object.values(SEA_DIFFICULTIES)

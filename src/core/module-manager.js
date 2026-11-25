@@ -104,6 +104,8 @@ export class ModuleManager {
       id: mod.id,
       name: mod.name,
       description: mod.description,
+      isSubpage: Boolean(mod.isSubpage),
+      lockSwipe: Boolean(mod.lockSwipe),
       active: this._activeModule?.id === mod.id,
     }));
   }

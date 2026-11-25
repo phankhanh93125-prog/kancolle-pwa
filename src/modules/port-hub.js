@@ -1772,57 +1772,39 @@ async function renderPortHub() {
     sectionElements.secretary = secCard;
   }
 
-  // 4. Port Operations Bar
+  // 4. Streamlined Port Operations Strip (Quick Sortie CTA + One-Tap Resupply)
   const serviceTargets = fleetState.count > 0 ? formation.getMembers() : secretary ? [secretary] : [];
   const servicePlan = computeFleetServicePlan(serviceTargets);
   const costText = servicePlan.needsService
     ? Object.entries(servicePlan.cost)
         .map(([k, v]) => `${resources.get(k)?.name || k} ${v}`)
         .join(' · ')
-    : '出征舰队状态已满，无需补给或修复';
+    : '出征舰队状态已满，随时可以启航';
 
   const opsCard = document.createElement('section');
   opsCard.className = 'surface-card lab-stack-sm';
   opsCard.id = 'port-ops-card';
   opsCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">港区指挥中枢</h2>
+      <h2 class="section-title">港区快捷出击与整备</h2>
       <span class="status-badge badge-muted" id="port-fleet-slot-badge">${fleetState.count} / ${fleetState.cap} 席位</span>
     </div>
-    <button type="button" id="btn-port-goto-sortie" class="btn-primary port-cta-btn">前往出征（${fleetState.count}舰 · ${escapeHtml(fleetSummary.formationName)}）</button>
+    <button type="button" id="btn-port-goto-sortie" class="btn-primary port-cta-btn">出征海图（${fleetState.count}舰 · ${escapeHtml(fleetSummary.formationName)}）</button>
     <button type="button" id="btn-port-resupply-repair" class="btn-secondary uikit-touch-target">
       一键补给与入渠修复（${serviceTargets.length}舰）
     </button>
     <p class="muted-text" id="port-service-cost-hint" style="font-size:12px;">整备预计：${escapeHtml(costText)}</p>
-    <div class="lab-btn-grid">
-      <button type="button" id="btn-port-goto-char" class="btn-secondary uikit-touch-target">角色控制台</button>
-      <button type="button" id="btn-port-goto-workshop" class="btn-secondary uikit-touch-target">物资工坊</button>
-      <button type="button" id="btn-port-goto-compendium" class="btn-secondary uikit-touch-target">图鉴与剧情包</button>
-      <button type="button" id="btn-port-goto-action" class="btn-secondary uikit-touch-target">行动事件台</button>
-    </div>
   `;
 
   opsCard.querySelector('#btn-port-goto-sortie').addEventListener('click', () => {
-    if (modules.has('sortie-console')) modules.mount('sortie-console');
+    if (modules.has('sortie-console')) modules.mount('sortie-console', { transition: 'left' });
   });
   opsCard.querySelector('#btn-port-resupply-repair').addEventListener('click', () =>
     performResupplyAndRepair(serviceTargets)
   );
-  opsCard.querySelector('#btn-port-goto-char').addEventListener('click', () => {
-    if (modules.has('character-console')) modules.mount('character-console');
-  });
-  opsCard.querySelector('#btn-port-goto-workshop').addEventListener('click', () => {
-    if (modules.has('supply-workshop')) modules.mount('supply-workshop');
-  });
-  opsCard.querySelector('#btn-port-goto-compendium').addEventListener('click', () => {
-    if (modules.has('compendium-studio')) modules.mount('compendium-studio');
-  });
-  opsCard.querySelector('#btn-port-goto-action').addEventListener('click', () => {
-    if (modules.has('action-console')) modules.mount('action-console');
-  });
   sectionElements.operations = opsCard;
 
-  // 5. Port Buildings & Facilities Grid (Dormitory, Dockyard, Formation, Expedition, Custom Buildings)
+  // 5. Dedicated Full-Screen Facilities Entry Hub (出征海图 / 舰队编成 / 舰娘宿舍 / 船坞整备 / 远征派遣 / 仓库工坊 / 图鉴内容库)
   const buffParts = [];
   if (globalBuffs.resourceRegenPct > 0) buffParts.push(`资源恢复 +${globalBuffs.resourceRegenPct}%`);
   if (globalBuffs.expBoostPct > 0) buffParts.push(`经验获取 +${globalBuffs.expBoostPct}%`);
@@ -1831,13 +1813,16 @@ async function renderPortHub() {
     buffParts.push(`${k} +${v}`);
   }
 
+  const itemCount = inventory ? inventory.listItems().length : 0;
+  const charCount = entities ? entities.list({ kind: 'character' }).length : 0;
+
   const bldCard = document.createElement('section');
   bldCard.className = 'surface-card lab-stack-sm';
   bldCard.id = 'port-buildings-card';
   bldCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">港区建筑设施（点击管理）</h2>
-      <span class="status-badge badge-ok">${4 + customBlds.length} 座设施</span>
+      <h2 class="section-title">港区功能设施（独立全屏页）</h2>
+      <span class="status-badge badge-ok">${7 + customBlds.length} 个入口</span>
     </div>
     ${
       buffParts.length > 0
@@ -1846,20 +1831,12 @@ async function renderPortHub() {
     }
 
     <div class="port-facility-grid-2" id="port-buildings-grid">
-      <button type="button" class="port-building-tile" id="btn-open-dormitory" data-open-facility="dormitory">
+      <button type="button" class="port-building-tile is-featured" id="btn-open-sortie-hub" data-open-facility="sortie">
         <div class="port-building-head">
-          <strong>宿舍 · Lv.${dorm.level}</strong>
-          <span class="status-badge badge-ok">${dorm.residents.length}/${dorm.capacity}床</span>
+          <strong>出征海图</strong>
+          <span class="status-badge badge-ok">8~15节点</span>
         </div>
-        <span class="port-building-sub">离线回士气与好感 · 投喂补给</span>
-      </button>
-
-      <button type="button" class="port-building-tile" id="btn-open-dockyard" data-open-facility="dockyard">
-        <div class="port-building-head">
-          <strong>船坞 · Lv.${dock.level}</strong>
-          <span class="status-badge ${dock.queue.length > 0 ? 'badge-warn' : 'badge-ok'}">${dock.queue.length}/${dock.capacity}渠位</span>
-        </div>
-        <span class="port-building-sub">入渠维修队列 · 新舰建造登记</span>
+        <span class="port-building-sub">分岔雷达海图 · 独立全屏战术战斗</span>
       </button>
 
       <button type="button" class="port-building-tile" id="btn-open-formation" data-open-facility="formation">
@@ -1867,15 +1844,55 @@ async function renderPortHub() {
           <strong>舰队编成</strong>
           <span class="status-badge badge-ok">${fleetState.count}/${fleetState.cap}舰</span>
         </div>
-        <span class="port-building-sub">当前阵型：${escapeHtml(fleetSummary.formationName)}</span>
+        <span class="port-building-sub">${escapeHtml(fleetSummary.formationName)} · 3~12人阶梯消耗</span>
+      </button>
+
+      <button type="button" class="port-building-tile" id="btn-open-dormitory" data-open-facility="dormitory">
+        <div class="port-building-head">
+          <strong>舰娘宿舍 · Lv.${dorm.level}</strong>
+          <span class="status-badge badge-ok">${dorm.residents.length}/${dorm.capacity}床</span>
+        </div>
+        <span class="port-building-sub">全员花名册（${charCount}名）· 离线回士气</span>
+      </button>
+
+      <button type="button" class="port-building-tile" id="btn-open-dockyard" data-open-facility="dockyard">
+        <div class="port-building-head">
+          <strong>船坞整备 · Lv.${dock.level}</strong>
+          <span class="status-badge ${dock.queue.length > 0 ? 'badge-warn' : 'badge-ok'}">${dock.queue.length}/${dock.capacity}渠位</span>
+        </div>
+        <span class="port-building-sub">入渠维修队列 · 新舰随机性格建造</span>
       </button>
 
       <button type="button" class="port-building-tile" id="btn-open-expedition" data-open-facility="expedition">
         <div class="port-building-head">
-          <strong>远征中心</strong>
+          <strong>远征派遣</strong>
           <span class="status-badge ${activeExps.length > 0 ? 'badge-warn' : 'badge-muted'}">${activeExps.length}支执行</span>
         </div>
         <span class="port-building-sub">离线计时后勤 · 调度 x${cmdProfile.effects.expeditionRewardMultiplier.toFixed(2)}</span>
+      </button>
+
+      <button type="button" class="port-building-tile" id="btn-open-workshop-hub" data-open-facility="workshop">
+        <div class="port-building-head">
+          <strong>仓库工坊</strong>
+          <span class="status-badge badge-ok">${itemCount} 件</span>
+        </div>
+        <span class="port-building-sub">紧凑分类装备仓储 · 强化与补给商店</span>
+      </button>
+
+      <button type="button" class="port-building-tile" id="btn-open-compendium-hub" data-open-facility="compendium">
+        <div class="port-building-head">
+          <strong>图鉴与内容库</strong>
+          <span class="status-badge badge-ok">大礼包/剧情</span>
+        </div>
+        <span class="port-building-sub">全要素图鉴 · 分支剧情包与模组导入</span>
+      </button>
+
+      <button type="button" class="port-building-tile" id="btn-open-charcard-hub" data-open-facility="character">
+        <div class="port-building-head">
+          <strong>舰娘角色卡</strong>
+          <span class="status-badge badge-muted">${charCount} 名</span>
+        </div>
+        <span class="port-building-sub">八维属性 · 性格词库与自定义槽位</span>
       </button>
 
       ${customBlds
@@ -1896,10 +1913,30 @@ async function renderPortHub() {
     <button type="button" id="btn-port-new-building" class="btn-primary uikit-touch-target">+ 建造新自定义建筑</button>
   `;
 
-  bldCard.querySelector('#btn-open-dormitory').addEventListener('click', () => openDormitorySheet());
-  bldCard.querySelector('#btn-open-dockyard').addEventListener('click', () => openDockyardSheet());
-  bldCard.querySelector('#btn-open-formation').addEventListener('click', () => openFormationSheet());
-  bldCard.querySelector('#btn-open-expedition').addEventListener('click', () => openExpeditionSheet());
+  bldCard.querySelector('#btn-open-sortie-hub').addEventListener('click', () => {
+    if (modules.has('sortie-console')) modules.mount('sortie-console', { transition: 'left' });
+  });
+  bldCard.querySelector('#btn-open-formation').addEventListener('click', () => {
+    if (modules.has('port-formation')) modules.mount('port-formation', { transition: 'left' });
+  });
+  bldCard.querySelector('#btn-open-dormitory').addEventListener('click', () => {
+    if (modules.has('port-dormitory')) modules.mount('port-dormitory', { transition: 'left' });
+  });
+  bldCard.querySelector('#btn-open-dockyard').addEventListener('click', () => {
+    if (modules.has('port-dockyard')) modules.mount('port-dockyard', { transition: 'left' });
+  });
+  bldCard.querySelector('#btn-open-expedition').addEventListener('click', () => {
+    if (modules.has('port-expedition')) modules.mount('port-expedition', { transition: 'left' });
+  });
+  bldCard.querySelector('#btn-open-workshop-hub').addEventListener('click', () => {
+    if (modules.has('supply-workshop')) modules.mount('supply-workshop', { transition: 'left' });
+  });
+  bldCard.querySelector('#btn-open-compendium-hub').addEventListener('click', () => {
+    if (modules.has('compendium-studio')) modules.mount('compendium-studio', { transition: 'left' });
+  });
+  bldCard.querySelector('#btn-open-charcard-hub').addEventListener('click', () => {
+    if (modules.has('character-console')) modules.mount('character-console', { transition: 'left' });
+  });
   bldCard.querySelector('#btn-port-new-building').addEventListener('click', () => openCreateCustomBuildingSheet(null));
 
   bldCard.querySelectorAll('[data-open-custom-building]').forEach((btn) => {
