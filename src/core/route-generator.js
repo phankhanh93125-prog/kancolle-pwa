@@ -153,9 +153,179 @@ function pickRandom(arr, rng = Math.random) {
   return arr[Math.floor(rng() * arr.length)];
 }
 
-export function buildEnemyTemplate(type, tierCfg, rng = Math.random, { lane = 'main' } = {}) {
+const ENEMY_CLASS_ARCHETYPES = Object.freeze({
+  BOSS: {
+    shipClass: 'BOSS',
+    role: 'boss',
+    title: '深海要塞旗舰',
+    hpMult: 1.45,
+    armorMult: 1.35,
+    atkMult: 1.28,
+    evasion: [44, 58],
+    aa: [55, 78],
+    asw: [35, 55],
+    torpedo: [50, 72],
+    stealth: 18,
+    weakness: 'torpedo',
+    weaknessLabel: '鱼雷/破甲弱点',
+  },
+  BB: {
+    shipClass: 'BB',
+    role: 'battleship',
+    title: '深海战列舰',
+    hpMult: 1.18,
+    armorMult: 1.25,
+    atkMult: 1.15,
+    evasion: [36, 48],
+    aa: [42, 62],
+    asw: [20, 35],
+    torpedo: [15, 28],
+    stealth: 10,
+    weakness: 'torpedo',
+    weaknessLabel: '鱼雷弱点',
+  },
+  CV: {
+    shipClass: 'CV',
+    role: 'carrier',
+    title: '深海航母',
+    hpMult: 0.96,
+    armorMult: 0.88,
+    atkMult: 1.05,
+    evasion: [52, 66],
+    aa: [58, 82],
+    asw: [22, 36],
+    torpedo: [10, 20],
+    stealth: 16,
+    weakness: 'aa',
+    weaknessLabel: '防空/空袭弱点',
+  },
+  CA: {
+    shipClass: 'CA',
+    role: 'cruiser',
+    title: '深海重巡洋舰',
+    hpMult: 0.92,
+    armorMult: 1.08,
+    atkMult: 0.96,
+    evasion: [54, 68],
+    aa: [44, 64],
+    asw: [34, 48],
+    torpedo: [46, 62],
+    stealth: 14,
+    weakness: 'shelling',
+    weaknessLabel: '炮击弱点',
+  },
+  CL: {
+    shipClass: 'CL',
+    role: 'escort',
+    title: '深海轻巡洋舰',
+    hpMult: 0.72,
+    armorMult: 0.78,
+    atkMult: 0.82,
+    evasion: [64, 78],
+    aa: [50, 70],
+    asw: [52, 72],
+    torpedo: [54, 70],
+    stealth: 18,
+    weakness: 'shelling',
+    weaknessLabel: '炮击弱点',
+  },
+  DD: {
+    shipClass: 'DD',
+    role: 'destroyer',
+    title: '深海高速驱逐舰',
+    hpMult: 0.58,
+    armorMult: 0.56,
+    atkMult: 0.78,
+    evasion: [74, 94],
+    aa: [34, 52],
+    asw: [56, 78],
+    torpedo: [68, 88],
+    stealth: 24,
+    weakness: 'shelling',
+    weaknessLabel: '炮击弱点',
+  },
+  SS: {
+    shipClass: 'SS',
+    role: 'sub',
+    title: '深海猎杀潜艇',
+    hpMult: 0.52,
+    armorMult: 0.48,
+    atkMult: 0.86,
+    evasion: [66, 86],
+    aa: [10, 20],
+    asw: [25, 40],
+    torpedo: [76, 98],
+    stealth: 36,
+    weakness: 'asw',
+    weaknessLabel: '反潜弱点',
+  },
+});
+
+export function buildEnemyUnitByClass(shipClass, idx, tierCfg, {
+  type = NODE_TYPES.ENCOUNTER,
+  baseHp = 60,
+  baseArmor = 6,
+  baseAtk = 14,
+  baseName = '',
+  depthRatio = 0,
+  strengthMultiplier = 1.0,
+  rng = Math.random,
+} = {}) {
+  const arch = ENEMY_CLASS_ARCHETYPES[shipClass] || ENEMY_CLASS_ARCHETYPES.DD;
+  const depthScale = 1 + clamp(Number(depthRatio) || 0, 0, 1) * 0.35;
+  const strMult = clamp(Number(strengthMultiplier) || 1.0, 0.5, 3.5);
+  const tierFactor = tierCfg?.id === 'high' ? 1.22 : tierCfg?.id === 'medium' ? 1.08 : 0.94;
+
+  const unitHp = Math.max(22, Math.round(baseHp * 0.52 * arch.hpMult * depthScale * strMult));
+  const unitArmor = Math.max(1, Math.round(baseArmor * arch.armorMult * (0.85 + strMult * 0.25)));
+  const unitAtk = Math.max(6, Math.round(baseAtk * 0.78 * arch.atkMult * (0.82 + strMult * 0.32)));
+  const evasion = Math.round(randInt(arch.evasion[0], arch.evasion[1], rng) * (0.94 + depthRatio * 0.14));
+  const aa = Math.round(randInt(arch.aa[0], arch.aa[1], rng) * tierFactor);
+  const asw = Math.round(randInt(arch.asw[0], arch.asw[1], rng) * tierFactor);
+  const torpedo = Math.round(randInt(arch.torpedo[0], arch.torpedo[1], rng) * tierFactor);
+
+  const labelIdx = idx === 0 && baseName ? `${baseName} · 旗舰` : `${arch.title} #${idx + 1}`;
+  return {
+    id: `en_${idx + 1}`,
+    name: labelIdx,
+    shipClass: arch.shipClass,
+    role: arch.role,
+    tier: type,
+    hp: unitHp,
+    maxHp: unitHp,
+    armor: unitArmor,
+    attackPower: unitAtk,
+    evasion,
+    aa,
+    asw,
+    torpedo,
+    stealth: arch.stealth,
+    airThreat: arch.shipClass === 'CV' || arch.shipClass === 'BOSS' ? Math.round(aa * 0.45) : 0,
+    subThreat: arch.shipClass === 'SS' ? Math.round(torpedo * 0.42) : 0,
+    weakness: arch.weakness,
+    weaknessLabel: arch.weaknessLabel,
+    threatLabel:
+      arch.shipClass === 'SS'
+        ? '水下潜艇'
+        : arch.shipClass === 'CV'
+        ? '深海航空编队'
+        : arch.shipClass === 'CA'
+        ? '重巡护卫'
+        : arch.shipClass === 'BB' || arch.shipClass === 'BOSS'
+        ? '主力重炮'
+        : '高速前卫',
+  };
+}
+
+export function buildEnemyTemplate(
+  type,
+  tierCfg,
+  rng = Math.random,
+  { lane = 'main', depthRatio = 0, fleetSize = 3, strengthMultiplier = 1.0 } = {}
+) {
   const isBoss = type === NODE_TYPES.BOSS;
   const isElite = type === NODE_TYPES.ELITE;
+  const diffId = tierCfg?.id || 'low';
   const hpMult = isBoss ? 1.55 : isElite ? 1.25 : 0.95;
   const atkMult = isBoss ? 1.3 : isElite ? 1.12 : 0.9;
   const armorBonus = isBoss ? 5 : isElite ? 3 : 0;
@@ -165,90 +335,109 @@ export function buildEnemyTemplate(type, tierCfg, rng = Math.random, { lane = 'm
   const attackPower = Math.round(randInt(tierCfg.enemyAtkRange[0], tierCfg.enemyAtkRange[1], rng) * atkMult);
   const weakness = lane === 'stealth' ? 'asw' : rng() < 0.5 ? 'shelling' : 'torpedo';
 
-  // Aerial & Submarine threat tiers so fleet AA (防空) and ASW (反潜) actively matter
-  const threatRoll = rng();
-  const baseThreat = isBoss ? 26 : isElite ? 19 : 13;
-  let airThreat = 0;
-  let subThreat = 0;
-  let threatLabel = '水面主力编队';
-  if (isBoss) {
-    airThreat = Math.round(baseThreat * (0.75 + rng() * 0.45));
-    subThreat = rng() < 0.55 ? Math.round(baseThreat * 0.7) : 0;
-    threatLabel = subThreat > 0 ? '海空潜立体主力' : '舰载机编队威胁';
-  } else if (lane === 'stealth' || threatRoll < 0.36) {
-    subThreat = Math.round(baseThreat * (0.85 + rng() * 0.4));
-    threatLabel = '敌方水下潜艇伏击';
-  } else if (lane === 'assault' && threatRoll < 0.65) {
-    airThreat = Math.round(baseThreat * (0.85 + rng() * 0.4));
-    threatLabel = '敌方航空压制威胁';
-  } else if (threatRoll < 0.72) {
-    airThreat = Math.round(baseThreat * (0.8 + rng() * 0.35));
-    threatLabel = '敌方航空威胁';
+  // Dynamic squad count: medium/high seas & deeper nodes scale up to 6~12 enemy ships!
+  const depthStep = clamp(Number(depthRatio) || 0, 0, 1);
+  const fleetAdj = Math.max(0, Math.round((Number(fleetSize) || 3) - 3) * 0.45);
+  let minShips = 2;
+  let maxShips = 3;
+  if (diffId === 'high') {
+    minShips = isBoss ? 8 : isElite || depthStep >= 0.45 ? 6 : 4;
+    maxShips = isBoss ? 12 : isElite || depthStep >= 0.45 ? 10 : 7;
+  } else if (diffId === 'medium') {
+    minShips = isBoss ? 6 : isElite || depthStep >= 0.5 ? 5 : 3;
+    maxShips = isBoss ? 10 : isElite || depthStep >= 0.5 ? 8 : 5;
   } else {
-    threatLabel = '常规水面炮雷编队';
+    minShips = isBoss ? 4 : isElite ? 3 : 2;
+    maxShips = isBoss ? 6 : isElite ? 4 : 3;
   }
-
-  const weaknessLabel =
-    weakness === 'asw' ? '反潜弱点' : weakness === 'shelling' ? '炮击弱点' : '鱼雷弱点';
+  const squadCount = clamp(Math.round(randInt(minShips, maxShips, rng) + fleetAdj), 2, 12);
 
   const baseName =
     lane === 'stealth' && !isBoss
       ? pickRandom(['深海潜艇猎杀群', '暗流隐蔽伏击队', '水下静默雷击群'], rng)
       : pickRandom(NODE_NAMES[type] || NODE_NAMES[NODE_TYPES.ENCOUNTER], rng);
 
-  // Build 1~3 individual enemy ships for the turn-by-turn tactical battle screen
-  const squadCount = isBoss ? 3 : isElite ? 2 : rng() < 0.55 ? 2 : 1;
-  const squad = [];
-  for (let idx = 0; idx < squadCount; idx++) {
-    const isLead = idx === 0;
-    const isSubEscort = !isLead && (subThreat > 0 || lane === 'stealth');
-    const isAirEscort = !isLead && !isSubEscort && airThreat > 0;
-    const unitHp = Math.max(24, Math.round(maxHp * (isLead ? 0.55 : 0.35)));
-    const unitArmor = Math.max(1, Math.round(armor * (isLead ? 1.05 : isSubEscort ? 0.55 : 0.8)));
-    const unitAtk = Math.max(6, Math.round(attackPower * (isLead ? 0.88 : 0.65)));
-    const unitWeakness = isSubEscort ? 'asw' : isAirEscort ? 'aa' : weakness;
-    const unitWeaknessLabel =
-      unitWeakness === 'asw'
-        ? '反潜弱点'
-        : unitWeakness === 'aa'
-        ? '防空/空袭弱点'
-        : unitWeakness === 'shelling'
-        ? '炮击弱点'
-        : '鱼雷弱点';
-
-    const unitName = isLead
-      ? isBoss
-        ? `${baseName} · 旗舰`
-        : baseName
-      : isSubEscort
-      ? `深海潜艇 · ${idx}号`
-      : isAirEscort
-      ? `轻型航母护卫 · ${idx}号`
-      : `护卫驱逐舰 · ${idx}号`;
-
-    squad.push({
-      id: `en_${idx + 1}`,
-      name: unitName,
-      role: isSubEscort ? 'sub' : isAirEscort ? 'carrier' : isLead && isBoss ? 'boss' : isLead ? 'flagship' : 'escort',
-      tier: type,
-      hp: unitHp,
-      maxHp: unitHp,
-      armor: unitArmor,
-      attackPower: unitAtk,
-      airThreat: isAirEscort || (isLead && airThreat > 0) ? airThreat : 0,
-      subThreat: isSubEscort || (isLead && subThreat > 0 && squadCount === 1) ? Math.max(12, subThreat) : 0,
-      weakness: unitWeakness,
-      weaknessLabel: unitWeaknessLabel,
-      threatLabel: isSubEscort ? '水下潜艇' : isAirEscort ? '航空护卫' : threatLabel,
-    });
+  // Compose realistic mixed enemy fleet classes (BOSS / BB / CV / CA / CL / DD / SS)
+  const classPlan = [];
+  if (isBoss) {
+    classPlan.push('BOSS');
+    if (squadCount >= 2) classPlan.push('CV');
+    if (squadCount >= 3) classPlan.push('CA');
+    if (squadCount >= 4) classPlan.push('BB');
+    if (squadCount >= 5) classPlan.push('DD');
+    if (squadCount >= 6) classPlan.push('SS');
+  } else if (lane === 'stealth') {
+    classPlan.push('SS');
+    if (squadCount >= 2) classPlan.push('DD');
+    if (squadCount >= 3) classPlan.push('SS');
+    if (squadCount >= 4) classPlan.push('CL');
+  } else if (lane === 'assault' || isElite) {
+    classPlan.push(rng() < 0.55 ? 'BB' : 'CV');
+    if (squadCount >= 2) classPlan.push('CA');
+    if (squadCount >= 3) classPlan.push('CV');
+    if (squadCount >= 4) classPlan.push('DD');
+  } else {
+    classPlan.push(rng() < 0.5 ? 'CL' : 'CA');
+    if (squadCount >= 2) classPlan.push('DD');
   }
+
+  const fillerPool =
+    lane === 'stealth'
+      ? ['SS', 'DD', 'CL', 'CA']
+      : diffId === 'high' || isBoss
+      ? ['BB', 'CV', 'CA', 'CL', 'DD', 'SS']
+      : ['CA', 'CL', 'DD', 'CV', 'SS'];
+  while (classPlan.length < squadCount) {
+    classPlan.push(pickRandom(fillerPool, rng));
+  }
+
+  const squad = classPlan.map((cls, idx) =>
+    buildEnemyUnitByClass(cls, idx, tierCfg, {
+      type,
+      baseHp: maxHp,
+      baseArmor: armor,
+      baseAtk: attackPower,
+      baseName: idx === 0 ? baseName : '',
+      depthRatio: depthStep,
+      strengthMultiplier,
+      rng,
+    })
+  );
+
+  const airThreat = squad.reduce((m, u) => Math.max(m, u.airThreat || 0), 0);
+  const subThreat = squad.reduce((m, u) => Math.max(m, u.subThreat || 0), 0);
+  const hasCarriers = squad.some((u) => u.shipClass === 'CV' || u.shipClass === 'BOSS');
+  const hasSubs = squad.some((u) => u.shipClass === 'SS');
+  const threatLabel =
+    hasCarriers && hasSubs
+      ? `海空潜联合舰队（${squad.length}舰）`
+      : hasSubs
+      ? `潜艇伏击集群（${squad.length}舰）`
+      : hasCarriers
+      ? `机动航空编队（${squad.length}舰）`
+      : `水面炮雷舰队（${squad.length}舰）`;
+
+  const weaknessLabel =
+    weakness === 'asw' ? '反潜弱点' : weakness === 'shelling' ? '炮击弱点' : '鱼雷弱点';
+
+  const isAmbush = lane === 'stealth' ? rng() < 0.65 : !isBoss && rng() < (diffId === 'high' ? 0.25 : 0.14);
+  const stealthRating = Math.round(
+    (lane === 'stealth' ? 42 : 24) +
+      (hasSubs ? 16 : 0) +
+      (diffId === 'high' ? 14 : diffId === 'medium' ? 8 : 0) +
+      depthStep * 14
+  );
 
   return {
     name: baseName,
     tier: type,
+    difficulty: diffId,
+    depthRatio: Number(depthStep.toFixed(2)),
     forcedEngagement: isBoss,
-    hp: maxHp,
-    maxHp,
+    isAmbush,
+    stealthRating,
+    hp: squad.reduce((s, u) => s + u.hp, 0),
+    maxHp: squad.reduce((s, u) => s + u.maxHp, 0),
     armor,
     attackPower,
     airThreat,
@@ -532,7 +721,15 @@ export class RouteGenerator {
    *   - Temporary Anchorage rest nodes (NODE_TYPES.ANCHORAGE)
    *   - Multi-ship enemy squads (enemyTemplate.squad) for turn-by-turn tactical combat
    */
-  generateRoute({ difficulty = 'low', nodeCount = null, commander = null, customEnemies = [], rng = Math.random } = {}) {
+  generateRoute({
+    difficulty = 'low',
+    nodeCount = null,
+    commander = null,
+    customEnemies = [],
+    fleetSize = 3,
+    strengthMultiplier = 1.0,
+    rng = Math.random,
+  } = {}) {
     const tier = SEA_DIFFICULTIES[difficulty] || SEA_DIFFICULTIES.low;
     const totalNodes = nodeCount
       ? clamp(Math.floor(nodeCount), 8, 15)
@@ -554,11 +751,13 @@ export class RouteGenerator {
     const remaining = totalNodes - 2; // 6..13
     const laneLen = clamp(Math.floor((remaining - 2) / 2), 2, 4); // 2..4 per branch
     const tailLen = Math.max(2, remaining - laneLen * 2); // 2..5 tail nodes
+    const maxCol = Math.max(1, 2 + laneLen + tailLen - 1);
 
     let revealedCount = 0;
 
     const makeNode = ({ code, type, lane = 'main', col = 0, forceReveal = false }) => {
       const isCombat = type === NODE_TYPES.ENCOUNTER || type === NODE_TYPES.ELITE || type === NODE_TYPES.BOSS;
+      const depthRatio = Number(clamp(col / maxCol, 0, 1).toFixed(2));
       const matchingCustom =
         isCombat && Array.isArray(customEnemies)
           ? customEnemies.filter((e) => e && e.tier === type)
@@ -568,11 +767,23 @@ export class RouteGenerator {
         if (matchingCustom.length > 0 && rng() < 0.35 && lane !== 'stealth') {
           const picked = deepClone(pickRandom(matchingCustom, rng));
           if (!Array.isArray(picked.squad) || picked.squad.length === 0) {
-            picked.squad = buildEnemyTemplate(type, tier, rng, { lane }).squad;
+            picked.squad = buildEnemyTemplate(type, tier, rng, {
+              lane,
+              depthRatio,
+              fleetSize,
+              strengthMultiplier,
+            }).squad;
           }
+          picked.depthRatio = depthRatio;
+          picked.difficulty = tier.id;
           enemyTemplate = picked;
         } else {
-          enemyTemplate = buildEnemyTemplate(type, tier, rng, { lane });
+          enemyTemplate = buildEnemyTemplate(type, tier, rng, {
+            lane,
+            depthRatio,
+            fleetSize,
+            strengthMultiplier,
+          });
         }
       }
       const name = isCombat ? enemyTemplate.name : pickRandom(NODE_NAMES[type] || NODE_NAMES[NODE_TYPES.RESOURCE], rng);
@@ -618,6 +829,9 @@ export class RouteGenerator {
         lane,
         laneLabel: BRANCH_LANE_META[lane]?.label || '主航道',
         col,
+        depthRatio,
+        difficulty: tier.id,
+        isAmbush: Boolean(enemyTemplate?.isAmbush),
         nextCodes: [],
         branchChoices: null,
         intelRevealed,

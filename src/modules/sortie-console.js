@@ -11,6 +11,8 @@
 
 import {
   CORE_STAT_DEFS,
+  ENEMY_STRENGTH_PRESETS,
+  clampEnemyStrengthMultiplier,
   getShipClassProfile,
   getShipClassSvg,
   resolveShipClass,
@@ -26,11 +28,16 @@ import {
 } from '../core/route-generator.js';
 import { COMBAT_COMMANDS } from '../core/tactical-combat.js';
 import { getActiveCharacterId, persistCharacterRoster } from './character-console.js';
-import { playBattleStepChoreography, renderFullScreenBattleView } from './battle-screen.js';
+import {
+  playBattleStepChoreography,
+  playOpeningChoreography,
+  renderFullScreenBattleView,
+} from './battle-screen.js';
 import { clamp } from '../core/calc-engine.js';
 
 const SORTIE_STORAGE_NS = 'core-sortie';
 const RUN_KEY = 'active-sortie-run-v2';
+const STRENGTH_MULT_KEY = 'enemy-strength-mult-v1';
 
 function deepClone(v) {
   return JSON.parse(JSON.stringify(v ?? null));
@@ -58,6 +65,7 @@ let sortieState = {
   container: null,
   context: null,
   selectedDifficulty: 'medium',
+  enemyStrengthMultiplier: 1.0,
   generatedRoute: null,
   selectedRouteId: null,
   activeRun: null,
@@ -68,11 +76,22 @@ let sortieState = {
   unsubs: [],
 };
 
+function setEnemyStrengthMultiplier(val) {
+  const clamped = clampEnemyStrengthMultiplier(val);
+  sortieState.enemyStrengthMultiplier = clamped;
+  if (sortieState.context?.rootStorage) {
+    sortieState.context.rootStorage.namespace(SORTIE_STORAGE_NS).set(STRENGTH_MULT_KEY, clamped);
+  }
+  return clamped;
+}
+
 export async function hydrateSortieConsole({ storage, routeGenerator, combat }) {
   if (routeGenerator) {
     await routeGenerator.init();
   }
   const scope = storage.namespace(SORTIE_STORAGE_NS);
+  const savedMult = scope.get(STRENGTH_MULT_KEY, 1.0);
+  sortieState.enemyStrengthMultiplier = clampEnemyStrengthMultiplier(savedMult);
   const savedRun = await scope.getLarge(RUN_KEY, null);
   sortieState.activeRun = savedRun && typeof savedRun === 'object' ? deepClone(savedRun) : null;
   if (combat && sortieState.activeRun?.combatSnapshot) {
@@ -216,7 +235,9 @@ async function launchSortie(route) {
   sortieState.activeRun = {
     routeId: route.id,
     routeName: route.name,
+    difficulty: route.difficulty || sortieState.selectedDifficulty || 'low',
     difficultyLabel: route.difficultyLabel || '标准海域',
+    enemyStrengthMultiplier: sortieState.enemyStrengthMultiplier || 1.0,
     hasBranches: Boolean(route.hasBranches),
     seaCondition: route.seaCondition ? deepClone(route.seaCondition) : null,
     characterId: lead.id,
@@ -464,16 +485,72 @@ async function advanceNextNode() {
   if (isCombatNodeType(node.type)) {
     sortieState.postBattleSettlement = null;
     sortieState.autoRunning = false;
-    combat.startEncounter({
+    const nodeDepthRatio =
+      node.depthRatio !== undefined
+        ? Number(node.depthRatio)
+        : Number((nodeIdx / Math.max(1, (run.nodes?.length || 1) - 1)).toFixed(2));
+    const startedSession = combat.startEncounter({
       characterId: char.id,
       fleetMemberIds: memberIds,
       formationId: run.formationId,
       node,
       seaCondition: run.seaCondition,
+      difficulty: run.difficulty || node.difficulty || 'low',
+      nodeDepthRatio,
+      strengthMultiplier: run.enemyStrengthMultiplier || sortieState.enemyStrengthMultiplier || 1.0,
     });
+
+    // Record opening events (Recon/Ambush, Opening Airstrike, Opening Torpedo) into sortie timeline
+    for (const oe of startedSession.openingEvents || []) {
+      run.reports.unshift({
+        id: `opn_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        nodeCode: node.code,
+        nodeName: `${node.name} · ${oe.title}`,
+        nodeType: oe.kind,
+        text: oe.text,
+        source: 'local',
+        degraded: false,
+        chips: [
+          ...(oe.damageDealt > 0 ? [{ text: `开幕伤敌 ${oe.damageDealt}` }] : []),
+          ...(oe.damageTaken > 0 ? [{ text: `我方受损 ${oe.damageTaken}`, negative: true }] : []),
+        ],
+        timestamp: Date.now(),
+      });
+    }
+
     await persistActiveRun();
-    uiKit.showToast(`节点 ${node.code} 遇敌：${node.name}！已切换至独立全屏战斗界面`, 'warn');
+    uiKit.showToast(
+      startedSession.reconStatus === 'ambushed'
+        ? `⚠ 节点 ${node.code} 遭遇敌方先制伏击！（敌 ${startedSession.enemies.length} 舰）`
+        : `节点 ${node.code} 遇敌：${node.name}（敌 ${startedSession.enemies.length} 舰）`,
+      startedSession.reconStatus === 'ambushed' ? 'error' : 'warn'
+    );
     await renderSortieConsole();
+
+    // Play Opening Phase SVG Choreography (Recon/Ambush -> Opening Airstrike -> Opening Torpedo)
+    const stageRoot = sortieState.container?.querySelector('#battle-fullscreen-stage');
+    if (stageRoot && Array.isArray(startedSession.openingEvents) && startedSession.openingEvents.length > 0) {
+      sortieState.busy = true;
+      try {
+        await playOpeningChoreography(stageRoot, {
+          openingEvents: startedSession.openingEvents,
+          fxStage: sortieState.context.fxStage,
+        });
+        combat.markOpeningPlayed();
+      } finally {
+        sortieState.busy = false;
+      }
+    }
+
+    const latestSess = combat.getSession();
+    if (latestSess && (latestSess.status === 'victory' || latestSess.status === 'defeated')) {
+      await finalizeBattleOutcome(latestSess);
+      await renderSortieConsole();
+      return;
+    }
+
+    // If high-speed enemies won initiative ahead of our first ally, execute their turns with SVG animation!
+    await drainPendingEnemyTurnsWithChoreography();
     return;
   }
 
@@ -825,9 +902,10 @@ async function finalizeBattleOutcome(session) {
     const affMult = commander ? commander.getAffinityGainMultiplier() : 1.0;
     const rewardFactor = session.status === 'victory' ? 1.0 : session.status === 'day_ended' ? 0.55 : 0;
 
+    const lootBonus = Math.max(0.8, Number(session.lootBonus) || 1.0);
     if (rewardFactor > 0) {
       for (const [rk, rawVal] of Object.entries(node.loot || {})) {
-        const val = Math.round((Number(rawVal) || 0) * rewardFactor * (1 + Math.max(-0.2, luckDropBonus)));
+        const val = Math.round((Number(rawVal) || 0) * rewardFactor * lootBonus * (1 + Math.max(-0.2, luckDropBonus)));
         if (val <= 0) continue;
         await resources.add(rk, val, { reason: `节点 ${node.code}·${node.name} 战利品` });
         run.loot[rk] = (run.loot[rk] || 0) + val;
@@ -839,7 +917,7 @@ async function finalizeBattleOutcome(session) {
         entities.adjustStat(m.id, 'affinity', aff, { min: 0, max: 100 });
         entities.adjustStat(m.id, 'morale', session.status === 'victory' ? 4 : 1, { min: 0, max: 100 });
         if (statRules && typeof statRules.grantShipExp === 'function') {
-          statRules.grantShipExp(entities, m.id, Math.round(shipExp * rewardFactor), {
+          statRules.grantShipExp(entities, m.id, Math.round(shipExp * rewardFactor * lootBonus), {
             reason: `节点 ${node.code}·${node.name} 战斗结算`,
           });
         }
@@ -847,7 +925,7 @@ async function finalizeBattleOutcome(session) {
     }
 
     if (commander) {
-      const expGain = node.type === NODE_TYPES.BOSS ? 45 : node.type === NODE_TYPES.ELITE ? 30 : 20;
+      const expGain = Math.round((node.type === NODE_TYPES.BOSS ? 45 : node.type === NODE_TYPES.ELITE ? 30 : 20) * lootBonus);
       await commander.grantExp(expGain, `节点 ${node.code} 结算`);
     }
 
@@ -910,6 +988,78 @@ async function finalizeBattleOutcome(session) {
   await persistActiveRun();
 }
 
+/**
+ * Play consecutive pending enemy initiative turns one-by-one with SVG choreography
+ * until the next allied shipgirl's turn, round transition, night prompt, or battle end.
+ */
+async function drainPendingEnemyTurnsWithChoreography({ maxSteps = 16, stopRound = null } = {}) {
+  const run = sortieState.activeRun;
+  if (!run || !sortieState.context) return { roundCompleted: false };
+  const { combat, entities, fxStage, rootStorage, uiKit } = sortieState.context;
+  let roundCompleted = false;
+  let steps = 0;
+
+  while (combat.isActive() && combat.isEnemyTurnPending() && steps < maxSteps) {
+    const preSess = combat.getSession();
+    if (stopRound !== null && preSess && preSess.round !== stopRound) break;
+
+    sortieState.busy = true;
+    await renderSortieConsole();
+    try {
+      const res = combat.executeEnemyTurn();
+      if (!res.ok) break;
+      const { turnEntry, session } = res;
+      const stageRoot = sortieState.container?.querySelector('#battle-fullscreen-stage');
+      if (stageRoot) {
+        await playBattleStepChoreography(stageRoot, { turnEntry, fxStage });
+      }
+
+      const nodeIdx = run.nextNodeIndex;
+      const node = run.nodes[nodeIdx] || { code: session.nodeCode, name: session.nodeName };
+      run.reports.unshift({
+        id: `cmbe_${Date.now()}_${turnEntry.turn}`,
+        nodeCode: node.code,
+        nodeName: `${node.name} · R${turnEntry.round} 敌:${turnEntry.actorName}·${turnEntry.commandLabel}`,
+        nodeType: 'enemy-action',
+        text: turnEntry.text,
+        source: 'local',
+        degraded: false,
+        chips: turnEntry.damageTaken > 0 ? [{ text: `我方受击 -${turnEntry.damageTaken}`, negative: true }] : [],
+        timestamp: Date.now(),
+      });
+
+      if (turnEntry.roundCompleted) roundCompleted = true;
+
+      if (
+        session.status === 'victory' ||
+        session.status === 'bypassed' ||
+        session.status === 'day_ended' ||
+        session.status === 'defeated'
+      ) {
+        sortieState.autoRunning = false;
+        await finalizeBattleOutcome(session);
+        break;
+      } else if (session.status === 'night_prompt') {
+        sortieState.autoRunning = false;
+        uiKit.showToast('昼战结束！请抉择是否追击进入夜战', 'warn');
+        await persistActiveRun();
+        break;
+      } else {
+        const char = getFlagship();
+        if (char) {
+          await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
+        }
+        await persistActiveRun();
+      }
+      steps += 1;
+    } finally {
+      sortieState.busy = false;
+      await renderSortieConsole();
+    }
+  }
+  return { roundCompleted };
+}
+
 async function handleBattleShipAction(actionId, { silentRender = false } = {}) {
   if (sortieState.busy || !sortieState.activeRun) return null;
   const run = sortieState.activeRun;
@@ -921,12 +1071,14 @@ async function handleBattleShipAction(actionId, { silentRender = false } = {}) {
     btn.disabled = true;
   });
 
+  let actionResult = null;
   try {
-    const res = await combat.executeShipAction(actionId);
+    const res = await combat.executeShipAction(actionId, { autoResolveEnemyTurns: false });
     if (!res.ok) {
       uiKit.showToast(res.reason || '无法执行战术指令', 'warn');
       return null;
     }
+    actionResult = res;
 
     const { turnEntry, session } = res;
     const stageRoot = sortieState.container?.querySelector('#battle-fullscreen-stage');
@@ -968,13 +1120,22 @@ async function handleBattleShipAction(actionId, { silentRender = false } = {}) {
       }
       await persistActiveRun();
     }
-    return res;
   } finally {
     sortieState.busy = false;
     if (!silentRender) {
       await renderSortieConsole();
     }
   }
+
+  // After our shipgirl finishes, automatically play any enemy ships whose initiative slot is next!
+  if (actionResult && combat.isActive() && combat.isEnemyTurnPending()) {
+    const drain = await drainPendingEnemyTurnsWithChoreography();
+    if (drain.roundCompleted && actionResult.turnEntry) {
+      actionResult.turnEntry.roundCompleted = true;
+    }
+    actionResult.session = combat.getSession();
+  }
+  return actionResult;
 }
 
 async function handleBattleToggleAuto() {
@@ -990,14 +1151,19 @@ async function handleBattleToggleAuto() {
 
   sortieState.autoRunning = true;
   combat.setAutoDelegate(true);
-  uiKit.showToast('本回合托管启动：按机动顺序自动执行各舰种专属指令', 'ok');
+  uiKit.showToast('本回合托管启动：按混合机动顺序自动执行本回合指令', 'ok');
   await renderSortieConsole();
 
   const startRound = combat.getSession()?.round || 1;
   let guardSteps = 0;
-  while (sortieState.autoRunning && combat.isActive() && guardSteps < 14) {
+  while (sortieState.autoRunning && combat.isActive() && guardSteps < 24) {
     const sess = combat.getSession();
     if (!sess || sess.status !== 'active' || sess.round !== startRound) break;
+    if (combat.isEnemyTurnPending()) {
+      const drain = await drainPendingEnemyTurnsWithChoreography({ stopRound: startRound });
+      if (drain.roundCompleted) break;
+      continue;
+    }
     const actor = combat.getCurrentActor();
     if (!actor) break;
     const picked = combat.pickAutoActionForActor(actor);
@@ -1023,6 +1189,9 @@ async function handleBattleEnterNight() {
   await persistActiveRun();
   uiKit.showToast('★ 追击进入夜战！交战拉近至近距离，雷击与近战暴击大幅强化', 'ok');
   await renderSortieConsole();
+  if (combat.isActive() && combat.isEnemyTurnPending()) {
+    await drainPendingEnemyTurnsWithChoreography();
+  }
 }
 
 async function handleBattleFinishEarly() {
@@ -1535,6 +1704,7 @@ async function renderSortieConsole() {
   if (activeCombatSession || sortieState.postBattleSettlement) {
     ui.setImmersiveBattle(true);
     const displaySession = activeCombatSession || sortieState.postBattleSettlement.sessionSnapshot;
+    const currentTurnSlot = activeCombatSession ? combat.getCurrentTurnSlot() : null;
     const currentActor = activeCombatSession ? combat.getCurrentActor() : null;
     const availableActions = activeCombatSession ? combat.getAvailableActionsForCurrentActor() : [];
 
@@ -1543,6 +1713,7 @@ async function renderSortieConsole() {
       session: displaySession,
       fleetSummary,
       currentActor,
+      currentTurnSlot,
       availableActions,
       busy: sortieState.busy,
       autoRunning: sortieState.autoRunning,
@@ -1906,14 +2077,16 @@ async function renderSortieConsole() {
     }
     root.appendChild(reportsWrap);
   } else {
-    // Procedural Route Generator Card
+    // Procedural Route Generator & Enemy Strength Scaling Card
+    const curMult = clampEnemyStrengthMultiplier(sortieState.enemyStrengthMultiplier);
+    const curLootBonusPct = Math.round(Math.max(0, curMult - 1) * 35);
     const genCard = document.createElement('section');
     genCard.className = 'surface-card lab-stack-sm';
     genCard.id = 'sortie-generator-card';
     genCard.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
-        <h2 class="section-title">随机分岔海图生成器</h2>
-        <span class="status-badge badge-ok">8~15 节点 + 分岔/锚地</span>
+        <h2 class="section-title">随机分岔海图与敌军强度</h2>
+        <span class="status-badge badge-ok">8~15 节点 · 动态 6~12 敌舰</span>
       </div>
       <div class="cc-btn-3col" id="sortie-diff-chips">
         ${Object.values(SEA_DIFFICULTIES)
@@ -1926,6 +2099,32 @@ async function renderSortieConsole() {
           )
           .join('')}
       </div>
+
+      <div class="sortie-strength-box" id="sortie-strength-panel">
+        <div class="lab-slot-head">
+          <strong style="font-size:13px;">敌军强度倍率</strong>
+          <span class="status-badge ${curMult >= 2.0 ? 'badge-danger' : curMult >= 1.4 ? 'badge-warn' : 'badge-ok'}" id="sortie-strength-badge">
+            当前 ${curMult.toFixed(1)}x${curLootBonusPct > 0 ? ` · 战利品 +${curLootBonusPct}%` : ''}
+          </span>
+        </div>
+        <div class="cc-btn-3col" id="sortie-strength-presets">
+          ${ENEMY_STRENGTH_PRESETS.map(
+            (p) => `
+            <button type="button" class="${Math.abs(curMult - p.multiplier) < 0.05 ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" data-strength-preset="${p.multiplier}">
+              ${escapeHtml(p.label)}
+            </button>
+          `
+          ).join('')}
+        </div>
+        <label class="sortie-slider-row">
+          <span class="muted-text" style="font-size:11.5px;">自定义滑块（0.5x ~ 3.5x）：</span>
+          <input type="range" id="sortie-strength-slider" min="0.5" max="3.5" step="0.1" value="${curMult.toFixed(1)}" />
+        </label>
+        <p class="muted-text" style="font-size:11px; margin:0;">
+          中高危海域与深层节点将随危级、节点深度、我方编队人数与强度倍率动态刷出 6~12 艘混合舰种敌舰并启用智能集火 AI。
+        </p>
+      </div>
+
       <button type="button" id="btn-sortie-gen-route" class="btn-primary port-cta-btn">随机生成新航线</button>
     `;
 
@@ -1935,16 +2134,45 @@ async function renderSortieConsole() {
         renderSortieConsole();
       });
     });
+    genCard.querySelectorAll('[data-strength-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextVal = setEnemyStrengthMultiplier(btn.getAttribute('data-strength-preset'));
+        uiKit.showToast(`敌军强度倍率已切换为 ${nextVal.toFixed(1)}x（已持久化保存）`, 'ok');
+        renderSortieConsole();
+      });
+    });
+    const sliderEl = genCard.querySelector('#sortie-strength-slider');
+    if (sliderEl) {
+      sliderEl.addEventListener('input', () => {
+        const val = setEnemyStrengthMultiplier(sliderEl.value);
+        const badge = genCard.querySelector('#sortie-strength-badge');
+        const bonusPct = Math.round(Math.max(0, val - 1) * 35);
+        if (badge) {
+          badge.textContent = `当前 ${val.toFixed(1)}x${bonusPct > 0 ? ` · 战利品 +${bonusPct}%` : ''}`;
+          badge.className = `status-badge ${val >= 2.0 ? 'badge-danger' : val >= 1.4 ? 'badge-warn' : 'badge-ok'}`;
+        }
+      });
+      sliderEl.addEventListener('change', () => {
+        const val = setEnemyStrengthMultiplier(sliderEl.value);
+        uiKit.showToast(`自定义敌军强度倍率已保存：${val.toFixed(1)}x`, 'ok');
+        renderSortieConsole();
+      });
+    }
     genCard.querySelector('#btn-sortie-gen-route').addEventListener('click', () => {
       const customEnemies = sortieState.context?.contentManager?.listCustomEnemies() || [];
       const fresh = routeGenerator.generateRoute({
         difficulty: sortieState.selectedDifficulty,
         commander,
         customEnemies,
+        fleetSize: fleetSummary?.count || 3,
+        strengthMultiplier: sortieState.enemyStrengthMultiplier,
       });
       sortieState.generatedRoute = fresh;
       sortieState.selectedRouteId = fresh.id;
-      uiKit.showToast(`已生成「${fresh.name}」（${fresh.nodes.length} 节点 · 海况：${fresh.seaCondition.label}）`, 'ok');
+      uiKit.showToast(
+        `已生成「${fresh.name}」（${fresh.nodes.length} 节点 · 强度 ${sortieState.enemyStrengthMultiplier.toFixed(1)}x · 海况：${fresh.seaCondition.label}）`,
+        'ok'
+      );
       renderSortieConsole();
     });
     root.appendChild(genCard);

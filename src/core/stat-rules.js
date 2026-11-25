@@ -1010,3 +1010,120 @@ export class StatRulesEngine {
     return result;
   }
 }
+
+// ============================================================
+// Enemy Strength Multipliers, Dynamic Scaling & Opening Strikes
+// ============================================================
+
+export const ENEMY_STRENGTH_PRESETS = Object.freeze([
+  { id: 'normal', label: '常规 1.0x', multiplier: 1.0, desc: '标准海战对抗节奏，适合日常推图与养成' },
+  { id: 'realistic', label: '拟真高难 1.5x', multiplier: 1.5, desc: '强化敌方防空/护甲与智能集火，掉落加成 +18%' },
+  { id: 'inferno', label: '深海炼狱 2.2x', multiplier: 2.2, desc: '大编队精英集群高压对抗，掉落加成 +42%' },
+]);
+
+export function clampEnemyStrengthMultiplier(val) {
+  const num = Number(val);
+  if (!Number.isFinite(num)) return 1.0;
+  return Number(clamp(Math.round(num * 10) / 10, 0.5, 3.5).toFixed(1));
+}
+
+/**
+ * Compute dynamic enemy stat & count scaling factors based on sea difficulty,
+ * current node depth ratio (0..1), allied fleet size, and player strength multiplier.
+ */
+export function computeDynamicEnemyScale({
+  difficulty = 'low',
+  nodeDepthRatio = 0,
+  fleetSize = 3,
+  strengthMultiplier = 1.0,
+} = {}) {
+  const diffMult = difficulty === 'high' ? 1.38 : difficulty === 'medium' ? 1.16 : 1.0;
+  const depthFactor = 1 + clamp(Number(nodeDepthRatio) || 0, 0, 1) * 0.42;
+  const sizeFactor = 1 + Math.max(0, Math.round(Number(fleetSize) || 1) - 3) * 0.11;
+  const strMult = clampEnemyStrengthMultiplier(strengthMultiplier);
+
+  const statScale = Number((diffMult * depthFactor * sizeFactor * strMult).toFixed(3));
+  const atkScale = Number((diffMult * (1 + clamp(Number(nodeDepthRatio) || 0, 0, 1) * 0.25) * (0.85 + strMult * 0.35)).toFixed(3));
+  const armorScale = Number((diffMult * (0.8 + strMult * 0.35)).toFixed(3));
+  const lootBonus = Number((1 + Math.max(0, strMult - 1) * 0.35).toFixed(2));
+
+  return {
+    diffMult,
+    depthFactor: Number(depthFactor.toFixed(3)),
+    sizeFactor: Number(sizeFactor.toFixed(3)),
+    strengthMultiplier: strMult,
+    statScale,
+    atkScale,
+    armorScale,
+    lootBonus,
+  };
+}
+
+/**
+ * Opening Airstrike formula:
+ * Calculates AA interception ratio from defender `aa` vs attacker `airPower`.
+ */
+export function computeOpeningAirstrikeOutcome({
+  attackerAirPower = 60,
+  defenderAa = 50,
+  aaAlertActive = false,
+  rng = Math.random,
+} = {}) {
+  const atk = Math.max(10, Number(attackerAirPower) || 10);
+  const defAa = Math.max(5, Number(defenderAa) || 5) * (aaAlertActive ? 1.45 : 1.0);
+  const ratio = defAa / (atk + defAa);
+  const interceptPct = Number(clamp(ratio * 0.88, 0.1, 0.78).toFixed(3));
+  const passThrough = Number(clamp(1 - interceptPct, 0.22, 0.9).toFixed(3));
+
+  let airState = '航空均势';
+  if (atk >= defAa * 1.6) airState = '制空确保';
+  else if (atk >= defAa * 1.15) airState = '航空优势';
+  else if (atk < defAa * 0.75) airState = '航空劣势';
+
+  const variance = 0.88 + rng() * 0.24;
+  const strikeDamageBase = Math.max(6, Math.round(atk * 0.36 * passThrough * variance));
+
+  return {
+    airState,
+    interceptPct,
+    interceptLabel: `防空拦截 ${Math.round(interceptPct * 100)}%`,
+    passThrough,
+    strikeDamageBase,
+  };
+}
+
+/**
+ * Opening Torpedo formula:
+ * High-torpedo units & submarines launch preemptive torpedoes suppressed by defender `asw` & `evasion`.
+ */
+export function computeOpeningTorpedoOutcome({
+  attackerTorpedo = 65,
+  defenderAsw = 45,
+  defenderEvasion = 55,
+  isSubmarine = false,
+  rng = Math.random,
+} = {}) {
+  const torp = Math.max(10, Number(attackerTorpedo) || 10);
+  const asw = Math.max(0, Number(defenderAsw) || 0);
+  const eva = Math.max(10, Number(defenderEvasion) || 10);
+
+  // Submarines are heavily suppressed by ASW; surface torp destroyers are suppressed by Evasion + ASW screening
+  const suppressWeight = isSubmarine ? asw * 0.8 + eva * 0.35 : eva * 0.68 + asw * 0.35;
+  const suppressRatio = clamp(suppressWeight / (torp * 1.35 + suppressWeight), 0.12, 0.76);
+  const hitChance = clamp(0.84 - suppressRatio * 0.52, 0.28, 0.88);
+  const hit = rng() <= hitChance;
+  const damageMult = Number(clamp(1 - suppressRatio * 0.72, 0.28, 0.92).toFixed(3));
+  const variance = 0.88 + rng() * 0.24;
+  const strikeDamageBase = hit ? Math.max(5, Math.round(torp * 0.38 * damageMult * variance)) : 0;
+
+  return {
+    hit,
+    hitChance: Number(hitChance.toFixed(3)),
+    suppressPct: Number(suppressRatio.toFixed(3)),
+    suppressLabel: isSubmarine
+      ? `反潜压制 ${Math.round(suppressRatio * 100)}%`
+      : `机动规避 ${Math.round(suppressRatio * 100)}%`,
+    strikeDamageBase,
+  };
+}
+

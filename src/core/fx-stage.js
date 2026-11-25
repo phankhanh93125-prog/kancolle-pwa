@@ -28,6 +28,7 @@ export const FX_TYPES = Object.freeze({
   DICE_ROLL: 'dice-roll',
   CRIT_FLASH: 'crit-flash',
   DAMAGE_FLASH: 'damage-flash',
+  AMBUSH_FLASH: 'ambush-flash',
 });
 
 export class FxStage {
@@ -282,6 +283,19 @@ export class FxStage {
       this.playSfx('hit');
       setTimeout(() => vig.remove(), 460);
     });
+
+    this.registerRenderer(FX_TYPES.AMBUSH_FLASH, (payload = {}, { overlay }) => {
+      if (!overlay) return;
+      const vig = document.createElement('div');
+      vig.className = 'fx-damage-vignette is-ambush';
+      overlay.appendChild(vig);
+      this.playSfx('hit');
+      this._vibrate([35, 25, 45]);
+      if (payload.label) {
+        this.playEffect(FX_TYPES.FLOAT_TEXT, { text: payload.label, tone: 'danger' });
+      }
+      setTimeout(() => vig.remove(), 620);
+    });
   }
 
   registerRenderer(type, fn) {
@@ -364,9 +378,53 @@ export class FxStage {
           this.playEffect(FX_TYPES.CRIT_FLASH, {});
         }
       }),
+      this._bus.on('combat:recon-result', (ev) => {
+        if (!ev) return;
+        this.playEffect(FX_TYPES.SCAN_RIPPLE, {
+          label: ev.success ? `索敌成功 · 锁定 +${ev.lockBonus || 1}` : '⚠ 索敌失利 · 敌军隐蔽接近',
+        });
+      }),
+      this._bus.on('combat:ambush', (ev) => {
+        this.playEffect(FX_TYPES.SHAKE, { heavy: true });
+        this.playEffect(FX_TYPES.AMBUSH_FLASH, {
+          label: `⚠ 敌方先制伏击${ev?.totalDamage ? ` -${ev.totalDamage} HP` : '！'}`,
+        });
+      }),
+      this._bus.on('combat:opening-airstrike', (ev) => {
+        if (!ev) return;
+        this.playSfx('scan');
+        this.playEffect(FX_TYPES.FLOAT_TEXT, {
+          text: `开幕航空战 · ${ev.airState || '空中交锋'}`,
+          tone: ev.allyDamage > 0 ? 'accent' : 'warn',
+        });
+      }),
+      this._bus.on('combat:opening-torpedo', (ev) => {
+        if (!ev) return;
+        this.playSfx('hit');
+        this.playEffect(FX_TYPES.FLOAT_TEXT, {
+          text: `开幕雷击${ev.allyDamage > 0 ? ` 敌-${ev.allyDamage}` : ''}${ev.enemyDamage > 0 ? ` 我-${ev.enemyDamage}` : ''}`,
+          tone: ev.enemyDamage > ev.allyDamage ? 'danger' : 'accent',
+        });
+      }),
+      this._bus.on('combat:enemy-action', (ev) => {
+        if (!ev) return;
+        if (ev.damage > 0) {
+          this.playEffect(FX_TYPES.SHAKE, { heavy: ev.damage >= 16 });
+          this.playEffect(FX_TYPES.DAMAGE_FLASH, {});
+          this.playEffect(FX_TYPES.FLOAT_TEXT, {
+            text: `${ev.enemyName || '敌舰'} ${ev.intentLabel || '反击'} -${ev.damage}`,
+            tone: 'danger',
+          });
+        } else if (ev.intentId === 'enemy_guard') {
+          this.playEffect(FX_TYPES.FLOAT_TEXT, {
+            text: `${ev.enemyName || '敌重巡'} 展开前排援护`,
+            tone: 'warn',
+          });
+        }
+      }),
       this._bus.on('combat:scan', (ev) => {
         this.playEffect(FX_TYPES.SCAN_RIPPLE, {
-          label: ev?.success ? '目标已锁定' : '扫描受干扰',
+          label: ev?.label || (ev?.success ? '目标已锁定' : '扫描受干扰'),
         });
       }),
       this._bus.on('combat:hit', (ev) => {
