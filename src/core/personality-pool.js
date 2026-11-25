@@ -240,6 +240,116 @@ function buildDefaultState() {
   };
 }
 
+export const DIALOGUE_CATEGORY_ALIASES = Object.freeze({
+  secretary_idle: ['secretary_idle', 'idle', 'daily', 'talk', 'port', 'greeting', 'idleLines', 'lines', 'secretaryIdle'],
+  secretary_night: ['secretary_night', 'night', 'midnight', 'evening', 'late_night', 'secretaryNight'],
+  outfit_change: ['outfit_change', 'outfit', 'costume', 'dress', 'outfitChange'],
+  dock_repair: ['dock_repair', 'repair', 'dock', 'dockIn', 'dockOut', 'dockRepair'],
+  sortie_start: ['sortie_start', 'sortie', 'departure', 'launch', 'sortieStart'],
+  combat_turn: ['combat_turn', 'combat', 'attack', 'shelling', 'battle', 'combatTurn'],
+  combat_skill: ['combat_skill', 'skill', 'torpedo', 'airstrike', 'crit', 'special', 'combatSkill'],
+  combat_ambush: ['combat_ambush', 'ambush', 'hit', 'damaged', 'warning', 'combatAmbush'],
+  combat_night_chase: ['combat_night_chase', 'night_battle', 'night_chase', 'nightCombat', 'combatNightChase'],
+  sortie_return: ['sortie_return', 'return', 'victory', 'mvp', 'clear', 'sortieReturn'],
+  gift: ['gift', 'present', 'reward'],
+  dorm: ['dorm', 'rest', 'dormitory'],
+});
+
+const ALIAS_TO_CANONICAL_CATEGORY = Object.freeze(
+  Object.entries(DIALOGUE_CATEGORY_ALIASES).reduce((acc, [canon, aliases]) => {
+    for (const a of aliases) {
+      acc[String(a).toLowerCase()] = canon;
+    }
+    return acc;
+  }, {})
+);
+
+export function normalizeLineArray(raw) {
+  if (!raw) return [];
+  const arr = Array.isArray(raw) ? raw : [raw];
+  const out = [];
+  const seen = new Set();
+  for (const item of arr) {
+    const str =
+      typeof item === 'string'
+        ? item.trim()
+        : item && typeof item === 'object'
+        ? String(item.text || item.content || item.line || item.dialogue || '').trim()
+        : '';
+    if (!str || seen.has(str)) continue;
+    seen.add(str);
+    out.push(str);
+  }
+  return out;
+}
+
+export function normalizeDialogueCategories(rawObj = {}) {
+  const result = {};
+  const appendLines = (canonKey, rawVal) => {
+    const lines = normalizeLineArray(rawVal);
+    if (lines.length === 0) return;
+    const prev = result[canonKey] || [];
+    const seen = new Set(prev);
+    for (const l of lines) {
+      if (!seen.has(l)) {
+        seen.add(l);
+        prev.push(l);
+      }
+    }
+    result[canonKey] = prev;
+  };
+
+  if (!rawObj || typeof rawObj !== 'object') return result;
+
+  // Support nested `dialogues` / `lines` / `voice` / `quotes` container (object OR flat array)
+  const nestedContainers = [rawObj.dialogues, rawObj.lines, rawObj.voice, rawObj.quotes, rawObj.templates];
+  for (const container of nestedContainers) {
+    if (!container) continue;
+    if (Array.isArray(container) || typeof container === 'string') {
+      appendLines('secretary_idle', container);
+    } else if (typeof container === 'object') {
+      for (const [k, v] of Object.entries(container)) {
+        const canon = ALIAS_TO_CANONICAL_CATEGORY[String(k).toLowerCase()];
+        if (canon) {
+          appendLines(canon, v);
+        } else if (k === 'combat' && v && typeof v === 'object' && !Array.isArray(v)) {
+          for (const [ck, cv] of Object.entries(v)) {
+            const cCanon = ALIAS_TO_CANONICAL_CATEGORY[String(ck).toLowerCase()] || 'combat_turn';
+            appendLines(cCanon, cv);
+          }
+        }
+      }
+    }
+  }
+
+  // Also scan direct top-level alias keys on the personality object itself
+  for (const [k, v] of Object.entries(rawObj)) {
+    if (k === 'dialogues' || k === 'lines' || k === 'voice' || k === 'quotes') continue;
+    const canon = ALIAS_TO_CANONICAL_CATEGORY[String(k).toLowerCase()];
+    if (canon) {
+      appendLines(canon, v);
+    }
+  }
+
+  return result;
+}
+
+function mergeDialogueMaps(prevMap = {}, nextMap = {}) {
+  const merged = deepClone(prevMap && typeof prevMap === 'object' ? prevMap : {});
+  for (const [k, lines] of Object.entries(nextMap || {})) {
+    const existing = Array.isArray(merged[k]) ? merged[k] : [];
+    const seen = new Set(existing);
+    for (const line of normalizeLineArray(lines)) {
+      if (!seen.has(line)) {
+        seen.add(line);
+        existing.push(line);
+      }
+    }
+    merged[k] = existing;
+  }
+  return merged;
+}
+
 export class PersonalityPool {
   /**
    * @param {{
@@ -292,25 +402,116 @@ export class PersonalityPool {
     return this._state.primary.find((p) => p.id === String(id)) || null;
   }
 
+  getPrimaryByIdOrName(idOrName) {
+    const q = String(idOrName || '').trim();
+    if (!q) return null;
+    return this._state.primary.find((p) => p.id === q || p.name === q) || null;
+  }
+
   getSecondary(id) {
     return this._state.secondary.find((s) => s.id === String(id)) || null;
   }
 
+  getSecondaryByIdOrName(idOrName) {
+    const q = String(idOrName || '').trim();
+    if (!q) return null;
+    return this._state.secondary.find((s) => s.id === q || s.name === q) || null;
+  }
+
+  getPrimaryDialogueLines(primaryIdOrName, category = 'secretary_idle') {
+    const canon = ALIAS_TO_CANONICAL_CATEGORY[String(category || '').toLowerCase()] || 'secretary_idle';
+    const pri = this.getPrimaryByIdOrName(primaryIdOrName);
+    if (!pri || !pri.dialogues || typeof pri.dialogues !== 'object') return [];
+    return normalizeLineArray(pri.dialogues[canon]);
+  }
+
+  getAllPrimaryDialogueLines(category = 'secretary_idle') {
+    const canon = ALIAS_TO_CANONICAL_CATEGORY[String(category || '').toLowerCase()] || 'secretary_idle';
+    const out = [];
+    for (const pri of this._state.primary) {
+      if (pri?.dialogues?.[canon]?.length) {
+        for (const line of pri.dialogues[canon]) {
+          out.push({ primaryId: pri.id, primaryName: pri.name, line });
+        }
+      }
+    }
+    return out;
+  }
+
+  getSecondaryIdleLines(secondaryIdOrName) {
+    const sec = this.getSecondaryByIdOrName(secondaryIdOrName);
+    if (!sec) return [];
+    const lines = normalizeLineArray(sec.idleLines);
+    if (sec.catchphrase && !lines.includes(sec.catchphrase)) {
+      lines.push(sec.catchphrase);
+    }
+    return lines;
+  }
+
+  getAllSecondaryIdleLines() {
+    const out = [];
+    for (const sec of this._state.secondary) {
+      for (const line of normalizeLineArray(sec.idleLines)) {
+        out.push({ secondaryId: sec.id, secondaryName: sec.name, line });
+      }
+    }
+    return out;
+  }
+
+  getPersonalitySummary(entity) {
+    if (!entity) return null;
+    const combo = this.ensurePersonalityOnEntity(entity);
+    const primary = this.getPrimaryByIdOrName(combo?.primaryId || combo?.primaryName) || {
+      id: combo?.primaryId || 'composed',
+      name: combo?.primaryName || '沉稳',
+    };
+    const secondary = this.getSecondaryByIdOrName(combo?.secondaryId || combo?.secondaryName) || {
+      id: combo?.secondaryId || 'protective',
+      name: combo?.secondaryName || '护短',
+    };
+    return {
+      combo,
+      primary: deepClone(primary),
+      secondaries: [deepClone(secondary)],
+    };
+  }
+
   async addPrimary(def = {}) {
-    const name = String(def.name || '').trim();
+    const name = String(def.name || def.title || def.label || '').trim();
     if (!name) throw new Error('主性格名称不能为空');
+    const dialogues = normalizeDialogueCategories(def);
+    const existingIdx = this._state.primary.findIndex(
+      (p) => (def.id && p.id === String(def.id)) || p.name === name
+    );
+
+    if (existingIdx >= 0) {
+      const prev = this._state.primary[existingIdx];
+      const merged = {
+        ...prev,
+        name,
+        toneTag: String(def.toneTag || def.tone || prev.toneTag || name).trim(),
+        summary: String(def.summary || def.desc || def.description || prev.summary || `带有「${name}」气场的独特主性格。`).trim(),
+        speechPrefix: def.speechPrefix !== undefined ? String(def.speechPrefix).trim() : prev.speechPrefix || '',
+        speechSuffix: def.speechSuffix !== undefined ? String(def.speechSuffix).trim() : prev.speechSuffix || '',
+        dialogues: mergeDialogueMaps(prev.dialogues, dialogues),
+      };
+      this._state.primary[existingIdx] = merged;
+      await this.persist();
+      this._emit('personality:pool-updated', { kind: 'primary', item: deepClone(merged) });
+      return deepClone(merged);
+    }
+
     const item = {
       id: String(def.id || `pri_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`),
       name,
-      toneTag: String(def.toneTag || name).trim(),
-      summary: String(def.summary || `带有「${name}」气场的独特主性格。`).trim(),
-      speechPrefix: String(def.speechPrefix || '').trim(),
-      speechSuffix: String(def.speechSuffix || '').trim(),
+      toneTag: String(def.toneTag || def.tone || name).trim(),
+      summary: String(def.summary || def.desc || def.description || `带有「${name}」气场的独特主性格。`).trim(),
+      speechPrefix: String(def.speechPrefix || def.prefix || '').trim(),
+      speechSuffix: String(def.speechSuffix || def.suffix || '').trim(),
+      dialogues,
       builtIn: false,
     };
-    const idx = this._state.primary.findIndex((p) => p.id === item.id);
-    if (idx >= 0) this._state.primary[idx] = { ...this._state.primary[idx], ...item };
-    else this._state.primary.push(item);
+    this._state.primary.push(item);
     await this.persist();
     this._emit('personality:pool-updated', { kind: 'primary', item: deepClone(item) });
     return deepClone(item);
@@ -320,6 +521,7 @@ export class PersonalityPool {
     const idx = this._state.primary.findIndex((p) => p.id === String(id));
     if (idx < 0) throw new Error('目标主性格词条不存在');
     const prev = this._state.primary[idx];
+    const nextDialogues = normalizeDialogueCategories(patch);
     const next = {
       ...prev,
       name: patch.name !== undefined ? String(patch.name).trim() || prev.name : prev.name,
@@ -327,6 +529,7 @@ export class PersonalityPool {
       summary: patch.summary !== undefined ? String(patch.summary).trim() : prev.summary,
       speechPrefix: patch.speechPrefix !== undefined ? String(patch.speechPrefix).trim() : prev.speechPrefix,
       speechSuffix: patch.speechSuffix !== undefined ? String(patch.speechSuffix).trim() : prev.speechSuffix,
+      dialogues: Object.keys(nextDialogues).length > 0 ? mergeDialogueMaps(prev.dialogues, nextDialogues) : prev.dialogues || {},
     };
     this._state.primary[idx] = next;
     await this.persist();
@@ -347,19 +550,47 @@ export class PersonalityPool {
   }
 
   async addSecondary(def = {}) {
-    const name = String(def.name || '').trim();
+    const name = String(def.name || def.title || def.label || '').trim();
     if (!name) throw new Error('副特质名称不能为空');
+    const incomingLines = normalizeLineArray([
+      ...(Array.isArray(def.idleLines) ? def.idleLines : def.idleLines ? [def.idleLines] : []),
+      ...(Array.isArray(def.lines) ? def.lines : def.lines ? [def.lines] : []),
+      ...(Array.isArray(def.dialogues) ? def.dialogues : def.dialogues ? [def.dialogues] : []),
+      ...(Array.isArray(def.quotes) ? def.quotes : def.quotes ? [def.quotes] : []),
+      ...(Array.isArray(def.catchphrases) ? def.catchphrases : []),
+      ...(def.catchphrase ? [def.catchphrase] : []),
+    ]);
+
+    const existingIdx = this._state.secondary.findIndex(
+      (s) => (def.id && s.id === String(def.id)) || s.name === name
+    );
+    if (existingIdx >= 0) {
+      const prev = this._state.secondary[existingIdx];
+      const mergedLines = normalizeLineArray([...(prev.idleLines || []), ...incomingLines]);
+      const merged = {
+        ...prev,
+        name,
+        habitTag: String(def.habitTag || def.tag || prev.habitTag || name).trim(),
+        summary: String(def.summary || def.desc || def.description || prev.summary || `拥有「${name}」鲜明副特质与生活习惯。`).trim(),
+        catchphrase: String(def.catchphrase || prev.catchphrase || mergedLines[0] || `果然还是「${name}」最让人安心呢。`).trim(),
+        idleLines: mergedLines,
+      };
+      this._state.secondary[existingIdx] = merged;
+      await this.persist();
+      this._emit('personality:pool-updated', { kind: 'secondary', item: deepClone(merged) });
+      return deepClone(merged);
+    }
+
     const item = {
       id: String(def.id || `sec_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`),
       name,
-      habitTag: String(def.habitTag || name).trim(),
-      summary: String(def.summary || `拥有「${name}」鲜明副特质与生活习惯。`).trim(),
-      catchphrase: String(def.catchphrase || `果然还是「${name}」最让人安心呢。`).trim(),
+      habitTag: String(def.habitTag || def.tag || name).trim(),
+      summary: String(def.summary || def.desc || def.description || `拥有「${name}」鲜明副特质与生活习惯。`).trim(),
+      catchphrase: String(def.catchphrase || incomingLines[0] || `果然还是「${name}」最让人安心呢。`).trim(),
+      idleLines: incomingLines,
       builtIn: false,
     };
-    const idx = this._state.secondary.findIndex((s) => s.id === item.id);
-    if (idx >= 0) this._state.secondary[idx] = { ...this._state.secondary[idx], ...item };
-    else this._state.secondary.push(item);
+    this._state.secondary.push(item);
     await this.persist();
     this._emit('personality:pool-updated', { kind: 'secondary', item: deepClone(item) });
     return deepClone(item);
@@ -369,12 +600,14 @@ export class PersonalityPool {
     const idx = this._state.secondary.findIndex((s) => s.id === String(id));
     if (idx < 0) throw new Error('目标副特质词条不存在');
     const prev = this._state.secondary[idx];
+    const incomingLines = normalizeLineArray(patch.idleLines || patch.lines || patch.dialogues);
     const next = {
       ...prev,
       name: patch.name !== undefined ? String(patch.name).trim() || prev.name : prev.name,
       habitTag: patch.habitTag !== undefined ? String(patch.habitTag).trim() : prev.habitTag,
       summary: patch.summary !== undefined ? String(patch.summary).trim() : prev.summary,
       catchphrase: patch.catchphrase !== undefined ? String(patch.catchphrase).trim() : prev.catchphrase,
+      idleLines: incomingLines.length > 0 ? normalizeLineArray([...(prev.idleLines || []), ...incomingLines]) : prev.idleLines || [],
     };
     this._state.secondary[idx] = next;
     await this.persist();
@@ -402,8 +635,8 @@ export class PersonalityPool {
     const primaryPool = this._state.primary.length > 0 ? this._state.primary : DEFAULT_PRIMARY_TRAITS;
     const secondaryPool = this._state.secondary.length > 0 ? this._state.secondary : DEFAULT_SECONDARY_TRAITS;
 
-    let pri = primaryId ? primaryPool.find((p) => p.id === primaryId) : null;
-    let sec = secondaryId ? secondaryPool.find((s) => s.id === secondaryId) : null;
+    let pri = primaryId ? primaryPool.find((p) => p.id === primaryId || p.name === primaryId) : null;
+    let sec = secondaryId ? secondaryPool.find((s) => s.id === secondaryId || s.name === secondaryId) : null;
 
     if (!pri || !sec) {
       for (let attempt = 0; attempt < 8; attempt++) {
@@ -486,7 +719,7 @@ export class PersonalityPool {
 
   serialize() {
     return {
-      version: 1,
+      version: 2,
       primary: deepClone(this._state.primary),
       secondary: deepClone(this._state.secondary),
       updatedAt: this._state.updatedAt,

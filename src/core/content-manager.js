@@ -20,6 +20,8 @@ import { clamp } from './calc-engine.js';
 import { NODE_TYPES } from './route-generator.js';
 import { ITEM_CATEGORIES, ITEM_CATEGORY_LABELS, STARTER_PACK_EQUIPMENT_16 } from './inventory-system.js';
 import { inferItemRarity, normalizeRarity } from './stat-rules.js';
+import { normalizeDialogueCategories, normalizeLineArray } from './personality-pool.js';
+import { normalizeAdaptiveStoryPack } from './story-pack-engine.js';
 import { LOG_CATEGORIES } from './log-system.js';
 
 const STORAGE_NS = 'core-content-studio';
@@ -861,14 +863,17 @@ export class ContentManager {
   }
 
   /**
-   * Smart Direct-Paste JSON Importer:
-   * Automatically strips optional Markdown ```json fences and recognizes & merges:
-   *   - Full World Mod JSON (`payload`)
-   *   - Story / Event Packs (single pack with `nodes`, array, or `{ packs / storyPacks }`)
-   *   - Characters / Shipgirls (single object, array, or `{ characters }`)
-   *   - Equipment & Outfits (single object, array, or `{ equipment / items / customEquipment }`)
-   *   - Personality Pool Traits (`primary` / `secondary`, `{ personalityPool }`, or single/array trait objects)
-   *   - Custom Enemies / Dialogues / Gifts
+   * Smart Adaptive JSON Field Normalizer & Importer:
+   * Automatically strips optional Markdown ```json fences and adapts common schema variants
+   * (full bundle object, bare array `[...]`, or single item object `{...}`):
+   *   - Personalities & Dialogue Pools: `personalities` / `personalityPool` / `personas` / `archetypes`
+   *     with full dialogue category alias mapping (`secretary_idle`/`idle`/`daily`, `secretary_night`/`night`, etc.)
+   *   - Secondary Traits: `traits` / `subTraits` / `quirks` with `idleLines` / `lines` / `dialogues`
+   *   - Events & Story Packs: `events` / `storyPacks` / `stories` / `chapters` / `packs`
+   *     with `scenes`/`nodes`/`steps`/`dialogues`, `speaker`/`name`/`character`, `text`/`content`/`line`,
+   *     `choices`/`options`/`branches`, `nextText`/`reply`, and `nextNodeId`/`nextSceneId`
+   *   - Ships & Equipment/Outfits: `ships`/`characters`, `equipments`/`equipment`/`outfits`/`items`
+   *     with automatic Chinese/English rarity normalization (`白/绿/蓝/紫/橙` or `common..legendary`).
    */
   async smartImportJSONText(
     rawInput,
@@ -884,36 +889,70 @@ export class ContentManager {
       try {
         parsed = JSON.parse(text);
       } catch (err) {
-        throw new Error(`JSON 语法解析失败：${err instanceof Error ? err.message : '请检查括号与逗号格式'}`);
+        throw new Error(`JSON 语法解析失败：${err instanceof Error ? err.message : '请检查括号、引号与逗号格式'}`);
       }
     } else {
       parsed = rawInput;
     }
 
     if (!parsed || typeof parsed !== 'object') {
-      throw new Error('粘贴的 JSON 必须是对象或数组结构');
+      throw new Error('导入失败：JSON 根节点必须是对象 `{...}` 或数组 `[...]`');
     }
 
     const counts = {
+      personalities: 0,
+      traits: 0,
+      storyPacks: 0,
       characters: 0,
       equipment: 0,
       enemies: 0,
       dialogues: 0,
       gifts: 0,
-      storyPacks: 0,
-      traits: 0,
+    };
+
+    const normalizeAdaptiveRarity = (rawRarity, fallbackItem = {}) => {
+      if (rawRarity !== undefined && rawRarity !== null && String(rawRarity).trim() !== '') {
+        const s = String(rawRarity).trim().toLowerCase();
+        if (s === '白' || s === '白色' || s === '普通' || s === 'n' || s === 'common' || s === '1') return 'common';
+        if (s === '绿' || s === '绿色' || s === '精良' || s === 'r' || s === 'uncommon' || s === '2') return 'uncommon';
+        if (s === '蓝' || s === '蓝色' || s === '稀有' || s === 'sr' || s === 'rare' || s === '3') return 'rare';
+        if (s === '紫' || s === '紫色' || s === '史诗' || s === 'ssr' || s === 'epic' || s === '4') return 'epic';
+        if (s === '橙' || s === '橙色' || s === '金' || s === '金色' || s === '传说' || s === 'ur' || s === 'legendary' || s === '5') {
+          return 'legendary';
+        }
+        return normalizeRarity(s);
+      }
+      return inferItemRarity(fallbackItem);
+    };
+
+    const toArrayEntries = (val, { keyAsName = false } = {}) => {
+      if (!val) return [];
+      if (Array.isArray(val)) return val.filter((x) => x && typeof x === 'object');
+      if (typeof val === 'object') {
+        return Object.entries(val)
+          .filter(([, v]) => v && typeof v === 'object')
+          .map(([k, v]) => ({
+            ...(keyAsName && !v.name && !v.title ? { name: k } : {}),
+            ...(v.id ? {} : { id: k }),
+            ...v,
+          }));
+      }
+      return [];
     };
 
     const importCharacterEntry = async (ch) => {
-      if (!ch || !ch.name || !this._entities) return false;
+      if (!ch || typeof ch !== 'object' || !this._entities) return false;
+      const name = String(ch.name ?? ch.title ?? ch.shipName ?? '').trim();
+      if (!name) return false;
       const cid = String(ch.id || `char_imp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`);
-      const baseStats = ch.stats && typeof ch.stats === 'object' ? ch.stats : {};
+      const baseStats = ch.stats && typeof ch.stats === 'object' ? ch.stats : ch;
       const maxHp = Math.max(20, Number(baseStats.maxHp ?? baseStats.hp ?? 90) || 90);
+      const shipType = String(ch.meta?.shipType || ch.shipType || ch.shipClass || ch.class || '驱逐舰').trim();
       const reg = this._entities.register({
         id: cid,
         kind: 'character',
-        name: String(ch.name).trim(),
-        tags: Array.isArray(ch.tags) ? [...ch.tags] : [ch.shipType || ch.meta?.shipType || '驱逐舰'],
+        name,
+        tags: Array.isArray(ch.tags) ? [...ch.tags] : [shipType],
         stats: {
           maxHp,
           hp: Math.min(maxHp, Number(baseStats.hp ?? maxHp) || maxHp),
@@ -934,7 +973,7 @@ export class ContentManager {
         },
         statBounds: ch.statBounds || { hp: { min: 0, max: 500 }, morale: { min: 0, max: 100 }, ap: { min: 0, max: 100 }, affinity: { min: 0, max: 200 } },
         meta: {
-          shipType: ch.meta?.shipType || ch.shipType || '驱逐舰',
+          shipType,
           roleTag: ch.meta?.roleTag || ch.roleTag || '自定义舰娘',
           avatarAssetId: ch.meta?.avatarAssetId || null,
           personality: ch.meta?.personality || ch.personality || '',
@@ -957,9 +996,20 @@ export class ContentManager {
       return true;
     };
 
-    const importEquipmentEntry = async (eq) => {
-      if (!eq || !eq.name) return false;
-      const tpl = await this.saveCustomEquipmentTemplate(eq);
+    const importEquipmentEntry = async (eq, { forceOutfit = false } = {}) => {
+      if (!eq || typeof eq !== 'object') return false;
+      const name = String(eq.name ?? eq.title ?? '').trim();
+      if (!name) return false;
+      const normalizedEq = {
+        ...eq,
+        name,
+        rarity: normalizeAdaptiveRarity(eq.rarity ?? eq.quality ?? eq.grade ?? eq.tier, eq),
+        category: forceOutfit || eq.outfitStyle || eq.style ? ITEM_CATEGORIES.OUTFIT : eq.category,
+        outfitStyle: eq.outfitStyle || eq.style || (forceOutfit ? '日常便装' : ''),
+        bonuses: eq.bonuses || eq.stats || {},
+        description: String(eq.description ?? eq.desc ?? '').trim(),
+      };
+      const tpl = await this.saveCustomEquipmentTemplate(normalizedEq);
       if (this._inventory) {
         await this.issueEquipmentToWarehouse(tpl.id, 1);
       }
@@ -967,72 +1017,264 @@ export class ContentManager {
       return true;
     };
 
+    const importPersonalityEntry = async (pri) => {
+      if (!pri || typeof pri !== 'object' || !personalityPool) return false;
+      const name = String(pri.name ?? pri.title ?? pri.label ?? pri.id ?? '').trim();
+      if (!name) return false;
+      const dialogues = normalizeDialogueCategories(pri);
+      await personalityPool.addPrimary({
+        ...pri,
+        name,
+        dialogues,
+      });
+      counts.personalities += 1;
+      return true;
+    };
+
     const importTraitEntry = async (tr, forceKind = null) => {
-      if (!tr || !tr.name || !personalityPool) return false;
-      const isSecondary =
-        forceKind === 'secondary' ||
-        tr.pool === 'secondary' ||
-        tr.type === 'secondary' ||
-        (tr.habitTag !== undefined || tr.catchphrase !== undefined);
-      if (isSecondary && typeof personalityPool.addSecondary === 'function') {
-        await personalityPool.addSecondary(tr);
-        counts.traits += 1;
-        return true;
+      if (!tr || typeof tr !== 'object' || !personalityPool) return false;
+      const name = String(tr.name ?? tr.title ?? tr.label ?? tr.id ?? '').trim();
+      if (!name) return false;
+      const hasCategorizedDialogues = Object.keys(normalizeDialogueCategories(tr)).length > 0;
+      const isExplicitPrimary =
+        forceKind === 'primary' ||
+        tr.pool === 'primary' ||
+        tr.type === 'primary' ||
+        (forceKind !== 'secondary' &&
+          (tr.toneTag !== undefined ||
+            tr.speechPrefix !== undefined ||
+            (hasCategorizedDialogues && tr.idleLines === undefined && tr.habitTag === undefined && tr.catchphrase === undefined)));
+      if (isExplicitPrimary) {
+        return importPersonalityEntry(tr);
       }
-      if (typeof personalityPool.addPrimary === 'function') {
-        await personalityPool.addPrimary(tr);
+      if (typeof personalityPool.addSecondary === 'function') {
+        await personalityPool.addSecondary({
+          ...tr,
+          name,
+          idleLines: normalizeLineArray(tr.idleLines ?? tr.lines ?? tr.dialogues ?? tr.quotes ?? tr.catchphrase),
+        });
         counts.traits += 1;
         return true;
       }
       return false;
     };
 
+    const importStoryOrEventEntry = async (ev) => {
+      if (!ev || typeof ev !== 'object' || !storyPacks) return false;
+      const normalized = normalizeAdaptiveStoryPack(ev?.pack && ev?.schema ? ev.pack : ev);
+      if (!normalized) return false;
+      await storyPacks.savePack({ ...normalized, builtIn: false });
+      counts.storyPacks += 1;
+      return true;
+    };
+
     const classifySingleItem = (obj) => {
       if (!obj || typeof obj !== 'object') return 'unknown';
-      if (Array.isArray(obj.nodes) && obj.name) return 'storyPack';
-      if (obj.schema && obj.pack && Array.isArray(obj.pack.nodes)) return 'storyPack';
-      if (obj.kind === 'character' || obj.shipType || obj.meta?.shipType || (obj.stats && (obj.stats.firepower !== undefined || obj.stats.maxHp !== undefined))) {
+      // Story / Event detection (supports nodes, scenes, steps, dialogues+choices, text+choices/options)
+      if (
+        Array.isArray(obj.nodes) ||
+        Array.isArray(obj.scenes) ||
+        Array.isArray(obj.steps) ||
+        (obj.schema && obj.pack && (Array.isArray(obj.pack.nodes) || Array.isArray(obj.pack.scenes))) ||
+        ((obj.title || obj.name) && (Array.isArray(obj.choices) || Array.isArray(obj.options) || Array.isArray(obj.branches)))
+      ) {
+        return 'storyPack';
+      }
+      // Primary Personality detection (including rich categorized dialogue objects)
+      const catDialogues = normalizeDialogueCategories(obj);
+      const hasCatKeys = Object.keys(catDialogues).length > 0;
+      if (
+        (obj.name || obj.title) &&
+        (obj.toneTag !== undefined ||
+          obj.speechPrefix !== undefined ||
+          obj.speechSuffix !== undefined ||
+          (obj.dialogues && typeof obj.dialogues === 'object' && !Array.isArray(obj.dialogues)) ||
+          (hasCatKeys && obj.idleLines === undefined && obj.habitTag === undefined && obj.catchphrase === undefined))
+      ) {
+        return 'personality';
+      }
+      // Secondary Trait detection
+      if (
+        (obj.name || obj.title) &&
+        (obj.idleLines !== undefined ||
+          obj.habitTag !== undefined ||
+          obj.catchphrase !== undefined ||
+          obj.quirk !== undefined ||
+          Array.isArray(obj.lines))
+      ) {
+        return 'trait';
+      }
+      // Shipgirl / Character detection
+      if (
+        obj.kind === 'character' ||
+        obj.shipType ||
+        obj.shipClass ||
+        obj.meta?.shipType ||
+        (obj.stats && (obj.stats.firepower !== undefined || obj.stats.maxHp !== undefined) && obj.bonuses === undefined && obj.equipmentType === undefined)
+      ) {
         return 'character';
       }
+      // Equipment / Outfit detection
       if (
         obj.bonuses !== undefined ||
         obj.equipmentType !== undefined ||
         obj.subCategory !== undefined ||
         obj.outfitStyle !== undefined ||
+        obj.rarity !== undefined ||
+        obj.quality !== undefined ||
         Object.values(ITEM_CATEGORIES).includes(obj.category)
       ) {
         return 'equipment';
       }
-      if (obj.toneTag !== undefined || obj.speechPrefix !== undefined || obj.habitTag !== undefined || obj.catchphrase !== undefined) {
-        return 'trait';
-      }
       if (obj.attackPower !== undefined || obj.weakness !== undefined) return 'enemy';
-      if (obj.text && !obj.name) return 'dialogue';
+      if ((obj.text || obj.line || obj.content) && !obj.name && !obj.title) return 'dialogue';
       if (obj.affinityGain !== undefined || obj.moraleGain !== undefined) return 'gift';
       return 'unknown';
     };
 
     const handleSingleOrArray = async (entry) => {
       const kind = classifySingleItem(entry);
-      if (kind === 'storyPack' && storyPacks) {
-        const res = await storyPacks.importPacksFromData(entry);
-        counts.storyPacks += res.importedCount;
+      if (kind === 'storyPack') {
+        await importStoryOrEventEntry(entry);
+      } else if (kind === 'personality') {
+        await importPersonalityEntry(entry);
+      } else if (kind === 'trait') {
+        await importTraitEntry(entry, 'secondary');
       } else if (kind === 'character') {
         await importCharacterEntry(entry);
       } else if (kind === 'equipment') {
         await importEquipmentEntry(entry);
-      } else if (kind === 'trait') {
-        await importTraitEntry(entry);
       } else if (kind === 'enemy') {
         await this.createCustomEnemy(entry);
         counts.enemies += 1;
       } else if (kind === 'dialogue') {
-        await this.createCustomDialogue(entry);
+        await this.createCustomDialogue({
+          ...entry,
+          text: entry.text || entry.line || entry.content,
+        });
         counts.dialogues += 1;
       } else if (kind === 'gift') {
         await this.createCustomGift(entry);
         counts.gifts += 1;
       }
+    };
+
+    const processContainer = async (rootObj) => {
+      let matched = false;
+
+      // 1. Personalities (`personalities` / `personalityPool` / `personas` / `archetypes`)
+      if (personalityPool) {
+        if (rootObj.personalityPool && typeof rootObj.personalityPool === 'object' && !Array.isArray(rootObj.personalityPool)) {
+          const pp = rootObj.personalityPool;
+          if (pp.primary || pp.personalities || pp.personas || pp.archetypes) {
+            matched = true;
+            for (const p of toArrayEntries(pp.primary || pp.personalities || pp.personas || pp.archetypes, { keyAsName: true })) {
+              await importPersonalityEntry(p);
+            }
+          }
+          if (pp.secondary || pp.traits || pp.subTraits || pp.quirks) {
+            matched = true;
+            for (const s of toArrayEntries(pp.secondary || pp.traits || pp.subTraits || pp.quirks, { keyAsName: true })) {
+              await importTraitEntry(s, 'secondary');
+            }
+          }
+        }
+        const priBuckets = [
+          rootObj.personalities,
+          Array.isArray(rootObj.personalityPool) ? rootObj.personalityPool : null,
+          rootObj.personas,
+          rootObj.archetypes,
+          rootObj.primary,
+        ].filter(Boolean);
+        for (const bucket of priBuckets) {
+          const entries = toArrayEntries(bucket, { keyAsName: true });
+          if (entries.length > 0) {
+            matched = true;
+            for (const p of entries) await importPersonalityEntry(p);
+          }
+        }
+
+        // 2. Secondary Traits (`traits` / `subTraits` / `quirks` / `secondary`)
+        const secBuckets = [rootObj.traits, rootObj.subTraits, rootObj.quirks, rootObj.secondary].filter(Boolean);
+        for (const bucket of secBuckets) {
+          const entries = toArrayEntries(bucket, { keyAsName: true });
+          if (entries.length > 0) {
+            matched = true;
+            for (const t of entries) await importTraitEntry(t, 'secondary');
+          }
+        }
+      }
+
+      // 3. Events & Story Packs (`events` / `storyPacks` / `stories` / `chapters` / `packs`)
+      if (storyPacks) {
+        const storyBuckets = [
+          rootObj.events,
+          rootObj.storyPacks,
+          rootObj.stories,
+          rootObj.chapters,
+          rootObj.packs,
+        ].filter(Boolean);
+        for (const bucket of storyBuckets) {
+          const entries = toArrayEntries(bucket, { keyAsName: true });
+          if (entries.length > 0) {
+            matched = true;
+            for (const ev of entries) await importStoryOrEventEntry(ev);
+          }
+        }
+      }
+
+      // 4. Ships / Characters (`ships` / `characters` / `shipgirls` / `roster`)
+      const shipBuckets = [rootObj.ships, rootObj.characters, rootObj.shipgirls, rootObj.roster].filter(Array.isArray);
+      for (const bucket of shipBuckets) {
+        matched = true;
+        for (const ch of bucket) await importCharacterEntry(ch);
+      }
+
+      // 5. Equipment & Outfits (`equipments` / `equipment` / `customEquipment` / `items` / `outfits`)
+      const eqBuckets = [rootObj.customEquipment, rootObj.equipments, rootObj.equipment, rootObj.items].filter(Array.isArray);
+      for (const bucket of eqBuckets) {
+        matched = true;
+        for (const eq of bucket) await importEquipmentEntry(eq);
+      }
+      if (Array.isArray(rootObj.outfits)) {
+        matched = true;
+        for (const outfit of rootObj.outfits) await importEquipmentEntry(outfit, { forceOutfit: true });
+      }
+
+      // 6. Enemies / Dialogues / Gifts
+      const enemyArr = rootObj.customEnemies || rootObj.enemies;
+      if (Array.isArray(enemyArr)) {
+        matched = true;
+        for (const en of enemyArr) {
+          if (en && (en.name || en.title)) {
+            await this.createCustomEnemy({ ...en, name: en.name || en.title });
+            counts.enemies += 1;
+          }
+        }
+      }
+      const dlgArr = rootObj.customDialogues || (Array.isArray(rootObj.dialogues) && !rootObj.name && !rootObj.title ? rootObj.dialogues : null);
+      if (Array.isArray(dlgArr)) {
+        matched = true;
+        for (const d of dlgArr) {
+          const line = typeof d === 'string' ? d : d?.text || d?.content || d?.line;
+          if (line) {
+            await this.createCustomDialogue(typeof d === 'string' ? { text: d } : { ...d, text: line });
+            counts.dialogues += 1;
+          }
+        }
+      }
+      const giftArr = rootObj.customGifts || rootObj.gifts;
+      if (Array.isArray(giftArr)) {
+        matched = true;
+        for (const g of giftArr) {
+          if (g && (g.name || g.title)) {
+            await this.createCustomGift({ ...g, name: g.name || g.title });
+            counts.gifts += 1;
+          }
+        }
+      }
+
+      return matched;
     };
 
     // Case 1: Full World Mod JSON (`payload`)
@@ -1043,120 +1285,59 @@ export class ContentManager {
       counts.enemies += modRes.enemies || 0;
       counts.dialogues += modRes.dialogues || 0;
       counts.gifts += modRes.gifts || 0;
-
-      if (storyPacks && (Array.isArray(parsed.payload.storyPacks) || Array.isArray(parsed.payload.packs))) {
-        const res = await storyPacks.importPacksFromData(parsed.payload.storyPacks || parsed.payload.packs);
-        counts.storyPacks += res.importedCount;
-      }
-      if (personalityPool && parsed.payload.personalityPool) {
-        for (const p of parsed.payload.personalityPool.primary || []) await importTraitEntry(p, 'primary');
-        for (const s of parsed.payload.personalityPool.secondary || []) await importTraitEntry(s, 'secondary');
-      }
+      await processContainer(parsed.payload);
     } else if (Array.isArray(parsed)) {
-      // Case 2: JSON Array of mixed or uniform objects
+      // Case 2: Bare JSON Array `[...]`
       for (const entry of parsed) {
         await handleSingleOrArray(entry);
       }
     } else {
-      // Case 3: Container object with named collections OR a single entity/item/pack/trait
-      let matchedContainer = false;
-
-      if (Array.isArray(parsed.characters)) {
-        matchedContainer = true;
-        for (const ch of parsed.characters) await importCharacterEntry(ch);
-      }
-      const eqArr = parsed.customEquipment || parsed.equipment || parsed.items;
-      if (Array.isArray(eqArr)) {
-        matchedContainer = true;
-        for (const eq of eqArr) await importEquipmentEntry(eq);
-      }
-      const enemyArr = parsed.customEnemies || parsed.enemies;
-      if (Array.isArray(enemyArr)) {
-        matchedContainer = true;
-        for (const en of enemyArr) {
-          if (en && en.name) {
-            await this.createCustomEnemy(en);
-            counts.enemies += 1;
-          }
-        }
-      }
-      const dlgArr = parsed.customDialogues || parsed.dialogues;
-      if (Array.isArray(dlgArr)) {
-        matchedContainer = true;
-        for (const d of dlgArr) {
-          if (d && d.text) {
-            await this.createCustomDialogue(d);
-            counts.dialogues += 1;
-          }
-        }
-      }
-      const giftArr = parsed.customGifts || parsed.gifts;
-      if (Array.isArray(giftArr)) {
-        matchedContainer = true;
-        for (const g of giftArr) {
-          if (g && g.name) {
-            await this.createCustomGift(g);
-            counts.gifts += 1;
-          }
-        }
-      }
-      if (storyPacks && (Array.isArray(parsed.packs) || Array.isArray(parsed.storyPacks))) {
-        matchedContainer = true;
-        const res = await storyPacks.importPacksFromData(parsed.packs || parsed.storyPacks);
-        counts.storyPacks += res.importedCount;
-      }
-      if (personalityPool) {
-        const poolObj = parsed.personalityPool || parsed;
-        if (Array.isArray(poolObj.primary)) {
-          matchedContainer = true;
-          for (const p of poolObj.primary) await importTraitEntry(p, 'primary');
-        }
-        if (Array.isArray(poolObj.secondary)) {
-          matchedContainer = true;
-          for (const s of poolObj.secondary) await importTraitEntry(s, 'secondary');
-        }
-        if (Array.isArray(parsed.traits)) {
-          matchedContainer = true;
-          for (const t of parsed.traits) await importTraitEntry(t);
-        }
-      }
-
-      if (!matchedContainer) {
+      // Case 3: Container object with alias collections OR single item `{...}`
+      const matched = await processContainer(parsed);
+      if (!matched) {
         await handleSingleOrArray(parsed);
       }
     }
 
     const total =
+      counts.personalities +
+      counts.traits +
+      counts.storyPacks +
       counts.characters +
       counts.equipment +
       counts.enemies +
       counts.dialogues +
-      counts.gifts +
-      counts.storyPacks +
-      counts.traits;
+      counts.gifts;
+
     if (total === 0) {
-      throw new Error('未识别到可导入的舰娘、装备/服装、性格词条、敌舰或事件/剧情包字段，请检查 JSON 结构');
+      const detectedKeys = Array.isArray(parsed)
+        ? `数组长度 ${parsed.length}`
+        : `检测到字段：${Object.keys(parsed).slice(0, 8).join(', ') || '(空对象)'}`;
+      throw new Error(
+        `自适应识别失败（${detectedKeys}）：未匹配到性格(personalities/personas)、特质(traits/quirks)、剧情事件(events/storyPacks/scenes)、舰娘(ships/characters)或装备服装(equipments/outfits/items)结构`
+      );
     }
 
     await this.persist();
     const parts = [];
-    if (counts.characters > 0) parts.push(`舰娘 ${counts.characters}`);
-    if (counts.equipment > 0) parts.push(`装备/服装 ${counts.equipment}`);
-    if (counts.traits > 0) parts.push(`性格词条 ${counts.traits}`);
-    if (counts.storyPacks > 0) parts.push(`剧情/事件包 ${counts.storyPacks}`);
-    if (counts.enemies > 0) parts.push(`敌舰 ${counts.enemies}`);
-    if (counts.dialogues > 0) parts.push(`台词 ${counts.dialogues}`);
-    if (counts.gifts > 0) parts.push(`礼物 ${counts.gifts}`);
-    const summaryText = parts.join(' · ');
+    if (counts.personalities > 0) parts.push(`新增 ${counts.personalities} 种性格`);
+    if (counts.traits > 0) parts.push(`${counts.traits} 个特质`);
+    if (counts.storyPacks > 0) parts.push(`${counts.storyPacks} 个剧情事件`);
+    if (counts.characters > 0) parts.push(`${counts.characters} 名舰娘`);
+    if (counts.equipment > 0) parts.push(`${counts.equipment} 件装备/服装`);
+    if (counts.enemies > 0) parts.push(`${counts.enemies} 种敌舰`);
+    if (counts.dialogues > 0) parts.push(`${counts.dialogues} 条台词`);
+    if (counts.gifts > 0) parts.push(`${counts.gifts} 种礼物`);
+    const summaryText = `自适应导入成功：${parts.join('、')}`;
 
     if (this._logs) {
       this._logs.add({
         category: LOG_CATEGORIES.SYSTEM,
-        title: '粘贴 JSON 文本合并导入成功',
+        title: '智能自适应 JSON 导入成功',
         detail: summaryText,
       });
     }
-    this._emit('content:mod-imported', { mode: 'paste-merge', counts });
+    this._emit('content:mod-imported', { mode: 'adaptive-paste-merge', counts });
     return { counts, total, summaryText };
   }
 

@@ -1606,7 +1606,14 @@ function openStoryPackPickerSheet() {
     wrap.appendChild(backBtn);
   }
 
-  const enabledPacks = packs.filter((p) => p.enabled !== false);
+  const enabledPacks = packs
+    .filter((p) => p.enabled !== false)
+    .sort((a, b) => {
+      const aCustom = a.builtIn ? 1 : 0;
+      const bCustom = b.builtIn ? 1 : 0;
+      if (aCustom !== bCustom) return aCustom - bCustom;
+      return (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0);
+    });
   if (enabledPacks.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'muted-text';
@@ -1619,12 +1626,15 @@ function openStoryPackPickerSheet() {
       card.className = 'lab-slot-card';
       card.innerHTML = `
         <div class="lab-slot-head">
-          <strong>${escapeHtml(p.name)}</strong>
-          <span class="status-badge ${isPlaying ? 'badge-ok' : 'badge-muted'}">${p.nodes?.length || 0} 节点</span>
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span class="status-badge ${p.builtIn ? 'badge-muted' : 'badge-ok'}">${p.builtIn ? '内置' : '导入'}</span>
+            <strong>${escapeHtml(p.name)}</strong>
+          </div>
+          <span class="status-badge ${isPlaying ? 'badge-ok' : 'badge-muted'}">${p.nodes?.length || 1} 幕</span>
         </div>
-        <p class="muted-text" style="font-size:12px;">${escapeHtml(p.description || '')}</p>
+        <p class="muted-text" style="font-size:12px;">${escapeHtml(p.description || '点击即可在港区小剧场立即演绎本段剧情。')}</p>
         <button type="button" class="${isPlaying ? 'btn-secondary' : 'btn-primary'} uikit-touch-target" data-pick-theatre-pack="${escapeHtml(p.id)}">
-          ${isPlaying ? '从头重新演绎' : '在中央主舞台演绎'}
+          ${isPlaying ? '从头重新演绎' : '立即在中央主舞台播放'}
         </button>
       `;
       card.querySelector('[data-pick-theatre-pack]').addEventListener('click', () => {
@@ -1761,8 +1771,28 @@ async function renderPortHub() {
     // Determine whether we are rendering an active Story Pack or Daily Secretary Dialogue
     let storyView = null;
     if (activeTheatreSess && storyPacks) {
-      storyView = storyPacks.renderNodeView(activeTheatreSess.packId, activeTheatreSess.nodeId, secretary.id);
+      try {
+        storyView = await storyPacks.renderNodeView(activeTheatreSess.packId, activeTheatreSess.nodeId, {
+          actorId: secretary.id,
+        });
+      } catch (err) {
+        storyPacks.clearActiveTheatreSession();
+        uiKit.showToast(err instanceof Error ? `剧情加载失败：${err.message}` : '剧情加载失败，已返回日常剧场', 'warn');
+        storyView = null;
+      }
     }
+
+    const enabledStoryPacks =
+      storyPacks && typeof storyPacks.listPacks === 'function'
+        ? storyPacks.listPacks().filter((p) => p.enabled !== false)
+        : [];
+    // Show user-imported / custom packs first so newly imported events are immediately clickable
+    const sortedTheatrePacks = [...enabledStoryPacks].sort((a, b) => {
+      const aCustom = a.builtIn ? 1 : 0;
+      const bCustom = b.builtIn ? 1 : 0;
+      if (aCustom !== bCustom) return aCustom - bCustom;
+      return (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0);
+    });
 
     const lastTalk = interaction.getLastInteraction();
     const dailySpeechText =
@@ -1773,12 +1803,14 @@ async function renderPortHub() {
     const isStoryMode = Boolean(storyView && activeTheatreSess);
     const storyOutcome = isStoryMode ? activeTheatreSess.lastOutcome : null;
     const displaySpeaker = isStoryMode
-      ? `${storyView.pack.name} · ${storyView.node.title}`
+      ? storyView.speaker
+        ? `${storyView.speaker} · ${storyView.pack.name}`
+        : `${storyView.pack.name} · ${storyView.node.title}`
       : `${isOathed ? '★ ' : ''}${secretary.name}`;
     const displayDialogueText = isStoryMode
       ? storyOutcome
-        ? storyOutcome.text
-        : storyView.text
+        ? storyOutcome.text || '抉择已完成。'
+        : storyView.text || storyView.node?.renderedBody || `${storyView.pack.name} · ${storyView.node.title}`
       : dailySpeechText;
 
     const secCard = document.createElement('section');
@@ -1788,7 +1820,7 @@ async function renderPortHub() {
     secCard.innerHTML = `
       <div class="theatre-toolbar-row">
         <span class="status-badge ${isStoryMode ? 'badge-ok' : 'badge-muted'}" id="theatre-mode-badge">
-          ${isStoryMode ? '剧情剧场演绎中' : '港区日常剧场'}
+          ${isStoryMode ? '剧情剧场演绎中' : '港区小剧场 · 日常'}
         </span>
         <div class="theatre-toolbar-actions">
           <button type="button" id="btn-theatre-speed" class="theatre-mini-btn" title="切换打字机速度">
@@ -1796,7 +1828,7 @@ async function renderPortHub() {
           </button>
           <button type="button" id="btn-theatre-history" class="theatre-mini-btn">历史回看</button>
           <button type="button" id="btn-theatre-pick-pack" class="theatre-mini-btn ${isStoryMode ? 'is-active' : ''}">
-            ${isStoryMode ? '切换剧情' : '剧情包'}
+            ${isStoryMode ? '切换剧情' : `剧情包(${sortedTheatrePacks.length})`}
           </button>
           <button type="button" id="btn-sec-mode-toggle" class="theatre-mini-btn ${isAiMode ? 'is-active' : ''}">
             ${isAiMode ? 'AI润色' : '本地'}
@@ -1840,6 +1872,8 @@ async function renderPortHub() {
           ${
             isStoryMode && storyOutcome?.check
               ? `<span class="status-badge ${storyOutcome.passed ? 'badge-ok' : 'badge-warn'}">检定 ${storyOutcome.check.total} vs DC ${storyOutcome.check.dc}</span>`
+              : isStoryMode
+              ? `<span class="muted-text" style="font-size:11px;">${escapeHtml(storyView.node.title || '剧场演出')} · 轻触显示全文</span>`
               : `<span class="muted-text" style="font-size:11px;">士气 ${Math.round(Number(secretary.stats.morale ?? 70))} · EXP ${secProg.exp}/${secProg.maxExp}</span>`
           }
         </div>
@@ -1869,9 +1903,13 @@ async function renderPortHub() {
               ${
                 storyOutcome.nextNodeId
                   ? `<button type="button" id="btn-theatre-story-next" class="btn-primary uikit-touch-target">继续下一幕 →</button>`
-                  : `<button type="button" id="btn-theatre-story-replay" class="btn-primary uikit-touch-target">本幕完结 · 重新演绎</button>`
+                  : `<button type="button" id="btn-theatre-story-exit" class="btn-primary uikit-touch-target">结束剧场 · 返回港区</button>`
               }
-              <button type="button" id="btn-theatre-story-exit" class="btn-secondary uikit-touch-target">返回日常剧场</button>
+              ${
+                storyOutcome.nextNodeId
+                  ? `<button type="button" id="btn-theatre-story-exit" class="btn-secondary uikit-touch-target">结束剧场 · 返回港区</button>`
+                  : `<button type="button" id="btn-theatre-story-replay" class="btn-secondary uikit-touch-target">重新演绎本幕</button>`
+              }
             </div>
           `
               : `
@@ -1883,6 +1921,8 @@ async function renderPortHub() {
                 ${
                   ch.check
                     ? `<span class="status-badge badge-muted">${escapeHtml(ch.check.statKey)} DC ${ch.check.dc}</span>`
+                    : ch.autoAdvance
+                    ? '<span class="status-badge badge-ok">继续</span>'
                     : ch.unlocked
                     ? '<span class="status-badge badge-ok">分支</span>'
                     : `<span class="status-badge badge-warn">未解锁</span>`
@@ -1901,14 +1941,39 @@ async function renderPortHub() {
         <div class="lab-btn-grid">
           <button type="button" id="btn-sec-talk" class="btn-primary uikit-touch-target" ${portState.busy ? 'disabled' : ''}>日常交谈</button>
           <button type="button" id="btn-sec-gift" class="btn-secondary uikit-touch-target">赠送礼物</button>
-          <button type="button" id="btn-sec-event" class="btn-secondary uikit-touch-target" ${portState.busy ? 'disabled' : ''}>港区日常事件</button>
+          <button type="button" id="btn-sec-event" class="btn-secondary uikit-touch-target" ${portState.busy ? 'disabled' : ''}>随机日常事件</button>
           <button type="button" id="btn-sec-oath" class="${canOathNow || isOathed ? 'btn-primary' : 'btn-secondary'} uikit-touch-target">
             ${isOathed ? '★ 誓约纪念' : canOathNow ? '★ 举行誓约仪式' : `誓约 (${curAff}/100)`}
           </button>
         </div>
+
+        <div class="theatre-event-picker" id="theatre-inline-event-picker">
+          <div class="theatre-event-picker-head">
+            <span class="theatre-event-picker-title">选择剧场事件 / 播放剧情（${sortedTheatrePacks.length}）</span>
+            <button type="button" id="btn-sec-play-story" class="theatre-mini-btn">全部剧情列表</button>
+          </div>
+          <div class="theatre-event-strip">
+            ${
+              sortedTheatrePacks.length === 0
+                ? '<span class="muted-text" style="font-size:12px;">暂无已启用的剧情包，可前往「图鉴」粘贴 JSON 导入。</span>'
+                : sortedTheatrePacks
+                    .slice(0, 8)
+                    .map(
+                      (p) => `
+                <button type="button" class="theatre-event-chip ${p.builtIn ? '' : 'is-custom'}" data-launch-inline-pack="${escapeHtml(p.id)}">
+                  <span class="theatre-event-chip-name">${escapeHtml(p.name)}</span>
+                  <span class="theatre-event-chip-meta">${p.builtIn ? '内置' : '导入'} · ${p.nodes?.length || 1}幕</span>
+                </button>
+              `
+                    )
+                    .join('')
+            }
+          </div>
+        </div>
+
         <div class="lab-btn-grid">
-          <button type="button" id="btn-sec-play-story" class="btn-secondary uikit-touch-target">播放本地剧情包</button>
           <button type="button" id="btn-sec-switch" class="btn-secondary uikit-touch-target">更换秘书舰</button>
+          <button type="button" id="btn-sec-goto-import" class="btn-secondary uikit-touch-target">导入更多剧情/性格</button>
         </div>
       `
       }
@@ -1974,9 +2039,15 @@ async function renderPortHub() {
               characterId: secretary.id,
             });
             await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: secretary.id });
-            storyPacks.updateActiveTheatreOutcome(outcome, null);
+            if (outcome.autoAdvance && outcome.nextNodeId) {
+              storyPacks.updateActiveTheatreOutcome(null, outcome.nextNodeId);
+            } else {
+              storyPacks.updateActiveTheatreOutcome(outcome, null);
+              if (outcome.check) {
+                uiKit.showToast(outcome.passed ? '剧情选项检定通过！' : '检定遇阻，剧情继续推进', outcome.passed ? 'ok' : 'info');
+              }
+            }
             portState.lastTypewrittenId = null;
-            uiKit.showToast(outcome.passed ? '剧情选项检定通过！' : '剧情分支已推进', outcome.passed ? 'ok' : 'info');
           } catch (err) {
             uiKit.showToast(err instanceof Error ? err.message : '执行选项失败', 'warn');
           } finally {
@@ -2043,9 +2114,24 @@ async function renderPortHub() {
         }
       });
 
+      secCard.querySelectorAll('[data-launch-inline-pack]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const pid = btn.getAttribute('data-launch-inline-pack');
+          const pack = storyPacks?.getPack(pid);
+          if (!pack) return;
+          storyPacks.setActiveTheatreSession(pack.id, pack.entryNodeId || pack.nodes?.[0]?.id || null);
+          portState.lastTypewrittenId = null;
+          uiKit.showToast(`已在主舞台开启剧场：「${pack.name}」`, 'ok');
+          renderPortHub();
+        });
+      });
+
       secCard.querySelector('#btn-sec-oath')?.addEventListener('click', () => openOathSheet(secretary));
       secCard.querySelector('#btn-sec-play-story')?.addEventListener('click', () => openStoryPackPickerSheet());
       secCard.querySelector('#btn-sec-switch')?.addEventListener('click', () => openSwitchSecretarySheet());
+      secCard.querySelector('#btn-sec-goto-import')?.addEventListener('click', () => {
+        if (modules?.has('compendium-studio')) modules.mount('compendium-studio', { transition: 'left' });
+      });
 
       if (
         lastTalk &&
@@ -2350,7 +2436,9 @@ export default {
     portState.unsubs = [
       context.bus.on('port:open-commander', () => openCommanderSheet()),
       context.bus.on('story:theatre-updated', () => renderPortHub()),
-      context.bus.on('story:choice-resolved', () => renderPortHub()),
+      context.bus.on('story:packs-changed', () => renderPortHub()),
+      context.bus.on('content:mod-imported', () => renderPortHub()),
+      context.bus.on('personality:pool-updated', () => renderPortHub()),
       context.bus.on('resource:changed', () => renderPortHub()),
       context.bus.on('inventory:equipped', () => renderPortHub()),
       context.bus.on('inventory:unequipped', () => renderPortHub()),
@@ -2363,6 +2451,7 @@ export default {
       context.bus.on('expedition:recalled', () => renderPortHub()),
       context.bus.on('buildings:updated', () => renderPortHub()),
       context.bus.on('interaction:talked', () => renderPortHub()),
+      context.bus.on('interaction:daily-event', () => renderPortHub()),
       context.bus.on('interaction:gifted', () => renderPortHub()),
       context.bus.on('interaction:oathed', () => renderPortHub()),
       context.bus.on('character:exp-gained', () => renderPortHub()),

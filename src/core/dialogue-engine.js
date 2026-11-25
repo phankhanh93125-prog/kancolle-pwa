@@ -373,7 +373,11 @@ export class DialogueEngine {
   _fill(str, vars = {}) {
     return String(str || '')
       .replaceAll('{cmd}', vars.cmd || '指挥官')
+      .replaceAll('{commander.name}', vars.cmd || '指挥官')
+      .replaceAll('{commander}', vars.cmd || '指挥官')
       .replaceAll('{actor}', vars.actor || '舰娘')
+      .replaceAll('{actor.name}', vars.actor || '舰娘')
+      .replaceAll('{name}', vars.actor || '舰娘')
       .replaceAll('{outfit}', vars.outfit || '日常港区常服')
       .replaceAll('{gift}', vars.gift || '礼物');
   }
@@ -395,16 +399,42 @@ export class DialogueEngine {
     const secFlavor = SECONDARY_FLAVOR[combo.secondaryId];
     const vars = { cmd: commanderName, actor: actor?.name || '舰娘', outfit: outfitName };
 
+    // Time-of-day & state-aware candidate pool combining built-in + imported personality/trait libraries
+    const hour = new Date().getHours();
+    const isNightHour = hour >= 20 || hour < 5;
+    const pool = this._personalityPool;
+    const importedNight = pool ? pool.getPrimaryDialogueLines(combo.primaryId || combo.primaryName, 'secretary_night') : [];
+    const importedIdle = pool ? pool.getPrimaryDialogueLines(combo.primaryId || combo.primaryName, 'secretary_idle') : [];
+    const importedOutfit =
+      outfitStyle && pool ? pool.getPrimaryDialogueLines(combo.primaryId || combo.primaryName, 'outfit_change') : [];
+    const allImportedForTime = pool
+      ? pool.getAllPrimaryDialogueLines(isNightHour ? 'secretary_night' : 'secretary_idle').map((x) => x.line)
+      : [];
+    const allImportedIdle = pool ? pool.getAllPrimaryDialogueLines('secretary_idle').map((x) => x.line) : [];
+
+    const primaryCandidates = [];
+    if (isNightHour && importedNight.length > 0) primaryCandidates.push(...importedNight);
+    if (importedIdle.length > 0) primaryCandidates.push(...importedIdle);
+    if (importedOutfit.length > 0 && rng() < 0.35) primaryCandidates.push(...importedOutfit);
+    if (voice?.talk?.length) primaryCandidates.push(...voice.talk);
+    // Also surface newly imported custom personality lines dynamically if user imported new libraries
+    if (primaryCandidates.length <= 2 && allImportedForTime.length > 0) {
+      primaryCandidates.push(...allImportedForTime);
+    } else if (allImportedIdle.length > 0 && rng() < 0.4) {
+      primaryCandidates.push(pickOne(allImportedIdle, rng));
+    }
+
     let coreLine = '';
     if (customTopic) {
       const prefix = combo.speechPrefix || '';
       const suffix = combo.speechSuffix || '';
-      coreLine = `关于「${customTopic}」，${prefix}${this._fill(
-        voice ? pickOne(voice.talk, rng) : `「穿着{outfit}的{actor}认真倾听了{cmd}的话语。」`,
-        vars
-      )}${suffix ? ` ${suffix}` : ''}`;
-    } else if (voice) {
-      coreLine = this._fill(pickOne(voice.talk, rng), vars);
+      const basePick =
+        primaryCandidates.length > 0
+          ? pickOne(primaryCandidates, rng)
+          : `「穿着{outfit}的{actor}认真倾听了{cmd}的话语。」`;
+      coreLine = `关于「${customTopic}」，${prefix}${this._fill(basePick, vars)}${suffix ? ` ${suffix}` : ''}`;
+    } else if (primaryCandidates.length > 0) {
+      coreLine = this._fill(pickOne(primaryCandidates, rng), vars);
     } else {
       coreLine = `「${combo.speechPrefix || ''}穿着${outfitName}的${actor?.name || '舰娘'}面向${commanderName}微笑：${combo.catchphrase || '今天也请多关照！'}${combo.speechSuffix || ''}」`;
     }
@@ -421,16 +451,22 @@ export class DialogueEngine {
       ? styleReactions[outfitStyle] || `（身着「${outfitStyle}」风格装扮，展露出与众不同的气质）`
       : '';
 
-    const secLine = secFlavor
-      ? this._fill(secFlavor.portAdd, vars)
-      : combo.catchphrase
-      ? `「${combo.catchphrase}」`
-      : '';
+    // Combine imported secondary trait idleLines + built-in flavor
+    const importedSecLines = pool ? pool.getSecondaryIdleLines(combo.secondaryId || combo.secondaryName) : [];
+    const allImportedTraits = pool ? pool.getAllSecondaryIdleLines().map((x) => x.line) : [];
+    const secCandidates = [];
+    if (importedSecLines.length > 0) secCandidates.push(...importedSecLines);
+    if (secFlavor?.portAdd) secCandidates.push(secFlavor.portAdd);
+    if (allImportedTraits.length > 0 && rng() < 0.35) secCandidates.push(pickOne(allImportedTraits, rng));
+
+    const pickedSec = secCandidates.length > 0 ? pickOne(secCandidates, rng) : combo.catchphrase || '';
+    const secLine = pickedSec ? this._fill(pickedSec, vars) : '';
     const dmgPrefix = DAMAGE_MODIFIERS[dmgState] ? `${DAMAGE_MODIFIERS[dmgState]} ` : '';
+    const timeTag = isNightHour ? '🌙 夜间值守' : '☀ 日间值守';
     const stageKey = isOathed ? 'oath' : affStageId;
     const affNote = isOathed
-      ? `（★ 誓约·${oathTitle} · ${combo.comboLabel}）`
-      : `${AFFINITY_ADDONS[stageKey] || ''} · 性格【${combo.comboLabel}】`;
+      ? `（★ 誓约·${oathTitle} · ${combo.comboLabel} · ${timeTag}）`
+      : `${AFFINITY_ADDONS[stageKey] || ''} · 性格【${combo.comboLabel}】· ${timeTag}`;
 
     const text = `${dmgPrefix}${coreLine}${styleNote ? ` ${styleNote}` : ''}${secLine ? ` ${secLine}` : ''} ${affNote}`.trim();
     return {
@@ -452,10 +488,16 @@ export class DialogueEngine {
     const combo = this.resolvePersonality(actor);
     const dmgState = this.getDamageState(actor);
     const voice = PRIMARY_VOICE[combo.primaryId];
+    const importedGift = this._personalityPool
+      ? this._personalityPool.getPrimaryDialogueLines(combo.primaryId || combo.primaryName, 'gift')
+      : [];
     const vars = { cmd: commanderName, actor: actor?.name || '舰娘', outfit: outfitName, gift: giftName };
-    const line = voice
-      ? this._fill(voice.gift, vars)
-      : `「${combo.speechPrefix || ''}收到${commanderName}送来的${giftName}了，非常感谢！${combo.speechSuffix || ''}」`;
+    const line =
+      importedGift.length > 0
+        ? this._fill(pickOne(importedGift), vars)
+        : voice
+        ? this._fill(voice.gift, vars)
+        : `「${combo.speechPrefix || ''}收到${commanderName}送来的${giftName}了，非常感谢！${combo.speechSuffix || ''}」`;
     const dmgNote = dmgState !== DAMAGE_STATES.INTACT ? `${DAMAGE_MODIFIERS[dmgState]} ` : '';
     return {
       text: `${dmgNote}${line}【${combo.comboLabel} · ${isOathed ? '誓约' : affStageId}】`,
@@ -467,20 +509,34 @@ export class DialogueEngine {
   composeDormRestLine(actor) {
     const combo = this.resolvePersonality(actor);
     const voice = PRIMARY_VOICE[combo.primaryId];
-    const line = voice ? voice.dorm : `「${combo.speechPrefix || ''}在宿舍里舒舒服服地休息中～${combo.speechSuffix || ''}」`;
+    const importedDorm = this._personalityPool
+      ? this._personalityPool.getPrimaryDialogueLines(combo.primaryId || combo.primaryName, 'dorm')
+      : [];
+    const line =
+      importedDorm.length > 0
+        ? pickOne(importedDorm)
+        : voice
+        ? voice.dorm
+        : `「${combo.speechPrefix || ''}在宿舍里舒舒服服地休息中～${combo.speechSuffix || ''}」`;
     return `${line}（${combo.comboLabel}）`;
   }
 
   composeDockRepairLine(actor, { isComplete = false } = {}) {
     const combo = this.resolvePersonality(actor);
     const voice = PRIMARY_VOICE[combo.primaryId];
-    const raw = voice
-      ? isComplete
-        ? voice.dockOut
-        : voice.dockIn
-      : isComplete
-      ? '「整备完成，随时准备再次出击！」'
-      : '「正在船坞修复船体，很快就能归队。」';
+    const importedRepair = this._personalityPool
+      ? this._personalityPool.getPrimaryDialogueLines(combo.primaryId || combo.primaryName, 'dock_repair')
+      : [];
+    const raw =
+      importedRepair.length > 0
+        ? pickOne(importedRepair)
+        : voice
+        ? isComplete
+          ? voice.dockOut
+          : voice.dockIn
+        : isComplete
+        ? '「整备完成，随时准备再次出击！」'
+        : '「正在船坞修复船体，很快就能归队。」';
     return `${this._fill(raw, { actor: actor?.name || '舰娘' })}（${combo.comboLabel}）`;
   }
 
@@ -501,9 +557,21 @@ export class DialogueEngine {
     const key = victory ? 'victory' : visualStyle === 'airstrike' ? 'airstrike' : commandId;
     const vars = { cmd: commanderName, actor: actor?.name || '舰娘' };
 
-    const primaryLine = voice?.combat?.[key]
-      ? this._fill(voice.combat[key], vars)
-      : `「${combo.speechPrefix || ''}${combo.catchphrase || '全速迎击！'}${combo.speechSuffix || ''}」`;
+    const importedCat = victory
+      ? 'sortie_return'
+      : isCrit || key === 'torpedo' || key === 'airstrike'
+      ? 'combat_skill'
+      : 'combat_turn';
+    const importedCombat = this._personalityPool
+      ? this._personalityPool.getPrimaryDialogueLines(combo.primaryId || combo.primaryName, importedCat)
+      : [];
+
+    const primaryLine =
+      importedCombat.length > 0
+        ? this._fill(pickOne(importedCombat), vars)
+        : voice?.combat?.[key]
+        ? this._fill(voice.combat[key], vars)
+        : `「${combo.speechPrefix || ''}${combo.catchphrase || '全速迎击！'}${combo.speechSuffix || ''}」`;
     const secLine = secFlavor?.combatAdd ? ` ${secFlavor.combatAdd}` : '';
     const hitLine =
       !victory && damageTaken > 0 && voice?.combat?.hit ? ` ${this._fill(voice.combat.hit, vars)}` : '';

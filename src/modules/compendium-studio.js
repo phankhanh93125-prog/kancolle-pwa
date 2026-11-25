@@ -615,8 +615,8 @@ function renderStudioTab(host) {
           statRules,
         });
         await persistCharacterRoster({ storage: rootStorage, entities });
-        csState.lastExportSummary = `文件合并导入成功：${res.summaryText}`;
-        uiKit.showToast(`合并导入成功：${res.summaryText}`, 'ok');
+        csState.lastExportSummary = res.summaryText;
+        uiKit.showToast(res.summaryText, 'ok');
       }
       renderCompendiumStudio();
     } catch (err) {
@@ -645,12 +645,13 @@ function renderStudioTab(host) {
       });
       await persistCharacterRoster({ storage: rootStorage, entities });
       if (area) area.value = '';
-      csState.lastExportSummary = `粘贴 JSON 合并导入成功：${res.summaryText}`;
-      uiKit.showToast(`合并导入成功：${res.summaryText}`, 'ok');
+      csState.lastExportSummary = res.summaryText;
+      uiKit.showToast(res.summaryText, 'ok');
       renderCompendiumStudio();
     } catch (err) {
-      btn.disabled = false;
       uiKit.showToast(err instanceof Error ? err.message : 'JSON 导入失败', 'error');
+    } finally {
+      btn.disabled = false;
     }
   });
   host.appendChild(modCard);
@@ -1446,11 +1447,24 @@ async function renderStoryPacksTab(host) {
     if (!file) return;
     try {
       const text = await file.text();
-      const imported = await storyPacks.importPackFromJSON(text);
-      csState.activePackId = imported.id;
-      csState.activeNodeId = imported.entryNodeId;
-      csState.lastStoryOutcome = null;
-      uiKit.showToast(`已热插拔挂载剧情包「${imported.name}」`, 'ok');
+      const { contentManager, personalityPool, statRules } = csState.context;
+      const res = await contentManager.smartImportJSONText(text, {
+        mode: 'merge',
+        storyPacks,
+        personalityPool,
+        statRules,
+      });
+      await persistCharacterRoster({ storage: rootStorage, entities });
+      if (res.counts.storyPacks > 0) {
+        const all = storyPacks.listPacks();
+        const newest = all[all.length - 1];
+        if (newest) {
+          csState.activePackId = newest.id;
+          csState.activeNodeId = newest.entryNodeId || newest.nodes[0]?.id || null;
+          csState.lastStoryOutcome = null;
+        }
+      }
+      uiKit.showToast(res.summaryText, 'ok');
       renderCompendiumStudio();
     } catch (err) {
       uiKit.showToast(err instanceof Error ? err.message : '导入剧情包失败', 'error');
@@ -1488,11 +1502,12 @@ async function renderStoryPacksTab(host) {
           csState.lastStoryOutcome = null;
         }
       }
-      uiKit.showToast(`合并导入成功：${res.summaryText}`, 'ok');
+      uiKit.showToast(res.summaryText, 'ok');
       renderCompendiumStudio();
     } catch (err) {
-      btn.disabled = false;
       uiKit.showToast(err instanceof Error ? err.message : 'JSON 导入失败', 'error');
+    } finally {
+      btn.disabled = false;
     }
   });
 

@@ -155,6 +155,9 @@
   - **双方通用 `3行 × 4列`（前/中/后排）阵型体系**：受指挥官统率上限控制，空位仅留极简雷达定位点；舰队编成重构为「上方 3×4 舰种符号阵型盘（点空位部署、点两格互换、点自身或按钮撤下，支持单纵阵/复纵阵/轮型防空阵一键排阵）+ 下方可用舰娘名册」，Schema v6 无损迁移旧存档编队至 3×4 坐标。
   - **三层式海战指挥舞台**：上层为敌我 3×4 战术雷达沙盘（隔交战距离标尺相对，纯高对比度几何舰种矢量符号 + `01~12`/`E01~E12` 编号、行动脉冲光圈、点对点格间飞行的 SVG 弹道/雷击/空袭轨迹）；中层紧贴沙盘展示当前行动舰娘与专属战术指令、托管与 `1x/2x` 倍速；下层默认展示己方舰娘全名与实时耐久/护甲状态（点名高亮上方沙盘符号），点击上方任意敌舰符号即锁定目标并临时切换下层为**敌舰情报面板**（舰名/舰种/耐久护甲/下回合意图预警/已侦查弱点/射程衰减预览 + 一键返回我方状态）。
   - **全图自由索敌、距离跨排衰减与同排/邻格护航**：取消前排硬墙限制，双方 3×4 任意存活单位均可自由瞄准，但依据「交战距离（远/中/近）+ 双方排数跨度」动态结算命中与伤害倍率（战列/航母后排跨排保持超远全威；驱逐/轻巡与鱼雷远距跨排明显衰减，前排或突进后爆发全额杀伤）；轻巡/重巡自动为同排及相邻格子队友提供防空减伤与协同援护分担。
+- **全自动 JSON 字段自适应转换器与港区小剧场完整修复（v22：`src/core/content-manager.js`、`src/core/personality-pool.js`、`src/core/dialogue-engine.js`、`src/core/story-pack-engine.js`、`src/modules/port-hub.js`、`src/modules/compendium-studio.js`）**：
+  - **智能字段自适应 Normalizer**：粘贴或上传 `.json`（兼容完整包对象、裸数组 `[...]`、单条目对象 `{...}` 及 Markdown 代码块）时自动识别并转换常见变体字段——涵盖性格与台词分类别名（`personalities`/`personalityPool`/`personas`/`archetypes` 及 `secretary_idle`/`idle`/`daily`、`secretary_night`/`night`、`combat_skill`/`skill` 等 10 类映射）、副特质（`traits`/`subTraits`/`quirks`）、剧情与事件包（`events`/`storyPacks`/`stories`/`chapters`、`scenes`/`nodes`/`steps`/`dialogues`、`speaker`/`name`/`character`、`text`/`content`/`line`、`choices`/`options`/`branches`、`nextText`/`reply` 与 `nextNodeId`/`nextSceneId`）、舰娘与装备服装及中英文品级自动规范化，并返回逐类统计汇总提示或明确报错。
+  - **港区小剧场与动态性格台词联动修复**：修复 `port-hub.js` 未 `await` 异步 `renderNodeView` 导致的剧场无法渲染问题；中央主舞台常驻可一键点播的「选择剧场事件 / 播放剧情」快捷面板（导入包置顶优先），原生支持多幕连续 `scenes` 自动串联推进与单幕 `choices + nextText` 反馈结算、好感/士气/资源发放及「结束剧场 · 返回港区」；秘书舰日常交谈与战斗/休整台词实时从内置及新导入的 `personalities` / `traits` 词库按时段与状态抽取。
 
 
 

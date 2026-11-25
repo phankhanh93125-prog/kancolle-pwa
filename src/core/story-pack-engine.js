@@ -836,51 +836,19 @@ export class StoryPackEngine {
   }
 
   async savePack(packDef = {}) {
-    const name = String(packDef.name || '').trim();
-    if (!name) throw new Error('剧情包名称不能为空');
-    const id = String(packDef.id || `pack_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`);
-    const nodes = Array.isArray(packDef.nodes) && packDef.nodes.length > 0
-      ? deepClone(packDef.nodes)
-      : [
-          {
-            id: 'node_01',
-            title: '起始节点',
-            body: '{commander.name}与{actor.name}在港区开启了新的故事篇章。',
-            conditions: [],
-            choices: [
-              {
-                id: 'c_default',
-                label: '继续推进',
-                conditions: [],
-                check: null,
-                effects: { flags: { [`${id}_started`]: true }, affinity: 3, commanderExp: 15 },
-                resultText: '故事节点已完成并记录了进度标记。',
-                nextNodeId: null,
-              },
-            ],
-          },
-        ];
-
+    const normalized = normalizeAdaptiveStoryPack(packDef);
+    if (!normalized) throw new Error('剧情包名称不能为空或缺少有效剧情内容');
     const pack = {
-      id,
-      name,
-      version: String(packDef.version || '1.0.0').trim(),
-      category: Object.values(PACK_CATEGORIES).includes(packDef.category)
-        ? packDef.category
-        : PACK_CATEGORIES.PORT_DAILY,
-      description: String(packDef.description || '自定义本地事件/剧情包').trim(),
-      enabled: packDef.enabled !== false,
+      ...normalized,
       builtIn: Boolean(packDef.builtIn),
-      entryNodeId: String(packDef.entryNodeId || nodes[0].id),
-      nodes,
     };
 
-    const idx = this._packs.findIndex((p) => p.id === id);
+    const idx = this._packs.findIndex((p) => p.id === pack.id);
     if (idx >= 0) this._packs[idx] = pack;
     else this._packs.push(pack);
 
     await this.persist();
-    this._emit('story:packs-changed', { packId: id, action: 'save' });
+    this._emit('story:packs-changed', { packId: pack.id, action: 'save' });
     return deepClone(pack);
   }
 
@@ -891,7 +859,8 @@ export class StoryPackEngine {
     const node = {
       id: cleanId,
       title: String(nodeDef.title || '未命名节点').trim(),
-      body: String(nodeDef.body || '').trim(),
+      speaker: String(nodeDef.speaker || '').trim(),
+      body: String(nodeDef.body || nodeDef.text || nodeDef.content || '').trim(),
       conditions: Array.isArray(nodeDef.conditions) ? deepClone(nodeDef.conditions) : [],
       choices: Array.isArray(nodeDef.choices) ? deepClone(nodeDef.choices) : [],
     };
@@ -927,20 +896,14 @@ export class StoryPackEngine {
   }
 
   async importPackFromJSON(rawInput) {
-    const cleaned =
-      typeof rawInput === 'string'
-        ? rawInput.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
-        : rawInput;
-    const parsed = typeof cleaned === 'string' ? JSON.parse(cleaned) : cleaned;
-    const packObj = parsed?.schema === STORY_PACK_SCHEMA ? parsed.pack : parsed;
-    if (!packObj || !packObj.name || !Array.isArray(packObj.nodes)) {
-      throw new Error('无效的剧情包 JSON 格式（缺少 name 或 nodes 数组）');
-    }
-    return this.savePack({ ...packObj, builtIn: false });
+    const res = await this.importPacksFromData(rawInput);
+    return res.lastPack;
   }
 
   /**
-   * Import one or multiple story/event packs from a parsed JSON object, array, or pasted JSON string.
+   * Adaptive importer for one or multiple story/event packs from parsed JSON, array, or pasted text.
+   * Supports `packs`, `storyPacks`, `events`, `stories`, `chapters`, bare arrays, or single event objects
+   * using `nodes` / `scenes` / `steps` / `dialogues` and `choices` / `options` / `branches`.
    */
   async importPacksFromData(rawInput) {
     const cleaned =
@@ -953,24 +916,28 @@ export class StoryPackEngine {
       list = parsed;
     } else if (parsed?.schema === STORY_PACK_SCHEMA && parsed.pack) {
       list = [parsed.pack];
-    } else if (Array.isArray(parsed?.packs)) {
-      list = parsed.packs;
-    } else if (Array.isArray(parsed?.storyPacks)) {
-      list = parsed.storyPacks;
-    } else if (parsed && parsed.name && Array.isArray(parsed.nodes)) {
-      list = [parsed];
+    } else if (parsed && typeof parsed === 'object') {
+      const containerArrays = [parsed.packs, parsed.storyPacks, parsed.events, parsed.stories, parsed.chapters].filter(
+        Array.isArray
+      );
+      if (containerArrays.length > 0) {
+        list = containerArrays.flat();
+      } else {
+        list = [parsed];
+      }
     }
 
     const imported = [];
     for (const p of list) {
       const target = p?.schema === STORY_PACK_SCHEMA && p.pack ? p.pack : p;
-      if (target && target.name && Array.isArray(target.nodes)) {
-        const saved = await this.savePack({ ...target, builtIn: false });
+      const normalized = normalizeAdaptiveStoryPack(target);
+      if (normalized) {
+        const saved = await this.savePack({ ...normalized, builtIn: false });
         imported.push(saved);
       }
     }
     if (imported.length === 0) {
-      throw new Error('未在 JSON 中识别到有效的事件/剧情包（需包含 name 与 nodes 数组）');
+      throw new Error('未在 JSON 中识别到有效的事件/剧情包（需包含 title/name 及 scenes/nodes/text 内容）');
     }
     return {
       importedCount: imported.length,
@@ -988,7 +955,8 @@ export class StoryPackEngine {
     return this._interaction?.getSecretary() || this._entities?.list({ kind: 'character' })[0] || null;
   }
 
-  async renderNodeView(packId, nodeId = null, { actorId = null } = {}) {
+  async renderNodeView(packId, nodeId = null, opts = {}) {
+    const actorId = typeof opts === 'string' ? opts : opts?.actorId || opts?.characterId || null;
     const pack = this.getPack(packId);
     if (!pack) throw new Error('剧情包不存在');
     const actor = this._getActor(actorId);
@@ -1001,16 +969,43 @@ export class StoryPackEngine {
     const vars = {
       actor: { name: actor?.name || '秘书舰', shipType: actor?.meta?.shipType || '驱逐舰' },
       commander: { name: cmdProfile.name, title: cmdProfile.title },
+      cmd: cmdProfile.name,
+      name: actor?.name || '秘书舰',
       flags: this.getAllFlags(),
     };
 
+    const rawBody = String(node.body || node.text || node.content || node.line || '').trim() || `${pack.name} · ${node.title}`;
     const renderedBody = await this._narrative.run({
-      template: node.body,
+      template: rawBody,
       variables: vars,
       polishInstruction: `请以简洁细腻的剧情演绎风格润色剧情节点「${node.title}」的叙述，保留人物与场景事实：`,
     });
 
-    const choices = (node.choices || []).map((ch) => {
+    const speakerResolved = node.speaker
+      ? String(node.speaker)
+          .replaceAll('{actor.name}', actor?.name || '秘书舰')
+          .replaceAll('{actor}', actor?.name || '秘书舰')
+          .replaceAll('{name}', actor?.name || '秘书舰')
+          .replaceAll('{commander.name}', cmdProfile.name)
+          .replaceAll('{commander}', cmdProfile.name)
+          .replaceAll('{cmd}', cmdProfile.name)
+      : '';
+
+    const rawChoices = Array.isArray(node.choices) && node.choices.length > 0
+      ? node.choices
+      : [
+          {
+            id: 'c_auto_end',
+            label: '结束本幕',
+            conditions: [],
+            check: null,
+            effects: { affinity: 2, morale: 4 },
+            resultText: '这一段港区回忆静静落下了帷幕。',
+            nextNodeId: null,
+          },
+        ];
+
+    const choices = rawChoices.map((ch) => {
       const chCond = this.checkConditions(ch.conditions || [], { actor });
       return {
         ...deepClone(ch),
@@ -1023,10 +1018,13 @@ export class StoryPackEngine {
       pack,
       node: {
         ...deepClone(node),
+        speaker: speakerResolved,
         renderedBody: renderedBody.text,
         source: renderedBody.source,
         degraded: renderedBody.degraded,
       },
+      speaker: speakerResolved,
+      text: renderedBody.text,
       nodeUnlocked: nodeCond.ok,
       unmetReasons: nodeCond.unmetReasons,
       choices,
@@ -1034,13 +1032,36 @@ export class StoryPackEngine {
     };
   }
 
-  async executeChoice(packId, nodeId, choiceId, { actorId = null } = {}) {
+  async executeChoice(packIdOrObj, nodeIdArg = null, choiceIdArg = null, optsArg = {}) {
+    let packId = packIdOrObj;
+    let nodeId = nodeIdArg;
+    let choiceId = choiceIdArg;
+    let actorId = typeof optsArg === 'string' ? optsArg : optsArg?.actorId || optsArg?.characterId || null;
+
+    if (packIdOrObj && typeof packIdOrObj === 'object') {
+      packId = packIdOrObj.packId;
+      nodeId = packIdOrObj.nodeId;
+      choiceId = packIdOrObj.choiceId;
+      actorId = packIdOrObj.actorId || packIdOrObj.characterId || null;
+    }
+
     const pack = this.getPack(packId);
     if (!pack) throw new Error('剧情包不存在');
     if (!pack.enabled) throw new Error(`剧情包「${pack.name}」当前已停用，请先启用`);
-    const node = pack.nodes.find((n) => n.id === nodeId);
+    const node = pack.nodes.find((n) => n.id === nodeId) || pack.nodes[0];
     if (!node) throw new Error('目标节点不存在');
-    const choice = (node.choices || []).find((c) => c.id === choiceId);
+    let choice = (node.choices || []).find((c) => c.id === choiceId);
+    if (!choice && choiceId === 'c_auto_end') {
+      choice = {
+        id: 'c_auto_end',
+        label: '结束本幕',
+        conditions: [],
+        check: null,
+        effects: { affinity: 2, morale: 4 },
+        resultText: '这一段港区回忆静静落下了帷幕。',
+        nextNodeId: null,
+      };
+    }
     if (!choice) throw new Error('目标选项不存在');
 
     const actor = this._getActor(actorId);
@@ -1129,16 +1150,25 @@ export class StoryPackEngine {
 
     // 5. Render Dual-Track Outcome Narrative
     const cmdProfile = this._commander ? this._commander.getProfile() : { name: '指挥官' };
-    const template = passed ? choice.resultText || '抉择已完成。' : choice.failText || choice.resultText || '行动遇阻。';
-    const rendered = await this._narrative.run({
-      template,
-      variables: {
-        actor: { name: actor?.name || '秘书舰' },
-        commander: { name: cmdProfile.name },
-        check: checkResult,
-      },
-      polishInstruction: `请简短润色剧情「${node.title}」的抉择结局，保留关键事件事实：`,
-    });
+    const isSilentAutoAdvance = Boolean(choice.autoAdvance && !choice.resultText && choice.nextNodeId);
+    const template = isSilentAutoAdvance
+      ? ''
+      : passed
+      ? choice.resultText || '抉择已完成。'
+      : choice.failText || choice.resultText || '行动遇阻。';
+    const rendered = isSilentAutoAdvance
+      ? { text: '', source: 'local', degraded: false }
+      : await this._narrative.run({
+          template,
+          variables: {
+            actor: { name: actor?.name || '秘书舰' },
+            commander: { name: cmdProfile.name },
+            cmd: cmdProfile.name,
+            name: actor?.name || '秘书舰',
+            check: checkResult,
+          },
+          polishInstruction: `请简短润色剧情「${node.title}」的抉择结局，保留关键事件事实：`,
+        });
 
     const record = {
       id: `st_${Date.now().toString(36)}`,
@@ -1154,14 +1184,17 @@ export class StoryPackEngine {
       degraded: rendered.degraded,
       chips: appliedChips,
       nextNodeId: choice.nextNodeId || null,
+      autoAdvance: isSilentAutoAdvance,
       timestamp: Date.now(),
     };
 
-    this._playHistory.unshift(record);
-    if (this._playHistory.length > 30) this._playHistory.length = 30;
+    if (!isSilentAutoAdvance) {
+      this._playHistory.unshift(record);
+      if (this._playHistory.length > 30) this._playHistory.length = 30;
+    }
     await this.persist();
 
-    if (this._logs) {
+    if (this._logs && !isSilentAutoAdvance) {
       this._logs.add({
         category: LOG_CATEGORIES.ACTION,
         actorId: actor?.id || null,
@@ -1248,3 +1281,320 @@ export class StoryPackEngine {
     if (persist) this.persist();
   }
 }
+
+function normalizeAdaptiveEffects(rawChoice = {}) {
+  const src =
+    rawChoice.effects && typeof rawChoice.effects === 'object'
+      ? rawChoice.effects
+      : rawChoice.rewards && typeof rawChoice.rewards === 'object'
+      ? rawChoice.rewards
+      : rawChoice.reward && typeof rawChoice.reward === 'object'
+      ? rawChoice.reward
+      : {};
+
+  const out = {};
+  if (src.flags && typeof src.flags === 'object') {
+    out.flags = deepClone(src.flags);
+  } else if (rawChoice.flags && typeof rawChoice.flags === 'object') {
+    out.flags = deepClone(rawChoice.flags);
+  }
+
+  const resMap = {};
+  const srcRes =
+    src.resources && typeof src.resources === 'object'
+      ? src.resources
+      : rawChoice.resources && typeof rawChoice.resources === 'object'
+      ? rawChoice.resources
+      : {};
+  for (const [k, v] of Object.entries(srcRes)) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n !== 0) resMap[k] = n;
+  }
+  for (const rk of ['fuel', 'ammo', 'steel', 'bauxite', 'silver', 'gold']) {
+    const v = src[rk] !== undefined ? src[rk] : rawChoice[rk];
+    const n = Number(v);
+    if (Number.isFinite(n) && n !== 0 && resMap[rk] === undefined) {
+      resMap[rk] = n;
+    }
+  }
+  if (Object.keys(resMap).length > 0) out.resources = resMap;
+
+  const aff = Number(src.affinity ?? rawChoice.affinity ?? src.aff ?? rawChoice.aff ?? 0);
+  if (Number.isFinite(aff) && aff !== 0) out.affinity = aff;
+
+  const mor = Number(src.morale ?? rawChoice.morale ?? 0);
+  if (Number.isFinite(mor) && mor !== 0) out.morale = mor;
+
+  const exp = Number(src.commanderExp ?? rawChoice.commanderExp ?? src.exp ?? rawChoice.exp ?? 0);
+  if (Number.isFinite(exp) && exp > 0) out.commanderExp = exp;
+
+  const luck = Number(src.commanderLuck ?? rawChoice.commanderLuck ?? src.luck ?? rawChoice.luck ?? 0);
+  if (Number.isFinite(luck) && luck !== 0) out.commanderLuck = luck;
+
+  return out;
+}
+
+function normalizeAdaptiveChoice(rawChoice = {}, idx = 0) {
+  if (typeof rawChoice === 'string') {
+    return {
+      id: `c_${idx + 1}`,
+      label: rawChoice.trim() || '继续',
+      conditions: [],
+      check: null,
+      effects: { affinity: 2, morale: 4 },
+      resultText: '做出了这个选择，港区的微风轻拂而过。',
+      failText: '',
+      nextNodeId: null,
+    };
+  }
+  const label = String(
+    rawChoice.label ?? rawChoice.text ?? rawChoice.title ?? rawChoice.option ?? rawChoice.name ?? '继续'
+  ).trim();
+  const resultText = String(
+    rawChoice.resultText ??
+      rawChoice.nextText ??
+      rawChoice.reply ??
+      rawChoice.response ??
+      rawChoice.feedback ??
+      rawChoice.outcomeText ??
+      rawChoice.outcome ??
+      '抉择已完成。'
+  ).trim();
+  const failText = String(rawChoice.failText ?? rawChoice.failReply ?? '').trim();
+  const nextRaw =
+    rawChoice.nextNodeId ??
+    rawChoice.nextSceneId ??
+    rawChoice.nextStepId ??
+    rawChoice.targetNodeId ??
+    rawChoice.next ??
+    null;
+  const nextNodeId = nextRaw !== null && nextRaw !== undefined && String(nextRaw).trim() !== '' ? String(nextRaw).trim() : null;
+
+  let check = null;
+  if (rawChoice.check && typeof rawChoice.check === 'object' && rawChoice.check.statKey) {
+    check = {
+      statKey: String(rawChoice.check.statKey),
+      dc: Math.max(5, Number(rawChoice.check.dc) || 12),
+    };
+  }
+
+  const effects = normalizeAdaptiveEffects(rawChoice);
+  const failEffects =
+    rawChoice.failEffects && typeof rawChoice.failEffects === 'object'
+      ? deepClone(rawChoice.failEffects)
+      : undefined;
+
+  return {
+    id: String(rawChoice.id || `c_${idx + 1}`),
+    label: label || `选项 ${idx + 1}`,
+    conditions: Array.isArray(rawChoice.conditions) ? deepClone(rawChoice.conditions) : [],
+    check,
+    effects,
+    ...(failEffects ? { failEffects } : {}),
+    resultText,
+    ...(failText ? { failText } : {}),
+    nextNodeId,
+  };
+}
+
+/**
+ * Universal Adaptive Story / Event Pack Normalizer:
+ * Accepts canonical packs (`name` + `nodes`), visual-novel scene scripts (`title` + `scenes` + `choices` + `nextText`),
+ * step arrays (`steps` / `dialogues`), or single flat event objects (`title` + `text` + `options`).
+ */
+export function normalizeAdaptiveStoryPack(raw = {}) {
+  if (!raw || typeof raw !== 'object') return null;
+  const name = String(raw.name ?? raw.title ?? raw.eventName ?? raw.packName ?? '').trim();
+  if (!name) return null;
+
+  const id = String(raw.id || `pack_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`);
+
+  const rawCategory = String(raw.category ?? raw.type ?? '').toLowerCase();
+  const category = Object.values(PACK_CATEGORIES).includes(raw.category)
+    ? raw.category
+    : rawCategory.includes('main') || rawCategory.includes('chapter')
+    ? PACK_CATEGORIES.MAIN_CHAPTER
+    : rawCategory.includes('season') || rawCategory.includes('fest') || rawCategory.includes('holiday')
+    ? PACK_CATEGORIES.SEASONAL_EVENT
+    : PACK_CATEGORIES.PORT_DAILY;
+
+  const rawParagraphs =
+    Array.isArray(raw.nodes)
+      ? raw.nodes
+      : Array.isArray(raw.scenes)
+      ? raw.scenes
+      : Array.isArray(raw.steps)
+      ? raw.steps
+      : Array.isArray(raw.dialogues)
+      ? raw.dialogues
+      : Array.isArray(raw.stages)
+      ? raw.stages
+      : Array.isArray(raw.parts)
+      ? raw.parts
+      : null;
+
+  const topChoicesRaw =
+    Array.isArray(raw.choices)
+      ? raw.choices
+      : Array.isArray(raw.options)
+      ? raw.options
+      : Array.isArray(raw.branches)
+      ? raw.branches
+      : null;
+
+  let normalizedNodes = [];
+
+  if (rawParagraphs && rawParagraphs.length > 0) {
+    // First pass: assign stable IDs so sequential scenes can chain cleanly
+    const assignedIds = rawParagraphs.map((seg, i) => {
+      if (seg && typeof seg === 'object') {
+        return String(seg.id || seg.sceneId || seg.stepId || `scene_${String(i + 1).padStart(2, '0')}`);
+      }
+      return `scene_${String(i + 1).padStart(2, '0')}`;
+    });
+
+    normalizedNodes = rawParagraphs.map((seg, i) => {
+      const isLast = i === rawParagraphs.length - 1;
+      const nextSeqId = !isLast ? assignedIds[i + 1] : null;
+      if (typeof seg === 'string') {
+        const choices = isLast && topChoicesRaw && topChoicesRaw.length > 0
+          ? topChoicesRaw.map((ch, ci) => normalizeAdaptiveChoice(ch, ci))
+          : nextSeqId
+          ? [
+              {
+                id: `c_next_${i + 1}`,
+                label: '继续 →',
+                conditions: [],
+                check: null,
+                effects: {},
+                resultText: '',
+                nextNodeId: nextSeqId,
+              },
+            ]
+          : [
+              {
+                id: `c_end_${i + 1}`,
+                label: '结束剧场',
+                conditions: [],
+                check: null,
+                effects: { affinity: 3, morale: 5 },
+                resultText: '这一段港区日常小剧场圆满落幕。',
+                nextNodeId: null,
+              },
+            ];
+        return {
+          id: assignedIds[i],
+          title: rawParagraphs.length > 1 ? `${name} (${i + 1}/${rawParagraphs.length})` : name,
+          speaker: '',
+          body: seg.trim(),
+          conditions: [],
+          choices,
+        };
+      }
+
+      const nodeTitle = String(
+        seg.title ?? seg.sceneTitle ?? (rawParagraphs.length > 1 ? `${name} · 第 ${i + 1} 幕` : name)
+      ).trim();
+      const speaker = String(seg.speaker ?? seg.character ?? seg.actor ?? (seg.title ? seg.name || '' : seg.name || '')).trim();
+      const body = String(
+        seg.body ?? seg.text ?? seg.content ?? seg.line ?? seg.dialogue ?? seg.narration ?? ''
+      ).trim();
+
+      const segChoicesRaw =
+        Array.isArray(seg.choices)
+          ? seg.choices
+          : Array.isArray(seg.options)
+          ? seg.options
+          : Array.isArray(seg.branches)
+          ? seg.branches
+          : null;
+
+      let choices = [];
+      if (segChoicesRaw && segChoicesRaw.length > 0) {
+        choices = segChoicesRaw.map((ch, ci) => normalizeAdaptiveChoice(ch, ci));
+      } else if (isLast && topChoicesRaw && topChoicesRaw.length > 0) {
+        choices = topChoicesRaw.map((ch, ci) => normalizeAdaptiveChoice(ch, ci));
+      } else if (nextSeqId) {
+        choices = [
+          {
+            id: `c_next_${i + 1}`,
+            label: '继续 →',
+            conditions: [],
+            check: null,
+            effects: {},
+            resultText: '',
+            nextNodeId: nextSeqId,
+            autoAdvance: true,
+          },
+        ];
+      } else {
+        choices = [
+          {
+            id: `c_end_${i + 1}`,
+            label: '完成本幕',
+            conditions: [],
+            check: null,
+            effects: { affinity: 3, morale: 6 },
+            resultText: '剧场演绎圆满完成！',
+            nextNodeId: null,
+          },
+        ];
+      }
+
+      return {
+        id: assignedIds[i],
+        title: nodeTitle || name,
+        speaker,
+        body: body || `${name} 的剧情正在展开……`,
+        conditions: Array.isArray(seg.conditions) ? deepClone(seg.conditions) : [],
+        choices,
+      };
+    });
+  } else {
+    const flatBody = String(raw.body ?? raw.text ?? raw.content ?? raw.line ?? raw.prompt ?? '').trim();
+    if (!flatBody && !topChoicesRaw && !raw.description) {
+      return null;
+    }
+    const choices =
+      topChoicesRaw && topChoicesRaw.length > 0
+        ? topChoicesRaw.map((ch, ci) => normalizeAdaptiveChoice(ch, ci))
+        : [
+            {
+              id: 'c_default',
+              label: '继续推进',
+              conditions: [],
+              check: null,
+              effects: { flags: { [`${id}_started`]: true }, affinity: 3, commanderExp: 15 },
+              resultText: '故事节点已完成并记录了进度标记。',
+              nextNodeId: null,
+            },
+          ];
+    normalizedNodes = [
+      {
+        id: 'node_01',
+        title: name,
+        speaker: String(raw.speaker ?? raw.character ?? '').trim(),
+        body: flatBody || String(raw.description || '{commander.name}与{actor.name}在港区开启了新的故事篇章。'),
+        conditions: Array.isArray(raw.conditions) ? deepClone(raw.conditions) : [],
+        choices,
+      },
+    ];
+  }
+
+  return {
+    id,
+    name,
+    version: String(raw.version || '1.0.0').trim(),
+    category,
+    description: String(raw.description ?? raw.desc ?? raw.summary ?? raw.intro ?? '自定义本地事件/剧情包').trim(),
+    enabled: raw.enabled !== false,
+    builtIn: Boolean(raw.builtIn),
+    entryNodeId: String(
+      raw.entryNodeId && normalizedNodes.some((n) => n.id === String(raw.entryNodeId))
+        ? raw.entryNodeId
+        : normalizedNodes[0].id
+    ),
+    nodes: normalizedNodes,
+  };
+}
+
