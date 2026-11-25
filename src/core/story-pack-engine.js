@@ -927,12 +927,56 @@ export class StoryPackEngine {
   }
 
   async importPackFromJSON(rawInput) {
-    const parsed = typeof rawInput === 'string' ? JSON.parse(rawInput) : rawInput;
+    const cleaned =
+      typeof rawInput === 'string'
+        ? rawInput.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+        : rawInput;
+    const parsed = typeof cleaned === 'string' ? JSON.parse(cleaned) : cleaned;
     const packObj = parsed?.schema === STORY_PACK_SCHEMA ? parsed.pack : parsed;
     if (!packObj || !packObj.name || !Array.isArray(packObj.nodes)) {
       throw new Error('无效的剧情包 JSON 格式（缺少 name 或 nodes 数组）');
     }
     return this.savePack({ ...packObj, builtIn: false });
+  }
+
+  /**
+   * Import one or multiple story/event packs from a parsed JSON object, array, or pasted JSON string.
+   */
+  async importPacksFromData(rawInput) {
+    const cleaned =
+      typeof rawInput === 'string'
+        ? rawInput.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+        : rawInput;
+    const parsed = typeof cleaned === 'string' ? JSON.parse(cleaned) : cleaned;
+    let list = [];
+    if (Array.isArray(parsed)) {
+      list = parsed;
+    } else if (parsed?.schema === STORY_PACK_SCHEMA && parsed.pack) {
+      list = [parsed.pack];
+    } else if (Array.isArray(parsed?.packs)) {
+      list = parsed.packs;
+    } else if (Array.isArray(parsed?.storyPacks)) {
+      list = parsed.storyPacks;
+    } else if (parsed && parsed.name && Array.isArray(parsed.nodes)) {
+      list = [parsed];
+    }
+
+    const imported = [];
+    for (const p of list) {
+      const target = p?.schema === STORY_PACK_SCHEMA && p.pack ? p.pack : p;
+      if (target && target.name && Array.isArray(target.nodes)) {
+        const saved = await this.savePack({ ...target, builtIn: false });
+        imported.push(saved);
+      }
+    }
+    if (imported.length === 0) {
+      throw new Error('未在 JSON 中识别到有效的事件/剧情包（需包含 name 与 nodes 数组）');
+    }
+    return {
+      importedCount: imported.length,
+      packNames: imported.map((p) => p.name),
+      lastPack: imported[imported.length - 1],
+    };
   }
 
   // ------------------------------------------------------------

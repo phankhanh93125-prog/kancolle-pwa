@@ -530,6 +530,44 @@ export class FormationSystem {
     };
   }
 
+  /**
+   * One-click optimal auto-equip across the entire active fleet in priority order
+   * (Flagship #1 -> Wingmen #2..#N), distributing best idle warehouse gear without conflicts.
+   */
+  async autoEquipFleet({ includeOutfit = true } = {}) {
+    if (!this._inventory || typeof this._inventory.autoEquipCharacter !== 'function') {
+      throw new Error('装备仓储引擎未就绪');
+    }
+    const memberIds = this.getMemberIds();
+    if (memberIds.length === 0) {
+      throw new Error('当前编队尚无舰娘，请先编入舰娘');
+    }
+
+    const reservedCounts = new Map();
+    const perShip = [];
+    let totalEquipped = 0;
+
+    for (const cid of memberIds) {
+      const res = await this._inventory.autoEquipCharacter(cid, {
+        includeOutfit,
+        excludeItemIds: reservedCounts,
+      });
+      for (const id of res.wornItemIds || []) {
+        reservedCounts.set(id, (reservedCounts.get(id) || 0) + 1);
+      }
+      totalEquipped += res.equippedCount;
+      perShip.push(res);
+    }
+
+    const nextState = this.getState();
+    this._emit('formation:changed', nextState);
+    return {
+      fleetCount: memberIds.length,
+      totalEquipped,
+      perShip,
+    };
+  }
+
   serialize() {
     return {
       version: 1,

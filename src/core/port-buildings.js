@@ -554,6 +554,68 @@ export class PortBuildingsSystem {
     return { ...deepClone(job), repairLine };
   }
 
+  /**
+   * Batch-assign damaged shipgirls (hp < maxHp) into all available free Dockyard repair bays,
+   * prioritizing lowest HP% first.
+   */
+  async autoDockDamagedShipgirls(characterIds = []) {
+    const dock = this._state.dockyard;
+    const candidateIds =
+      Array.isArray(characterIds) && characterIds.length > 0
+        ? characterIds.map(String)
+        : (this._entities?.list({ kind: 'character' }) || []).map((c) => c.id);
+
+    const damaged = [];
+    let alreadyHealthy = 0;
+    let alreadyInDock = 0;
+
+    for (const cid of candidateIds) {
+      const actor = this._entities?.get(cid);
+      if (!actor || actor.kind !== 'character') continue;
+      if (this.isInDockyard(cid)) {
+        alreadyInDock += 1;
+        continue;
+      }
+      const effMaxHp = Math.max(1, Math.round(this._entities.getEffectiveStat(cid, 'maxHp', { round: 'round' }).final));
+      const curHp = Math.min(effMaxHp, Math.round(Number(actor.stats.hp ?? effMaxHp)));
+      if (curHp >= effMaxHp) {
+        alreadyHealthy += 1;
+        continue;
+      }
+      damaged.push({ id: cid, name: actor.name, hpRatio: curHp / effMaxHp });
+    }
+
+    // Prioritize most heavily damaged shipgirls first
+    damaged.sort((a, b) => a.hpRatio - b.hpRatio);
+
+    const docked = [];
+    const skippedFull = [];
+    const skippedResource = [];
+
+    for (const d of damaged) {
+      if (dock.queue.length >= dock.capacity) {
+        skippedFull.push(d.name);
+        continue;
+      }
+      try {
+        const job = await this.startDockRepair(d.id);
+        docked.push({ id: d.id, name: d.name, durationSec: job.durationSec });
+      } catch (err) {
+        skippedResource.push({ name: d.name, reason: err instanceof Error ? err.message : '资源不足' });
+      }
+    }
+
+    return {
+      docked,
+      skippedFull,
+      skippedResource,
+      alreadyHealthy,
+      alreadyInDock,
+      freeBaysLeft: Math.max(0, dock.capacity - dock.queue.length),
+      capacity: dock.capacity,
+    };
+  }
+
   async completeDockRepair(characterId, { now = Date.now(), fastRepair = false, silent = false } = {}) {
     const cid = String(characterId);
     const dock = this._state.dockyard;

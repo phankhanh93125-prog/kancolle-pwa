@@ -527,32 +527,44 @@ function renderCompendiumTab(host) {
 // ============================================================
 
 function renderStudioTab(host) {
-  const { contentManager, entities, rootStorage, uiKit } = csState.context;
+  const { contentManager, storyPacks, personalityPool, statRules, entities, rootStorage, uiKit } = csState.context;
   const customEnemies = contentManager.listCustomEnemies();
   const customDialogues = contentManager.listCustomDialogues();
   const customGifts = contentManager.listCustomGifts();
 
-  // 1. World Mod JSON Export / Import Card
+  // 1. World Mod JSON Export / Import Card (File Upload + Direct Paste JSON Text)
   const modCard = document.createElement('section');
   modCard.className = 'surface-card lab-stack-sm';
   modCard.id = 'cs-mod-card';
   modCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
       <h2 class="section-title">世界内容 JSON 模组导出 / 导入</h2>
-      <span class="status-badge badge-ok">批量内容包</span>
+      <span class="status-badge badge-ok">文件 + 粘贴双入口</span>
     </div>
     <p class="muted-text" style="font-size:12px;">
-      一键打包导出当前全量自定义内容（角色、建筑、装备、敌舰、航线、台词、礼物、誓约），或导入外部 JSON 模组进行合并 / 覆盖。
+      支持导出/上传 <code>.json</code> 文件，或直接粘贴角色、装备/服装、性格词条、敌舰、剧情/事件包 JSON 文本一键识别合并入库。
     </p>
     <button type="button" id="btn-cs-export-mod" class="btn-primary uikit-touch-target">导出世界内容 JSON 模组包</button>
     <div class="lab-btn-grid">
-      <button type="button" id="btn-cs-import-merge" class="btn-secondary uikit-touch-target">导入 JSON（合并）</button>
-      <button type="button" id="btn-cs-import-replace" class="btn-secondary uikit-touch-target">导入 JSON（覆盖）</button>
+      <button type="button" id="btn-cs-import-merge" class="btn-secondary uikit-touch-target">选择文件导入（合并）</button>
+      <button type="button" id="btn-cs-import-replace" class="btn-secondary uikit-touch-target">选择文件导入（覆盖）</button>
     </div>
     <input type="file" id="cs-mod-file-input" accept="application/json,.json" hidden>
+
+    <div class="lab-divider"></div>
+    <div class="form-group">
+      <label class="form-label" for="cs-paste-json-input">直接粘贴 JSON 文本导入（自动识别角色 / 装备服装 / 性格词条 / 剧情包 / 完整模组）</label>
+      <textarea
+        id="cs-paste-json-input"
+        class="form-textarea"
+        style="min-height:96px; font-family:var(--font-mono); font-size:12px;"
+        placeholder='在此粘贴 JSON 文本（支持含 \`\`\`json 代码块包裹的 AI 输出，例如 {"name":"460mm主炮","equipmentType":"main_gun","rarity":"legendary","bonuses":[{"stat":"firepower","value":45}]} ）'
+      ></textarea>
+    </div>
+    <button type="button" id="btn-cs-paste-import" class="btn-primary uikit-touch-target">粘贴 JSON 文本一键合并导入</button>
     ${
       csState.lastExportSummary
-        ? `<div class="status-badge badge-ok" id="cs-export-feedback">${escapeHtml(csState.lastExportSummary)}</div>`
+        ? `<div class="status-badge badge-ok" id="cs-export-feedback" style="white-space:normal;">${escapeHtml(csState.lastExportSummary)}</div>`
         : ''
     }
   `;
@@ -591,14 +603,54 @@ function renderStudioTab(host) {
     if (!file) return;
     try {
       const text = await file.text();
-      const counts = await contentManager.importWorldMod(text, { mode: pendingImportMode });
-      await persistCharacterRoster({ storage: rootStorage, entities });
-      uiKit.showToast(`模组导入成功（${pendingImportMode === 'replace' ? '覆盖' : '合并'}）：角色 ${counts.characters} / 敌舰 ${counts.enemies} / 建筑 ${counts.buildings}`, 'ok');
+      if (pendingImportMode === 'replace') {
+        const counts = await contentManager.importWorldMod(text, { mode: 'replace' });
+        await persistCharacterRoster({ storage: rootStorage, entities });
+        uiKit.showToast(`模组覆盖导入成功：角色 ${counts.characters} / 敌舰 ${counts.enemies} / 建筑 ${counts.buildings}`, 'ok');
+      } else {
+        const res = await contentManager.smartImportJSONText(text, {
+          mode: 'merge',
+          storyPacks,
+          personalityPool,
+          statRules,
+        });
+        await persistCharacterRoster({ storage: rootStorage, entities });
+        csState.lastExportSummary = `文件合并导入成功：${res.summaryText}`;
+        uiKit.showToast(`合并导入成功：${res.summaryText}`, 'ok');
+      }
       renderCompendiumStudio();
     } catch (err) {
       uiKit.showToast(err instanceof Error ? err.message : '导入失败', 'error');
     } finally {
       fileInput.value = '';
+    }
+  });
+
+  modCard.querySelector('#btn-cs-paste-import').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const area = modCard.querySelector('#cs-paste-json-input');
+    const rawText = area?.value || '';
+    if (!rawText.trim()) {
+      uiKit.showToast('请先在文本框中粘贴 JSON 内容', 'warn');
+      return;
+    }
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try {
+      const res = await contentManager.smartImportJSONText(rawText, {
+        mode: 'merge',
+        storyPacks,
+        personalityPool,
+        statRules,
+      });
+      await persistCharacterRoster({ storage: rootStorage, entities });
+      if (area) area.value = '';
+      csState.lastExportSummary = `粘贴 JSON 合并导入成功：${res.summaryText}`;
+      uiKit.showToast(`合并导入成功：${res.summaryText}`, 'ok');
+      renderCompendiumStudio();
+    } catch (err) {
+      btn.disabled = false;
+      uiKit.showToast(err instanceof Error ? err.message : 'JSON 导入失败', 'error');
     }
   });
   host.appendChild(modCard);
@@ -1342,9 +1394,20 @@ async function renderStoryPacksTab(host) {
     </div>
     <div class="lab-btn-grid">
       <button type="button" id="btn-cs-new-pack" class="btn-primary uikit-touch-target">+ 新建剧情包</button>
-      <button type="button" id="btn-cs-import-pack" class="btn-secondary uikit-touch-target">导入 .json 剧情包</button>
+      <button type="button" id="btn-cs-import-pack" class="btn-secondary uikit-touch-target">上传 .json 剧情包</button>
       <input type="file" id="input-cs-import-pack" accept="application/json,.json" hidden>
     </div>
+
+    <div class="form-group">
+      <label class="form-label" for="cs-story-paste-json">直接粘贴事件/剧情包 JSON 文本（也支持角色/装备/性格词条混合导入）</label>
+      <textarea
+        id="cs-story-paste-json"
+        class="form-textarea"
+        style="min-height:80px; font-family:var(--font-mono); font-size:12px;"
+        placeholder='在此粘贴剧情包 JSON（含 name 与 nodes 数组）或任意模组 JSON 文本...'
+      ></textarea>
+    </div>
+    <button type="button" id="btn-cs-story-paste-import" class="btn-primary uikit-touch-target">粘贴 JSON 文本一键合并导入</button>
 
     ${packs
       .map(
@@ -1393,6 +1456,43 @@ async function renderStoryPacksTab(host) {
       uiKit.showToast(err instanceof Error ? err.message : '导入剧情包失败', 'error');
     } finally {
       packFileInput.value = '';
+    }
+  });
+
+  listCard.querySelector('#btn-cs-story-paste-import').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const area = listCard.querySelector('#cs-story-paste-json');
+    const rawText = area?.value || '';
+    if (!rawText.trim()) {
+      uiKit.showToast('请先粘贴需要导入的 JSON 文本', 'warn');
+      return;
+    }
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try {
+      const { contentManager, personalityPool, statRules } = csState.context;
+      const res = await contentManager.smartImportJSONText(rawText, {
+        mode: 'merge',
+        storyPacks,
+        personalityPool,
+        statRules,
+      });
+      await persistCharacterRoster({ storage: rootStorage, entities });
+      if (area) area.value = '';
+      if (res.counts.storyPacks > 0) {
+        const all = storyPacks.listPacks();
+        const newest = all[all.length - 1];
+        if (newest) {
+          csState.activePackId = newest.id;
+          csState.activeNodeId = newest.entryNodeId || newest.nodes[0]?.id || null;
+          csState.lastStoryOutcome = null;
+        }
+      }
+      uiKit.showToast(`合并导入成功：${res.summaryText}`, 'ok');
+      renderCompendiumStudio();
+    } catch (err) {
+      btn.disabled = false;
+      uiKit.showToast(err instanceof Error ? err.message : 'JSON 导入失败', 'error');
     }
   });
 

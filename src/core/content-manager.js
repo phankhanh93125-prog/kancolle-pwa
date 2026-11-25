@@ -861,6 +861,306 @@ export class ContentManager {
   }
 
   /**
+   * Smart Direct-Paste JSON Importer:
+   * Automatically strips optional Markdown ```json fences and recognizes & merges:
+   *   - Full World Mod JSON (`payload`)
+   *   - Story / Event Packs (single pack with `nodes`, array, or `{ packs / storyPacks }`)
+   *   - Characters / Shipgirls (single object, array, or `{ characters }`)
+   *   - Equipment & Outfits (single object, array, or `{ equipment / items / customEquipment }`)
+   *   - Personality Pool Traits (`primary` / `secondary`, `{ personalityPool }`, or single/array trait objects)
+   *   - Custom Enemies / Dialogues / Gifts
+   */
+  async smartImportJSONText(
+    rawInput,
+    { mode = 'merge', storyPacks = null, personalityPool = null, statRules = null } = {}
+  ) {
+    const text =
+      typeof rawInput === 'string'
+        ? rawInput.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+        : '';
+    let parsed;
+    if (typeof rawInput === 'string') {
+      if (!text) throw new Error('请先粘贴需要导入的 JSON 文本内容');
+      try {
+        parsed = JSON.parse(text);
+      } catch (err) {
+        throw new Error(`JSON 语法解析失败：${err instanceof Error ? err.message : '请检查括号与逗号格式'}`);
+      }
+    } else {
+      parsed = rawInput;
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error('粘贴的 JSON 必须是对象或数组结构');
+    }
+
+    const counts = {
+      characters: 0,
+      equipment: 0,
+      enemies: 0,
+      dialogues: 0,
+      gifts: 0,
+      storyPacks: 0,
+      traits: 0,
+    };
+
+    const importCharacterEntry = async (ch) => {
+      if (!ch || !ch.name || !this._entities) return false;
+      const cid = String(ch.id || `char_imp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`);
+      const baseStats = ch.stats && typeof ch.stats === 'object' ? ch.stats : {};
+      const maxHp = Math.max(20, Number(baseStats.maxHp ?? baseStats.hp ?? 90) || 90);
+      const reg = this._entities.register({
+        id: cid,
+        kind: 'character',
+        name: String(ch.name).trim(),
+        tags: Array.isArray(ch.tags) ? [...ch.tags] : [ch.shipType || ch.meta?.shipType || '驱逐舰'],
+        stats: {
+          maxHp,
+          hp: Math.min(maxHp, Number(baseStats.hp ?? maxHp) || maxHp),
+          firepower: Number(baseStats.firepower ?? 55) || 55,
+          armor: Number(baseStats.armor ?? 45) || 45,
+          torpedo: Number(baseStats.torpedo ?? 50) || 50,
+          evasion: Number(baseStats.evasion ?? 55) || 55,
+          recon: Number(baseStats.recon ?? 50) || 50,
+          aa: Number(baseStats.aa ?? 48) || 48,
+          asw: Number(baseStats.asw ?? 46) || 46,
+          morale: Number(baseStats.morale ?? 80) || 80,
+          ap: Number(baseStats.ap ?? 100) || 100,
+          maxAp: Number(baseStats.maxAp ?? 100) || 100,
+          affinity: Number(baseStats.affinity ?? 30) || 30,
+          level: Math.max(1, Math.floor(Number(baseStats.level ?? 1) || 1)),
+          exp: Math.max(0, Math.floor(Number(baseStats.exp ?? 0) || 0)),
+          maxExp: Math.max(50, Math.floor(Number(baseStats.maxExp ?? 100) || 100)),
+        },
+        statBounds: ch.statBounds || { hp: { min: 0, max: 500 }, morale: { min: 0, max: 100 }, ap: { min: 0, max: 100 }, affinity: { min: 0, max: 200 } },
+        meta: {
+          shipType: ch.meta?.shipType || ch.shipType || '驱逐舰',
+          roleTag: ch.meta?.roleTag || ch.roleTag || '自定义舰娘',
+          avatarAssetId: ch.meta?.avatarAssetId || null,
+          personality: ch.meta?.personality || ch.personality || '',
+          speechHabit: ch.meta?.speechHabit || ch.speechHabit || '',
+          ...(ch.meta || {}),
+        },
+      });
+      if (statRules && typeof statRules.ensureShipProgression === 'function') {
+        statRules.ensureShipProgression(reg);
+      }
+      if (personalityPool && typeof personalityPool.ensurePersonalityOnEntity === 'function') {
+        personalityPool.ensurePersonalityOnEntity(reg);
+      }
+      if (this._inventory) {
+        if (this._inventory.getItem('item_core_engine_01')) await this._inventory.equipItem(reg.id, 'engine', 'item_core_engine_01');
+        if (this._inventory.getItem('item_core_armor_01')) await this._inventory.equipItem(reg.id, 'armor', 'item_core_armor_01');
+        if (this._inventory.getItem('item_core_core_01')) await this._inventory.equipItem(reg.id, 'core', 'item_core_core_01');
+      }
+      counts.characters += 1;
+      return true;
+    };
+
+    const importEquipmentEntry = async (eq) => {
+      if (!eq || !eq.name) return false;
+      const tpl = await this.saveCustomEquipmentTemplate(eq);
+      if (this._inventory) {
+        await this.issueEquipmentToWarehouse(tpl.id, 1);
+      }
+      counts.equipment += 1;
+      return true;
+    };
+
+    const importTraitEntry = async (tr, forceKind = null) => {
+      if (!tr || !tr.name || !personalityPool) return false;
+      const isSecondary =
+        forceKind === 'secondary' ||
+        tr.pool === 'secondary' ||
+        tr.type === 'secondary' ||
+        (tr.habitTag !== undefined || tr.catchphrase !== undefined);
+      if (isSecondary && typeof personalityPool.addSecondary === 'function') {
+        await personalityPool.addSecondary(tr);
+        counts.traits += 1;
+        return true;
+      }
+      if (typeof personalityPool.addPrimary === 'function') {
+        await personalityPool.addPrimary(tr);
+        counts.traits += 1;
+        return true;
+      }
+      return false;
+    };
+
+    const classifySingleItem = (obj) => {
+      if (!obj || typeof obj !== 'object') return 'unknown';
+      if (Array.isArray(obj.nodes) && obj.name) return 'storyPack';
+      if (obj.schema && obj.pack && Array.isArray(obj.pack.nodes)) return 'storyPack';
+      if (obj.kind === 'character' || obj.shipType || obj.meta?.shipType || (obj.stats && (obj.stats.firepower !== undefined || obj.stats.maxHp !== undefined))) {
+        return 'character';
+      }
+      if (
+        obj.bonuses !== undefined ||
+        obj.equipmentType !== undefined ||
+        obj.subCategory !== undefined ||
+        obj.outfitStyle !== undefined ||
+        Object.values(ITEM_CATEGORIES).includes(obj.category)
+      ) {
+        return 'equipment';
+      }
+      if (obj.toneTag !== undefined || obj.speechPrefix !== undefined || obj.habitTag !== undefined || obj.catchphrase !== undefined) {
+        return 'trait';
+      }
+      if (obj.attackPower !== undefined || obj.weakness !== undefined) return 'enemy';
+      if (obj.text && !obj.name) return 'dialogue';
+      if (obj.affinityGain !== undefined || obj.moraleGain !== undefined) return 'gift';
+      return 'unknown';
+    };
+
+    const handleSingleOrArray = async (entry) => {
+      const kind = classifySingleItem(entry);
+      if (kind === 'storyPack' && storyPacks) {
+        const res = await storyPacks.importPacksFromData(entry);
+        counts.storyPacks += res.importedCount;
+      } else if (kind === 'character') {
+        await importCharacterEntry(entry);
+      } else if (kind === 'equipment') {
+        await importEquipmentEntry(entry);
+      } else if (kind === 'trait') {
+        await importTraitEntry(entry);
+      } else if (kind === 'enemy') {
+        await this.createCustomEnemy(entry);
+        counts.enemies += 1;
+      } else if (kind === 'dialogue') {
+        await this.createCustomDialogue(entry);
+        counts.dialogues += 1;
+      } else if (kind === 'gift') {
+        await this.createCustomGift(entry);
+        counts.gifts += 1;
+      }
+    };
+
+    // Case 1: Full World Mod JSON (`payload`)
+    if (!Array.isArray(parsed) && parsed.payload && typeof parsed.payload === 'object') {
+      const modRes = await this.importWorldMod(parsed, { mode });
+      counts.characters += modRes.characters || 0;
+      counts.equipment += (modRes.items || 0) + (modRes.customEquipment || 0);
+      counts.enemies += modRes.enemies || 0;
+      counts.dialogues += modRes.dialogues || 0;
+      counts.gifts += modRes.gifts || 0;
+
+      if (storyPacks && (Array.isArray(parsed.payload.storyPacks) || Array.isArray(parsed.payload.packs))) {
+        const res = await storyPacks.importPacksFromData(parsed.payload.storyPacks || parsed.payload.packs);
+        counts.storyPacks += res.importedCount;
+      }
+      if (personalityPool && parsed.payload.personalityPool) {
+        for (const p of parsed.payload.personalityPool.primary || []) await importTraitEntry(p, 'primary');
+        for (const s of parsed.payload.personalityPool.secondary || []) await importTraitEntry(s, 'secondary');
+      }
+    } else if (Array.isArray(parsed)) {
+      // Case 2: JSON Array of mixed or uniform objects
+      for (const entry of parsed) {
+        await handleSingleOrArray(entry);
+      }
+    } else {
+      // Case 3: Container object with named collections OR a single entity/item/pack/trait
+      let matchedContainer = false;
+
+      if (Array.isArray(parsed.characters)) {
+        matchedContainer = true;
+        for (const ch of parsed.characters) await importCharacterEntry(ch);
+      }
+      const eqArr = parsed.customEquipment || parsed.equipment || parsed.items;
+      if (Array.isArray(eqArr)) {
+        matchedContainer = true;
+        for (const eq of eqArr) await importEquipmentEntry(eq);
+      }
+      const enemyArr = parsed.customEnemies || parsed.enemies;
+      if (Array.isArray(enemyArr)) {
+        matchedContainer = true;
+        for (const en of enemyArr) {
+          if (en && en.name) {
+            await this.createCustomEnemy(en);
+            counts.enemies += 1;
+          }
+        }
+      }
+      const dlgArr = parsed.customDialogues || parsed.dialogues;
+      if (Array.isArray(dlgArr)) {
+        matchedContainer = true;
+        for (const d of dlgArr) {
+          if (d && d.text) {
+            await this.createCustomDialogue(d);
+            counts.dialogues += 1;
+          }
+        }
+      }
+      const giftArr = parsed.customGifts || parsed.gifts;
+      if (Array.isArray(giftArr)) {
+        matchedContainer = true;
+        for (const g of giftArr) {
+          if (g && g.name) {
+            await this.createCustomGift(g);
+            counts.gifts += 1;
+          }
+        }
+      }
+      if (storyPacks && (Array.isArray(parsed.packs) || Array.isArray(parsed.storyPacks))) {
+        matchedContainer = true;
+        const res = await storyPacks.importPacksFromData(parsed.packs || parsed.storyPacks);
+        counts.storyPacks += res.importedCount;
+      }
+      if (personalityPool) {
+        const poolObj = parsed.personalityPool || parsed;
+        if (Array.isArray(poolObj.primary)) {
+          matchedContainer = true;
+          for (const p of poolObj.primary) await importTraitEntry(p, 'primary');
+        }
+        if (Array.isArray(poolObj.secondary)) {
+          matchedContainer = true;
+          for (const s of poolObj.secondary) await importTraitEntry(s, 'secondary');
+        }
+        if (Array.isArray(parsed.traits)) {
+          matchedContainer = true;
+          for (const t of parsed.traits) await importTraitEntry(t);
+        }
+      }
+
+      if (!matchedContainer) {
+        await handleSingleOrArray(parsed);
+      }
+    }
+
+    const total =
+      counts.characters +
+      counts.equipment +
+      counts.enemies +
+      counts.dialogues +
+      counts.gifts +
+      counts.storyPacks +
+      counts.traits;
+    if (total === 0) {
+      throw new Error('未识别到可导入的舰娘、装备/服装、性格词条、敌舰或事件/剧情包字段，请检查 JSON 结构');
+    }
+
+    await this.persist();
+    const parts = [];
+    if (counts.characters > 0) parts.push(`舰娘 ${counts.characters}`);
+    if (counts.equipment > 0) parts.push(`装备/服装 ${counts.equipment}`);
+    if (counts.traits > 0) parts.push(`性格词条 ${counts.traits}`);
+    if (counts.storyPacks > 0) parts.push(`剧情/事件包 ${counts.storyPacks}`);
+    if (counts.enemies > 0) parts.push(`敌舰 ${counts.enemies}`);
+    if (counts.dialogues > 0) parts.push(`台词 ${counts.dialogues}`);
+    if (counts.gifts > 0) parts.push(`礼物 ${counts.gifts}`);
+    const summaryText = parts.join(' · ');
+
+    if (this._logs) {
+      this._logs.add({
+        category: LOG_CATEGORIES.SYSTEM,
+        title: '粘贴 JSON 文本合并导入成功',
+        detail: summaryText,
+      });
+    }
+    this._emit('content:mod-imported', { mode: 'paste-merge', counts });
+    return { counts, total, summaryText };
+  }
+
+  /**
    * Non-destructively merge the full Starter Content Bundle into the current save:
    *   - 8 featured shipgirls across all 5 ship classes (DD/CL/CA/BB/CV) with distinct random personalities
    *   - 16 core parts, main weapons, tactical support modules & outfits

@@ -321,6 +321,7 @@ export function renderFullScreenBattleView({
   onPostBattleContinue,
   onPostBattleDockyard,
   onPostBattleResupply,
+  onPostBattleAutoDock = null,
   settlementInfo = null,
 }) {
   host.innerHTML = '';
@@ -563,14 +564,19 @@ export function renderFullScreenBattleView({
           ${escapeHtml(settlementInfo.continueLabel || '返回分岔雷达海图')}
         </button>
         <div class="lab-btn-grid">
-          <button type="button" id="btn-postbattle-dockyard" class="btn-secondary uikit-touch-target">直达船坞整备</button>
-          <button type="button" id="btn-postbattle-resupply" class="btn-secondary uikit-touch-target">一键补给全队</button>
+          <button type="button" id="btn-postbattle-resupply" class="btn-secondary uikit-touch-target">全队一键补给油弹</button>
+          <button type="button" id="btn-postbattle-autodock" class="btn-secondary uikit-touch-target">受损舰娘一键入渠</button>
         </div>
+        <button type="button" id="btn-postbattle-dockyard" class="btn-secondary uikit-touch-target">直达船坞整备</button>
       </div>
     `;
     settleCard.querySelector('#btn-postbattle-continue').addEventListener('click', () => onPostBattleContinue());
-    settleCard.querySelector('#btn-postbattle-dockyard').addEventListener('click', () => onPostBattleDockyard());
     settleCard.querySelector('#btn-postbattle-resupply').addEventListener('click', () => onPostBattleResupply());
+    settleCard.querySelector('#btn-postbattle-autodock').addEventListener('click', () => {
+      if (typeof onPostBattleAutoDock === 'function') onPostBattleAutoDock();
+      else onPostBattleDockyard();
+    });
+    settleCard.querySelector('#btn-postbattle-dockyard').addEventListener('click', () => onPostBattleDockyard());
     root.appendChild(settleCard);
   } else if (currentActor) {
     const actorProf = getShipClassProfile(currentActor.shipType);

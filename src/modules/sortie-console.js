@@ -1266,37 +1266,103 @@ async function handleBattleFinishEarly() {
 }
 
 async function performQuickFleetResupply() {
-  const { entities, resources, formation, rootStorage, uiKit } = sortieState.context;
-  const members = formation ? formation.getMembers() : [getFlagship()].filter(Boolean);
+  const { entities, resources, formation, commander, logs, bus, rootStorage, uiKit } = sortieState.context;
+  const runIds = sortieState.activeRun?.fleetMemberIds;
+  const members =
+    Array.isArray(runIds) && runIds.length > 0
+      ? runIds.map((id) => entities.get(id)).filter(Boolean)
+      : formation
+      ? formation.getMembers()
+      : [getFlagship()].filter(Boolean);
   if (members.length === 0) return;
 
+  const discount = commander && typeof commander.getLogisticsDiscount === 'function' ? commander.getLogisticsDiscount() : 0;
   let fuelNeed = 0;
-  let steelNeed = 0;
+  let ammoNeed = 0;
+  let needCount = 0;
+
   for (const m of members) {
-    const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(m.id, 'maxHp', { round: 'round' }).final));
-    const missingHp = Math.max(0, effMaxHp - Math.round(Number(m.stats.hp ?? effMaxHp)));
-    const missingAp = Math.max(0, Number(m.stats.maxAp ?? 100) - Math.round(Number(m.stats.ap ?? 100)));
-    fuelNeed += Math.ceil(missingAp * 0.4);
-    steelNeed += Math.ceil(missingHp * 0.6);
-  }
-  const cost = {};
-  if (fuelNeed > 0) cost.fuel = fuelNeed;
-  if (steelNeed > 0) cost.steel = steelNeed;
-  if (Object.keys(cost).length > 0) {
-    const spend = await resources.spendBatch(cost, { reason: '战后一键补给全队' });
-    if (!spend.ok) {
-      uiKit.showToast(`一键补给失败：${spend.reason}`, 'warn');
-      return;
+    const maxAp = Number(m.stats.maxAp ?? 100);
+    const curAp = Math.round(Number(m.stats.ap ?? maxAp));
+    const curMorale = Math.round(Number(m.stats.morale ?? 80));
+    const missingAp = Math.max(0, maxAp - curAp);
+    const missingMorale = Math.max(0, 85 - curMorale);
+    if (missingAp > 0 || missingMorale > 0) {
+      needCount += 1;
+      fuelNeed += Math.max(8, Math.ceil(missingAp * 0.45 + missingMorale * 0.2));
+      ammoNeed += Math.max(6, Math.ceil(missingAp * 0.35 + missingMorale * 0.15));
     }
   }
+
+  if (needCount === 0) {
+    uiKit.showToast('全队油弹与士气均已饱满，无需补给', 'info');
+    return;
+  }
+
+  const mult = Math.max(0.55, 1 - discount);
+  const cost = {
+    fuel: Math.max(5, Math.round(fuelNeed * mult)),
+    ammo: Math.max(5, Math.round(ammoNeed * mult)),
+  };
+  const spend = await resources.spendBatch(cost, { reason: '战后全队一键补给油弹' });
+  if (!spend.ok) {
+    uiKit.showToast(`油弹补给失败：${spend.reason}`, 'warn');
+    return;
+  }
+
   for (const m of members) {
-    const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(m.id, 'maxHp', { round: 'round' }).final));
-    entities.setStat(m.id, 'hp', effMaxHp);
-    entities.setStat(m.id, 'ap', Number(m.stats.maxAp ?? 100));
-    entities.adjustStat(m.id, 'morale', 12, { min: 0, max: 100 });
+    const maxAp = Number(m.stats.maxAp ?? 100);
+    entities.setStat(m.id, 'ap', maxAp, { min: 0, max: maxAp });
+    entities.adjustStat(m.id, 'morale', 15, { min: 0, max: 100 });
   }
   await persistCharacterRoster({ storage: rootStorage, entities });
-  uiKit.showToast(`已完成全队（${members.length}舰）一键补给与应急修复！`, 'ok');
+  if (logs) {
+    logs.add({
+      category: LOG_CATEGORIES.RESOURCE,
+      title: `全队一键补给油弹（${members.length} 舰）`,
+      detail: `消耗燃油 ${cost.fuel} / 弹药 ${cost.ammo}，全员行动点已补满且士气 +15`,
+    });
+  }
+  bus.emit('port:serviced', { action: 'quick-resupply', count: members.length, cost });
+  uiKit.showToast(`全队 ${members.length} 舰油弹补给完成（消耗 油${cost.fuel} / 弹${cost.ammo}，AP 满额、士气 +15）`, 'ok');
+  await renderSortieConsole();
+}
+
+async function performQuickAutoDockDamaged() {
+  const { buildings, entities, formation, rootStorage, uiKit } = sortieState.context;
+  if (!buildings || typeof buildings.autoDockDamagedShipgirls !== 'function') {
+    uiKit.showToast('船坞系统尚未就绪', 'warn');
+    return;
+  }
+  const runIds = sortieState.activeRun?.fleetMemberIds;
+  const memberIds =
+    Array.isArray(runIds) && runIds.length > 0
+      ? runIds
+      : formation
+      ? formation.getMemberIds()
+      : [getFlagship()?.id].filter(Boolean);
+
+  const res = await buildings.autoDockDamagedShipgirls(memberIds);
+  await persistCharacterRoster({ storage: rootStorage, entities });
+
+  if (res.docked.length > 0) {
+    const names = res.docked.map((d) => d.name).join('、');
+    const extra =
+      res.skippedFull.length > 0
+        ? `；渠位已满未入渠：${res.skippedFull.join('、')}`
+        : res.skippedResource.length > 0
+        ? `；资源不足未入渠：${res.skippedResource.map((x) => x.name).join('、')}`
+        : '';
+    uiKit.showToast(`已将 ${res.docked.length} 名受损舰娘送入船坞维修（${names}，剩余渠位 ${res.freeBaysLeft}）${extra}`, 'ok');
+  } else if (res.skippedFull.length > 0) {
+    uiKit.showToast(`船坞维修渠位已满（${res.capacity}/${res.capacity}），请前往船坞快速修复或扩建渠位`, 'warn');
+  } else if (res.skippedResource.length > 0) {
+    uiKit.showToast(`入渠失败：${res.skippedResource[0].reason}`, 'warn');
+  } else if (res.alreadyInDock > 0) {
+    uiKit.showToast(`受损舰娘均已在船坞维修队列中（共 ${res.alreadyInDock} 名）`, 'info');
+  } else {
+    uiKit.showToast('参战舰娘当前均处于满耐久状态，无需入渠维修', 'info');
+  }
   await renderSortieConsole();
 }
 
@@ -1808,6 +1874,7 @@ async function renderSortieConsole() {
         if (modules.has('port-dockyard')) modules.mount('port-dockyard', { transition: 'left' });
       },
       onPostBattleResupply: () => performQuickFleetResupply(),
+      onPostBattleAutoDock: () => performQuickAutoDockDamaged(),
     });
     return;
   }
@@ -2071,19 +2138,27 @@ async function renderSortieConsole() {
       retBtn.addEventListener('click', () => retreatToPort());
       btnStack.appendChild(retBtn);
 
+      const postRow = document.createElement('div');
+      postRow.className = 'lab-btn-grid';
+      postRow.innerHTML = `
+        <button type="button" id="btn-sortie-quick-resupply" class="btn-secondary uikit-touch-target">全队一键补给油弹</button>
+        <button type="button" id="btn-sortie-auto-dock" class="btn-secondary uikit-touch-target">受损舰娘一键入渠维修</button>
+      `;
+      postRow.querySelector('#btn-sortie-quick-resupply').addEventListener('click', () => performQuickFleetResupply());
+      postRow.querySelector('#btn-sortie-auto-dock').addEventListener('click', () => performQuickAutoDockDamaged());
+      btnStack.appendChild(postRow);
+
       if (run.completed) {
-        const postRow = document.createElement('div');
-        postRow.className = 'lab-btn-grid';
-        postRow.innerHTML = `
-          <button type="button" id="btn-sortie-goto-dockyard" class="btn-secondary uikit-touch-target">直达船坞整备</button>
-          <button type="button" id="btn-sortie-quick-resupply" class="btn-secondary uikit-touch-target">一键补给全队</button>
-        `;
-        postRow.querySelector('#btn-sortie-goto-dockyard').addEventListener('click', async () => {
+        const dockBtn = document.createElement('button');
+        dockBtn.type = 'button';
+        dockBtn.id = 'btn-sortie-goto-dockyard';
+        dockBtn.className = 'btn-secondary uikit-touch-target';
+        dockBtn.textContent = '返航并直达船坞整备';
+        dockBtn.addEventListener('click', async () => {
           await retreatToPort();
           if (modules.has('port-dockyard')) modules.mount('port-dockyard', { transition: 'left' });
         });
-        postRow.querySelector('#btn-sortie-quick-resupply').addEventListener('click', () => performQuickFleetResupply());
-        btnStack.appendChild(postRow);
+        btnStack.appendChild(dockBtn);
       }
 
       activeCard.appendChild(btnStack);

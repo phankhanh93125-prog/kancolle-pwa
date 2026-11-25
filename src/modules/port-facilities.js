@@ -619,14 +619,31 @@ function createFormationModule() {
       </p>
       <div class="lab-btn-grid">
         <button type="button" id="btn-form-autofill" class="btn-secondary uikit-touch-target">一键补满席位</button>
-        <button type="button" id="btn-form-goto-sortie" class="btn-primary uikit-touch-target">前往出征海图</button>
+        <button type="button" id="btn-form-auto-equip-fleet" class="btn-secondary uikit-touch-target" ${summary.members.length === 0 ? 'disabled' : ''}>全队一键最优配装</button>
       </div>
+      <button type="button" id="btn-form-goto-sortie" class="btn-primary uikit-touch-target">前往出征海图</button>
     `;
 
     sumCard.querySelector('#btn-form-autofill').addEventListener('click', async () => {
       const next = await formation.autoFillFleet();
       uiKit.showToast(`已自动编成 ${next.count} 人舰队`, 'ok');
       render();
+    });
+
+    sumCard.querySelector('#btn-form-auto-equip-fleet').addEventListener('click', async () => {
+      try {
+        const res = await formation.autoEquipFleet({ includeOutfit: true });
+        await persistCharacterRoster({ storage: rootStorage, entities });
+        uiKit.showToast(
+          res.totalEquipped > 0
+            ? `已按旗舰至僚机顺序为 ${res.fleetCount} 名舰娘自动配装 ${res.totalEquipped} 件最优装备！`
+            : `当前编队 ${res.fleetCount} 名舰娘均已是仓库最优配装`,
+          res.totalEquipped > 0 ? 'ok' : 'info'
+        );
+        render();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '全队自动配装失败', 'warn');
+      }
     });
 
     sumCard.querySelector('#btn-form-goto-sortie').addEventListener('click', () => {

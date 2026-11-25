@@ -1666,6 +1666,190 @@ export class InventorySystem {
     return payload;
   }
 
+  /**
+   * Compute deterministic priority tuple for optimal auto-equip:
+   *   1. Rarity rank (legendary 5 > epic 4 > rare 3 > uncommon 2 > common 1)
+   *   2. Enhancement level (+Lv)
+   *   3. Total naval 8-stat + checkBonus sum
+   */
+  _scoreItemForAutoEquip(item) {
+    const rId = inferItemRarity(item);
+    const rarityRank = ITEM_RARITY_MAP[rId]?.rank || 1;
+    const level = Math.max(0, Math.floor(Number(item?.level) || 0));
+    let statSum = 0;
+    for (const b of item?.bonuses || []) {
+      const val = Number(b?.value) || 0;
+      if (b?.stat === 'checkBonus') statSum += val * 8;
+      else if (b?.layer === 'percentAdd' || b?.layer === 'percentMult') statSum += val * 100;
+      else statSum += val;
+    }
+    return { rarityRank, level, statSum };
+  }
+
+  _compareAutoEquipCandidates(a, b) {
+    const sa = this._scoreItemForAutoEquip(a);
+    const sb = this._scoreItemForAutoEquip(b);
+    if (sb.rarityRank !== sa.rarityRank) return sb.rarityRank - sa.rarityRank;
+    if (sb.level !== sa.level) return sb.level - sa.level;
+    if (sb.statSum !== sa.statSum) return sb.statSum - sa.statSum;
+    return (b.updatedAt || 0) - (a.updatedAt || 0);
+  }
+
+  /**
+   * One-click optimal auto-equip for a single shipgirl:
+   * Iterates 3 mandatory core slots -> all expanded typed slots -> outfit slot (if currently empty),
+   * assigning the highest-rarity / highest-level / highest-stat IDLE matching warehouse equipment.
+   * Never downgrades a slot that already holds a better item.
+   */
+  async autoEquipCharacter(characterId, { includeOutfit = true, excludeItemIds = null } = {}) {
+    const cid = String(characterId || '');
+    if (!cid) throw new Error('目标角色 ID 不能为空');
+    const slots = this.getCharacterSlots(cid);
+    if (!this._equipped[cid]) this._equipped[cid] = {};
+
+    const reservedCounts = new Map();
+    if (excludeItemIds instanceof Map) {
+      for (const [k, v] of excludeItemIds.entries()) reservedCounts.set(String(k), Number(v) || 0);
+    } else if (excludeItemIds instanceof Set || Array.isArray(excludeItemIds)) {
+      for (const k of excludeItemIds) reservedCounts.set(String(k), (reservedCounts.get(String(k)) || 0) + 1);
+    }
+
+    // Count how many OTHER characters currently wear each itemId (respecting item.quantity)
+    const wornByOthersCount = new Map();
+    for (const [otherCid, slotMap] of Object.entries(this._equipped)) {
+      if (otherCid === cid) continue;
+      for (const eqId of Object.values(slotMap || {})) {
+        if (eqId) {
+          const id = String(eqId);
+          wornByOthersCount.set(id, (wornByOthersCount.get(id) || 0) + 1);
+        }
+      }
+    }
+
+    const coreSlots = slots.filter((s) => s.required);
+    const expandedSlots = slots.filter((s) => s.custom);
+    const outfitSlots = includeOutfit ? slots.filter((s) => !s.required && !s.custom && s.id === 'outfit') : [];
+    const orderedSlots = [...coreSlots, ...expandedSlots, ...outfitSlots];
+
+    const usedOnThisChar = new Set();
+    const equippedDetails = [];
+    let changedCount = 0;
+
+    for (const slot of orderedSlots) {
+      const currentItemId = this._equipped[cid][slot.id] || null;
+      const currentItem = currentItemId ? this._items.get(currentItemId) : null;
+
+      // For outfit slot: only auto-equip if the shipgirl is not already wearing an outfit
+      if (slot.id === 'outfit' && currentItem) {
+        usedOnThisChar.add(currentItem.id);
+        continue;
+      }
+
+      const candidates = [];
+      for (const item of this._items.values()) {
+        if (!this.isItemCompatibleWithSlot(slot, item)) continue;
+        if (usedOnThisChar.has(item.id)) continue;
+        const maxCopies = Math.max(1, Math.floor(Number(item.quantity ?? 1) || 1));
+        const otherUsed = Math.max(wornByOthersCount.get(item.id) || 0, reservedCounts.get(item.id) || 0);
+        if (otherUsed >= maxCopies && item.id !== currentItemId) continue;
+        candidates.push(item);
+      }
+
+      if (candidates.length === 0) {
+        if (currentItem) usedOnThisChar.add(currentItem.id);
+        continue;
+      }
+
+      candidates.sort((a, b) => this._compareAutoEquipCandidates(a, b));
+      const best = candidates[0];
+
+      // Avoid swapping if already wearing an equally good or better item in this slot
+      if (currentItem && currentItem.id === best.id) {
+        usedOnThisChar.add(best.id);
+        continue;
+      }
+      if (currentItem && this._compareAutoEquipCandidates(currentItem, best) <= 0) {
+        usedOnThisChar.add(currentItem.id);
+        continue;
+      }
+
+      // If `best` was sitting in a different slot of this same character, free that slot first
+      for (const [sId, eqId] of Object.entries(this._equipped[cid])) {
+        if (eqId === best.id && sId !== slot.id) {
+          delete this._equipped[cid][sId];
+        }
+      }
+
+      this._equipped[cid][slot.id] = best.id;
+      usedOnThisChar.add(best.id);
+      changedCount += 1;
+      equippedDetails.push({
+        slotId: slot.id,
+        slotLabel: slot.label,
+        itemId: best.id,
+        itemName: best.name,
+        rarity: inferItemRarity(best),
+      });
+    }
+
+    if (changedCount > 0) {
+      this.syncCharacterModifiers(cid);
+      await this.persist();
+      const actor = this._entities?.get(cid);
+      this._emit('inventory:equipped', {
+        characterId: cid,
+        characterName: actor?.name || cid,
+        autoEquipped: true,
+        equippedCount: changedCount,
+        seaworthy: this.checkSeaworthiness(cid).seaworthy,
+        timestamp: Date.now(),
+      });
+    }
+
+    const actor = this._entities?.get(cid);
+    const seaworthyInfo = this.checkSeaworthiness(cid);
+    return {
+      characterId: cid,
+      characterName: actor?.name || cid,
+      equippedCount: changedCount,
+      equippedDetails,
+      wornItemIds: Array.from(usedOnThisChar),
+      seaworthy: seaworthyInfo.seaworthy,
+    };
+  }
+
+  /**
+   * One-click unequip all slots (core + expanded + outfit) for a single shipgirl.
+   */
+  async unequipAllForCharacter(characterId) {
+    const cid = String(characterId || '');
+    const slotMap = this._equipped[cid];
+    if (!slotMap || Object.keys(slotMap).length === 0) {
+      return { characterId: cid, removedCount: 0, seaworthy: this.checkSeaworthiness(cid).seaworthy };
+    }
+    const removedCount = Object.keys(slotMap).length;
+    this._equipped[cid] = {};
+    this.syncCharacterModifiers(cid);
+    await this.persist();
+
+    const actor = this._entities?.get(cid);
+    const seaworthyInfo = this.checkSeaworthiness(cid);
+    this._emit('inventory:unequipped', {
+      characterId: cid,
+      characterName: actor?.name || cid,
+      unequipAll: true,
+      removedCount,
+      seaworthy: seaworthyInfo.seaworthy,
+      timestamp: Date.now(),
+    });
+    return {
+      characterId: cid,
+      characterName: actor?.name || cid,
+      removedCount,
+      seaworthy: seaworthyInfo.seaworthy,
+    };
+  }
+
   async removeCharacterEquipment(characterId) {
     const cid = String(characterId);
     delete this._equipped[cid];

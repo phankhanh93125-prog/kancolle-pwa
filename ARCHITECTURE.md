@@ -146,6 +146,8 @@
 - **自定义装备与服装可视化编辑器（`src/modules/supply-workshop.js`、`src/modules/compendium-studio.js`、`src/core/content-manager.js`、`src/core/dialogue-engine.js`）**：仓库工坊与图鉴内容库均提供「+ 新建装备/服装」入口，覆盖核心三件套、主战武器、战术辅助与舰娘服装，支持五阶品级、SVG 图标选择、自由配置八维属性与检定加成、服装风格标签（联动秘书舰交谈台词反馈），支持保存至本地图鉴、一键发放到仓库及随世界模组 JSON 导出/导入。
 - **高产出资源、品级批量拆解与倍率调节器（`src/core/resource-manager.js`、`src/core/port-buildings.js`、`src/core/route-generator.js`、`src/modules/sortie-console.js`）**：全面提升出征节点/精英/Boss 收益与高品级装备/服装箱掉落，提高港区离线每小时自然恢复速度；仓库工坊支持按品级批量拆解闲置装备返还钢材、铝材与银条；设置面板新增持久化「资源与掉落倍率」调节器（`1.0x 常规` / `2.0x 丰饶` / `3.0x 畅玩` + `0.5x~5.0x` 自定义滑块）。
 - **已知装备类型扩建槽位与 Schema v5 无损迁移（`src/core/stat-rules.js`、`src/core/inventory-system.js`、`src/modules/character-console.js`、`src/core/save-manager.js`）**：确立全站统一的 9 类已知装备枚举（`主炮/鱼雷/舰载机/雷达/声呐/防空/引擎/装甲/核心`）并与自定义装备编辑器完全同源；角色卡保留固定三大核心槽位，将原自由输入槽位重构为「+ 扩建装备槽位」类型选择面板（支持变更类型、拆除槽位与同类型精准筛选穿戴），历史存档自动按已穿戴装备或关键词无损迁移至专属类型槽位。
+- **单舰/全队一键最优配装、战后快捷整备与粘贴 JSON 直导（`src/core/inventory-system.js`、`src/core/formation-system.js`、`src/core/port-buildings.js`、`src/core/content-manager.js`、`src/modules/compendium-studio.js`）**：角色卡提供「一键最优配装 / 一键卸下全部」，舰队编成提供「全队一键最优配装」（按旗舰至僚机顺序按品级→强化→八维总和分配仓库最优空闲装备及服装）；出征结算与返航界面集成「全队一键补给油弹」与「受损舰娘一键入渠维修」；图鉴与内容管理台新增多行文本框支持直接粘贴 JSON 文本一键合并导入角色、装备/服装、性格词条与剧情/事件包。
+
 
 
 

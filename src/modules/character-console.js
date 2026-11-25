@@ -1713,6 +1713,10 @@ function createSlotsSection(char, { compact = false } = {}) {
       <h2 class="section-title">核心槽位与扩建装备槽位</h2>
       <button type="button" id="${compact ? 'btn-cc-add-custom-slot-ov' : 'btn-cc-add-custom-slot'}" class="btn-primary uikit-touch-target" style="padding:6px 12px;font-size:12.5px;">+ 扩建装备槽位</button>
     </div>
+    <div class="lab-btn-grid">
+      <button type="button" id="${compact ? 'btn-cc-auto-equip-ov' : 'btn-cc-auto-equip'}" class="btn-primary uikit-touch-target">一键最优配装</button>
+      <button type="button" id="${compact ? 'btn-cc-unequip-all-ov' : 'btn-cc-unequip-all'}" class="btn-secondary uikit-touch-target">一键卸下全部</button>
+    </div>
     <p class="muted-text" style="font-size:12px;">
       「引擎 / 装甲 / 核心」为固定必装核心槽（${seaworthyInfo.seaworthy ? '已适航' : '未适航，缺少必装项'}）；可随时从已知装备类型中扩建专属类型槽位（主炮/鱼雷/舰载机/雷达/声呐/防空/核心系），穿戴时自动精准匹配同类型装备。
     </p>
@@ -1722,6 +1726,45 @@ function createSlotsSection(char, { compact = false } = {}) {
   card
     .querySelector(compact ? '#btn-cc-add-custom-slot-ov' : '#btn-cc-add-custom-slot')
     .addEventListener('click', () => openAddCustomSlotSheet(char));
+
+  card
+    .querySelector(compact ? '#btn-cc-auto-equip-ov' : '#btn-cc-auto-equip')
+    .addEventListener('click', async () => {
+      try {
+        const res = await inventory.autoEquipCharacter(char.id, { includeOutfit: true });
+        await saveRosterNow();
+        uiKit.showToast(
+          res.equippedCount > 0
+            ? `已为「${char.name}」自动配装 ${res.equippedCount} 件最优空闲装备（${res.seaworthy ? '已适航' : '待补核心部件'}）`
+            : `「${char.name}」当前槽位已是最优配装，或仓库暂无更优同类型空闲装备`,
+          res.equippedCount > 0 ? 'ok' : 'info'
+        );
+        await renderConsole();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '自动配装失败', 'warn');
+      }
+    });
+
+  card
+    .querySelector(compact ? '#btn-cc-unequip-all-ov' : '#btn-cc-unequip-all')
+    .addEventListener('click', async () => {
+      const ok = await uiKit.confirmDialog({
+        title: `卸下「${char.name}」全部装备？`,
+        message: '将把三大核心槽、全部扩建槽及服装槽内的装备一键退回仓库（核心槽清空后角色将暂处于未适航状态）。',
+        confirmLabel: '确认一键卸下',
+        tone: 'danger',
+      });
+      if (!ok) return;
+      const res = await inventory.unequipAllForCharacter(char.id);
+      await saveRosterNow();
+      uiKit.showToast(
+        res.removedCount > 0
+          ? `已从「${char.name}」卸下全部 ${res.removedCount} 件装备`
+          : `「${char.name}」当前未穿戴任何装备`,
+        res.removedCount > 0 ? 'ok' : 'info'
+      );
+      await renderConsole();
+    });
 
   const listEl = card.querySelector('[data-slots-list]');
   for (const s of slots) {
