@@ -17,6 +17,7 @@ import { createUIKit, showToast } from './core/ui-kit.js';
 import { REGISTERED_MODULES } from './modules/index.js';
 import { hydrateCharacterRoster } from './modules/character-console.js';
 import { hydrateActionConsole } from './modules/action-console.js';
+import { hydrateSortieConsole } from './modules/sortie-console.js';
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -535,14 +536,17 @@ async function bootApplication() {
   try {
     await Promise.all([inventory.init(), resources.init(), logs.init()]);
     await hydrateCharacterRoster({ storage, entities, inventory, statRules });
-    await hydrateActionConsole({ storage, rules });
+    await Promise.all([
+      hydrateActionConsole({ storage, rules }),
+      hydrateSortieConsole({ storage }),
+    ]);
   } catch (err) {
     console.error('[App] Persistence hydration failed:', err);
   }
 
   logs.attachBusListeners();
 
-  // Trigger Auto-Save snapshot whenever equipment, slots, characters, actions, resources, or rules mutate
+  // Trigger Auto-Save snapshot whenever equipment, slots, characters, port service, sortie, actions, resources, or rules mutate
   saves.bindAutoSaveEvents(
     [
       'inventory:equipped',
@@ -558,6 +562,11 @@ async function bootApplication() {
       'stat-rules:changed',
       'action:settled',
       'action:events-changed',
+      'port:serviced',
+      'sortie:launched',
+      'sortie:node-resolved',
+      'sortie:returned',
+      'sortie:routes-changed',
     ],
     (eventName) => ({
       name: '系统自动存档快照',
@@ -576,11 +585,11 @@ async function bootApplication() {
     { debounceMs: 180 }
   );
 
-  // One-time default home migration so Character Console opens as default home screen
+  // One-time default home migration so Port Hub opens as default home screen
   const shellStore = storage.namespace('core-shell');
-  if (shellStore.get('homeVersion', null) !== 'character-console-v1') {
-    shellStore.set('homeVersion', 'character-console-v1');
-    shellStore.set('activeModuleId', 'character-console');
+  if (shellStore.get('homeVersion', null) !== 'port-hub-v1') {
+    shellStore.set('homeVersion', 'port-hub-v1');
+    shellStore.set('activeModuleId', 'port-hub');
   }
 
   moduleManager.mountInitial();
