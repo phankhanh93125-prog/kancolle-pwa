@@ -108,9 +108,18 @@ function escapeHtml(str) {
     .replaceAll("'", '&#39;');
 }
 
+const RESOURCE_SVGS = Object.freeze({
+  fuel: '<svg class="res-ico" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2C8 2 3.5 7 3.5 10.2A4.5 4.5 0 0 0 12.5 10.2C12.5 7 8 2 8 2Z" fill="#22c55e" fill-opacity=".28" stroke="#22c55e" stroke-width="1.4"/></svg>',
+  ammo: '<svg class="res-ico" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 13V6.5C5 4 6.5 2 8 2C9.5 2 11 4 11 6.5V13H5Z" fill="#f59e0b" fill-opacity=".28" stroke="#f59e0b" stroke-width="1.4"/><path d="M5 10.5H11" stroke="#f59e0b" stroke-width="1.2"/></svg>',
+  steel: '<svg class="res-ico" viewBox="0 0 16 16" fill="none" aria-hidden="true"><polygon points="3,12 5,5 11,5 13,12" fill="#94a3b8" fill-opacity=".28" stroke="#94a3b8" stroke-width="1.4"/></svg>',
+  bauxite: '<svg class="res-ico" viewBox="0 0 16 16" fill="none" aria-hidden="true"><polygon points="8,2 14,8 8,14 2,8" fill="#fb923c" fill-opacity=".28" stroke="#fb923c" stroke-width="1.4"/></svg>',
+  silver: '<svg class="res-ico" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.5" y="5" width="11" height="6" rx="1.6" fill="#cbd5e1" fill-opacity=".30" stroke="#cbd5e1" stroke-width="1.4"/><path d="M5 8H11" stroke="#cbd5e1" stroke-width="1.2"/></svg>',
+  gold: '<svg class="res-ico" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.5" y="5" width="11" height="6" rx="1.6" fill="#facc15" fill-opacity=".32" stroke="#eab308" stroke-width="1.4"/><path d="M5 8H11" stroke="#facc15" stroke-width="1.2"/></svg>',
+});
+
 /**
  * Render a unified, compact 6-resource + dual-currency top overview bar element
- * for shared use across Character Console, Action Console, and Supply Workshop.
+ * with crisp inline vector icons.
  *
  * @param {ResourceManager} resources
  * @param {{ showCaps?: boolean, id?: string }} [options]
@@ -129,7 +138,7 @@ export function createResourceOverviewBar(resources, { showCaps = false, id = 's
         .map(
           (r) => `
         <div class="res-mini-cell" data-res-cell="${escapeHtml(r.id)}">
-          <span class="res-mini-label">${escapeHtml(r.name)}</span>
+          <span class="res-mini-label">${RESOURCE_SVGS[r.id] || ''}${escapeHtml(r.name)}</span>
           <span class="res-mini-val">${Math.floor(r.amount)}${showCaps && r.cap ? `<small>/${r.cap}</small>` : ''}</span>
         </div>
       `
@@ -141,7 +150,7 @@ export function createResourceOverviewBar(resources, { showCaps = false, id = 's
         .map(
           (c) => `
         <div class="res-mini-cell is-currency is-${escapeHtml(c.id)}" data-res-cell="${escapeHtml(c.id)}">
-          <span class="res-mini-label">${escapeHtml(c.name)}</span>
+          <span class="res-mini-label">${RESOURCE_SVGS[c.id] || ''}${escapeHtml(c.name)}</span>
           <span class="res-mini-val">${Math.floor(c.amount)}</span>
         </div>
       `

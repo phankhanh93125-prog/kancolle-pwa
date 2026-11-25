@@ -2,7 +2,12 @@ import { EventBus } from './core/event-bus.js';
 import { StorageManager } from './core/storage.js';
 import { ApiGateway, PROVIDER_PRESETS } from './core/api.js';
 import { ModuleManager } from './core/module-manager.js';
-import { SaveManager } from './core/save-manager.js';
+import {
+  SaveManager,
+  VAULT_PRIMARY_SLOTS,
+  migrateSavePayload,
+  triggerJsonDownload,
+} from './core/save-manager.js';
 import { CalcEngine } from './core/calc-engine.js';
 import { EntitySystem } from './core/entity-system.js';
 import { RuleEngine } from './core/rule-engine.js';
@@ -22,9 +27,11 @@ import { ExpeditionSystem } from './core/expedition-system.js';
 import { PortBuildingsSystem } from './core/port-buildings.js';
 import { InteractionSystem } from './core/interaction-system.js';
 import { ContentManager } from './core/content-manager.js';
+import { StoryPackEngine } from './core/story-pack-engine.js';
+import { ThemeManager } from './core/theme-manager.js';
 import { createUIKit, showToast } from './core/ui-kit.js';
 import { REGISTERED_MODULES } from './modules/index.js';
-import { hydrateCharacterRoster } from './modules/character-console.js';
+import { hydrateCharacterRoster, persistCharacterRoster } from './modules/character-console.js';
 import { hydrateActionConsole } from './modules/action-console.js';
 import { hydrateSortieConsole } from './modules/sortie-console.js';
 
@@ -49,6 +56,10 @@ function formatBytes(bytes) {
 // ------------------------------------------------------------
 const bus = new EventBus();
 const storage = new StorageManager({ bus });
+const theme = new ThemeManager({ storage, bus });
+// Apply persisted CSS Variable skin immediately before rendering UI
+theme.applyTheme();
+
 const api = new ApiGateway({ storage, bus });
 const saves = new SaveManager({ storage, bus });
 const calc = new CalcEngine();
@@ -113,6 +124,19 @@ const contentManager = new ContentManager({
 });
 interaction.setContentManager(contentManager);
 
+const storyPacks = new StoryPackEngine({
+  storage,
+  entities,
+  inventory,
+  resources,
+  statRules,
+  commander,
+  interaction,
+  narrative,
+  logs,
+  bus,
+});
+
 const combat = new TacticalCombatEngine({
   entities,
   inventory,
@@ -133,6 +157,8 @@ const els = {
   inputField: document.getElementById('universal-input'),
   sendBtn: document.getElementById('btn-universal-send'),
   btnModules: document.getElementById('btn-open-modules'),
+  btnTheme: document.getElementById('btn-open-theme'),
+  btnVault: document.getElementById('btn-open-vault'),
   btnApi: document.getElementById('btn-open-api'),
   btnData: document.getElementById('btn-open-data'),
   sheetBackdrop: document.getElementById('sheet-backdrop'),
@@ -259,6 +285,8 @@ const moduleManager = new ModuleManager({
     buildings,
     interaction,
     contentManager,
+    storyPacks,
+    theme,
     uiKit,
   },
 });
@@ -604,7 +632,550 @@ function openDataSheet() {
   });
 }
 
+// ------------------------------------------------------------
+// Full-World Snapshot Capture & Lossless Restore Helpers
+// ------------------------------------------------------------
+function captureFullWorldSnapshot() {
+  return {
+    commander: commander.serialize(),
+    formation: formation.serialize(),
+    expeditions: expeditions.serialize(),
+    buildings: buildings.serialize(),
+    interaction: interaction.serialize(),
+    contentManager: contentManager.serialize(),
+    storyPacks: storyPacks.serialize(),
+    theme: theme.serialize(),
+    entities: entities.serialize(),
+    inventory: inventory.serialize(),
+    resources: resources.serialize(),
+    statRules: statRules.getConfig(),
+  };
+}
+
+function buildSaveSummary(trigger = 'manual') {
+  const cmd = commander.getProfile();
+  const sec = interaction.getSecretary() || entities.list({ kind: 'character' })[0] || null;
+  const flagsCount = Object.keys(storyPacks.getAllFlags()).length;
+  return {
+    trigger,
+    commanderName: cmd.name,
+    commanderLevel: cmd.level,
+    flagshipName: sec ? sec.name : '未指派',
+    fleetCount: formation.getMemberIds().length,
+    customBuildings: buildings.listCustomBuildings().length,
+    characters: entities.list({ kind: 'character' }).length,
+    items: inventory.listItems().length,
+    flagsCount,
+    themePreset: theme.getActivePreset().name,
+  };
+}
+
+async function restoreFullWorldSnapshot(rawData) {
+  const { data, migrated } = migrateSavePayload(rawData);
+  if (data.statRules) statRules.updateConfig(data.statRules);
+  if (data.commander) commander.deserialize(data.commander, { persist: true });
+  if (data.entities) {
+    entities.deserialize(data.entities);
+    await persistCharacterRoster({ storage, entities });
+  }
+  if (data.inventory) inventory.deserialize(data.inventory, { persist: true });
+  if (data.resources) resources.deserialize(data.resources, { persist: true });
+  if (data.formation) formation.deserialize(data.formation, { persist: true });
+  if (data.expeditions) expeditions.deserialize(data.expeditions, { persist: true });
+  if (data.buildings) buildings.deserialize(data.buildings, { persist: true });
+  if (data.interaction) interaction.deserialize(data.interaction, { persist: true });
+  if (data.contentManager) contentManager.deserialize(data.contentManager, { persist: true });
+  if (data.storyPacks) storyPacks.deserialize(data.storyPacks, { persist: true });
+  if (data.theme) theme.deserialize(data.theme, { persist: true });
+
+  const active = moduleManager.getActive();
+  if (active?.id) {
+    moduleManager.mount(active.id);
+  }
+  return { migrated };
+}
+
+function formatTimeShort(ts) {
+  if (!ts) return '—';
+  try {
+    return new Date(ts).toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return String(ts);
+  }
+}
+
+// --- Sheet 4: UI Theme Skin, Visual FX/Audio & Modular Port Layout ---
+function openThemeSheet() {
+  openSheet('主题换肤与桌面布局', (body) => {
+    const renderThemeView = () => {
+      const state = theme.getState();
+      const presets = theme.listPresets();
+      const activePreset = theme.getActivePreset();
+      const currentAccent = state.customAccent || activePreset.vars['--accent'] || '#14b8a6';
+      const currentHighlight = state.customHighlight || activePreset.vars['--accent-hover'] || '#2dd4bf';
+      const layout = theme.getPortLayout();
+
+      body.innerHTML = `
+        <div class="module-stack">
+          <div class="lab-stack-sm">
+            <div class="section-header-row" style="margin-bottom:0;">
+              <strong style="font-size:13.5px;">1. 精选 UI 主题皮肤（实时生效）</strong>
+              <span class="status-badge badge-ok" id="theme-active-badge">${escapeHtml(activePreset.name)}</span>
+            </div>
+            <div class="theme-preset-grid" id="theme-preset-grid">
+              ${presets
+                .map(
+                  (p) => `
+                <button
+                  type="button"
+                  class="theme-swatch-card ${p.id === state.presetId ? 'is-active' : ''}"
+                  data-theme-preset="${escapeHtml(p.id)}"
+                >
+                  <div class="section-header-row" style="margin-bottom:0; width:100%;">
+                    <strong style="font-size:13px;">${escapeHtml(p.name)}</strong>
+                    <span class="muted-text" style="font-size:11px;">${p.mode === 'light' ? '浅色' : '深色'}</span>
+                  </div>
+                  <div class="theme-swatch-dots">
+                    ${p.previewColors
+                      .map((c) => `<span class="theme-swatch-dot" style="background:${escapeHtml(c)};"></span>`)
+                      .join('')}
+                  </div>
+                </button>
+              `
+                )
+                .join('')}
+            </div>
+          </div>
+
+          <div class="lab-divider"></div>
+
+          <div class="lab-stack-sm">
+            <strong style="font-size:13.5px;">2. 手机端实时微调（色板 / 圆角 / 纹理 / 打字机）</strong>
+            <div class="lab-kv-grid">
+              <div class="form-group">
+                <label class="form-label" for="theme-accent-color">主强调色</label>
+                <input id="theme-accent-color" class="form-input" style="height:44px; padding:4px;" type="color" value="${escapeHtml(currentAccent)}">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="theme-highlight-color">高亮辅助色</label>
+                <input id="theme-highlight-color" class="form-input" style="height:44px; padding:4px;" type="color" value="${escapeHtml(currentHighlight)}">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <div class="form-label-row">
+                <label class="form-label" for="theme-radius-range">卡片圆角半径</label>
+                <span id="theme-radius-val" class="status-model">${state.cardRadius}px</span>
+              </div>
+              <input id="theme-radius-range" class="range-input" type="range" min="6" max="24" step="1" value="${state.cardRadius}">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="theme-texture-select">背景纹理质感</label>
+              <select id="theme-texture-select" class="form-select">
+                <option value="grid" ${state.texture === 'grid' ? 'selected' : ''}>战术网格 (Grid)</option>
+                <option value="dots" ${state.texture === 'dots' ? 'selected' : ''}>微点阵 (Dots)</option>
+                <option value="waves" ${state.texture === 'waves' ? 'selected' : ''}>柔光海浪 (Waves)</option>
+                <option value="none" ${state.texture === 'none' ? 'selected' : ''}>纯色极简 (None)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <div class="form-label-row">
+                <label class="form-label" for="theme-tw-speed">剧情打字机速度</label>
+                <span id="theme-tw-val" class="status-model">${state.typewriterSpeed === 0 ? '瞬间显示' : `${state.typewriterSpeed}ms/字`}</span>
+              </div>
+              <input id="theme-tw-speed" class="range-input" type="range" min="0" max="50" step="2" value="${state.typewriterSpeed}">
+            </div>
+          </div>
+
+          <div class="lab-divider"></div>
+
+          <div class="lab-stack-sm">
+            <strong style="font-size:13.5px;">3. 动效、触感震动与合成音效开关</strong>
+            <label class="checkbox-row">
+              <input id="chk-fx-enabled" type="checkbox" ${fxStage.isEnabled() ? 'checked' : ''}>
+              <span>启用战斗红光闪烁、3D 骰子检定与屏幕震动演出</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="chk-fx-sound" type="checkbox" ${fxStage.isSoundEnabled() ? 'checked' : ''}>
+              <span>启用轻量级 Web Audio 合成音效（可随时静音）</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="chk-fx-haptics" type="checkbox" ${fxStage.isHapticsEnabled() ? 'checked' : ''}>
+              <span>启用手机端轻微触感震动反馈 (Vibration)</span>
+            </label>
+            <button type="button" id="btn-fx-test-sfx" class="btn-secondary uikit-touch-target">试听检定音效与 3D 骰子演出</button>
+          </div>
+
+          <div class="lab-divider"></div>
+
+          <div class="lab-stack-sm">
+            <strong style="font-size:13.5px;">4. 模块化港区主页卡片顺序与显隐</strong>
+            <div class="lab-stack-sm" id="theme-port-layout-list">
+              ${layout
+                .map(
+                  (item, idx) => `
+                <div class="layout-order-row" data-layout-item="${escapeHtml(item.id)}">
+                  <label style="display:flex; align-items:center; gap:8px; flex:1 1 auto; min-width:0; cursor:pointer;">
+                    <input type="checkbox" data-layout-toggle="${escapeHtml(item.id)}" ${item.visible ? 'checked' : ''}>
+                    <span style="font-size:13px;">${escapeHtml(item.label)}</span>
+                  </label>
+                  <div class="layout-order-actions">
+                    <button type="button" class="layout-mini-btn" data-layout-up="${idx}" ${idx === 0 ? 'disabled' : ''}>上移</button>
+                    <button type="button" class="layout-mini-btn" data-layout-down="${idx}" ${idx === layout.length - 1 ? 'disabled' : ''}>下移</button>
+                  </div>
+                </div>
+              `
+                )
+                .join('')}
+            </div>
+          </div>
+
+          <button type="button" id="btn-theme-reset" class="btn-secondary uikit-touch-target">恢复默认深海主题与布局</button>
+        </div>
+      `;
+
+      body.querySelectorAll('[data-theme-preset]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = btn.getAttribute('data-theme-preset');
+          theme.setPreset(id);
+          fxStage.playSfx('click');
+          showToast(`已切换主题皮肤：${theme.getActivePreset().name}`, 'ok');
+          renderThemeView();
+        });
+      });
+
+      body.querySelector('#theme-accent-color').addEventListener('input', (e) => {
+        theme.updateCustomVars({ customAccent: e.target.value });
+      });
+      body.querySelector('#theme-highlight-color').addEventListener('input', (e) => {
+        theme.updateCustomVars({ customHighlight: e.target.value });
+      });
+
+      const radiusInput = body.querySelector('#theme-radius-range');
+      const radiusVal = body.querySelector('#theme-radius-val');
+      radiusInput.addEventListener('input', () => {
+        const val = Number(radiusInput.value);
+        radiusVal.textContent = `${val}px`;
+        theme.updateCustomVars({ cardRadius: val });
+      });
+
+      body.querySelector('#theme-texture-select').addEventListener('change', (e) => {
+        theme.updateCustomVars({ texture: e.target.value });
+      });
+
+      const twInput = body.querySelector('#theme-tw-speed');
+      const twVal = body.querySelector('#theme-tw-val');
+      twInput.addEventListener('input', () => {
+        const val = Number(twInput.value);
+        twVal.textContent = val === 0 ? '瞬间显示' : `${val}ms/字`;
+        theme.updateCustomVars({ typewriterSpeed: val });
+      });
+
+      body.querySelector('#chk-fx-enabled').addEventListener('change', (e) => {
+        fxStage.setEnabled(e.target.checked);
+      });
+      body.querySelector('#chk-fx-sound').addEventListener('change', (e) => {
+        fxStage.setSoundEnabled(e.target.checked);
+      });
+      body.querySelector('#chk-fx-haptics').addEventListener('change', (e) => {
+        fxStage.setHapticsEnabled(e.target.checked);
+      });
+      body.querySelector('#btn-fx-test-sfx').addEventListener('click', () => {
+        fxStage.playEffect('dice-roll', { roll: 18, total: 22, dc: 14, outcome: 'success', outcomeLabel: '成功' });
+      });
+
+      body.querySelectorAll('[data-layout-toggle]').forEach((chk) => {
+        chk.addEventListener('change', () => {
+          const id = chk.getAttribute('data-layout-toggle');
+          const next = theme.getPortLayout().map((it) => (it.id === id ? { ...it, visible: chk.checked } : it));
+          theme.updatePortLayout(next);
+          renderThemeView();
+        });
+      });
+
+      body.querySelectorAll('[data-layout-up]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const i = Number(btn.getAttribute('data-layout-up'));
+          const next = theme.getPortLayout();
+          if (i > 0) {
+            [next[i - 1], next[i]] = [next[i], next[i - 1]];
+            theme.updatePortLayout(next);
+            renderThemeView();
+          }
+        });
+      });
+
+      body.querySelectorAll('[data-layout-down]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const i = Number(btn.getAttribute('data-layout-down'));
+          const next = theme.getPortLayout();
+          if (i < next.length - 1) {
+            [next[i], next[i + 1]] = [next[i + 1], next[i]];
+            theme.updatePortLayout(next);
+            renderThemeView();
+          }
+        });
+      });
+
+      body.querySelector('#btn-theme-reset').addEventListener('click', () => {
+        theme.resetTheme();
+        showToast('已恢复默认深海战术终端主题与港区布局', 'ok');
+        renderThemeView();
+      });
+    };
+
+    renderThemeView();
+  });
+}
+
+// --- Sheet 5: Multi-Slot Save Vault & Lossless Migration ---
+function openSaveVaultSheet() {
+  openSheet('存档保险箱（多槽位与无损迁移）', (body) => {
+    let lastExportNote = '';
+
+    const askConfirm = (title, message, confirmLabel, onConfirm) => {
+      uiKit.openBottomSheet({
+        title,
+        subtitle: '防止误操作覆盖或丢失进度，请再次确认',
+        content: `<p class="muted-text">${escapeHtml(message)}</p>`,
+        actions: [
+          { id: 'cancel', label: '取消', tone: 'secondary' },
+          {
+            id: 'ok',
+            label: confirmLabel,
+            tone: 'danger',
+            onClick: async () => {
+              await onConfirm();
+              return true;
+            },
+          },
+        ],
+      });
+    };
+
+    const renderVaultView = async () => {
+      body.innerHTML = '<p class="muted-text">正在读取多槽位存档保险箱...</p>';
+      const [autoMeta, allSlots] = await Promise.all([saves.getAutoSaveMeta(), saves.listSlots()]);
+      const primarySlots = allSlots.slice(0, VAULT_PRIMARY_SLOTS);
+
+      body.innerHTML = `
+        <div class="module-stack">
+          <div class="vault-slot-card is-auto" id="vault-auto-card">
+            <div class="section-header-row" style="margin-bottom:0;">
+              <strong>自动存档快照（Auto-Save）</strong>
+              <span class="status-badge ${autoMeta ? 'badge-ok' : 'badge-muted'}">${autoMeta ? '已保护' : '暂无记录'}</span>
+            </div>
+            <p class="muted-text" style="font-size:12px;">
+              ${
+                autoMeta
+                  ? `保存时间：${escapeHtml(formatTimeShort(autoMeta.timestamp))} · 指挥官 Lv.${autoMeta.summary?.commanderLevel ?? 1} · 舰娘 ${autoMeta.summary?.characters ?? 0} 位 · Flags ${autoMeta.summary?.flagsCount ?? 0} 项`
+                  : '每次关键操作（抽卡/改造/出征/剧情抉择/换肤）都会自动备份快照至此。'
+              }
+            </p>
+            <button type="button" id="btn-vault-load-auto" class="btn-secondary uikit-touch-target" ${autoMeta ? '' : 'disabled'}>
+              读取并恢复自动存档
+            </button>
+          </div>
+
+          <strong style="font-size:13.5px;">独立手动存档槽位（3 个主槽位 · 支持自定义备注名）</strong>
+
+          ${primarySlots
+            .map((slot) => {
+              const s = slot.meta?.summary || {};
+              const noteVal = slot.meta?.name || `手动存档 #${slot.slotIndex}`;
+              return `
+              <div class="vault-slot-card" data-vault-slot="${slot.slotIndex}">
+                <div class="section-header-row" style="margin-bottom:0;">
+                  <strong>槽位 #${slot.slotIndex}</strong>
+                  <span class="status-badge ${slot.empty ? 'badge-muted' : 'badge-ok'}" id="vault-slot-status-${slot.slotIndex}">
+                    ${slot.empty ? '空闲槽位' : formatTimeShort(slot.meta.timestamp)}
+                  </span>
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="vault-note-${slot.slotIndex}">存档备注名</label>
+                  <input id="vault-note-${slot.slotIndex}" class="form-input" type="text" value="${escapeHtml(noteVal)}" placeholder="输入存档备注名...">
+                </div>
+                <p class="muted-text" style="font-size:12px;" id="vault-slot-summary-${slot.slotIndex}">
+                  ${
+                    slot.empty
+                      ? '尚未写入存档数据。点击下方「保存至此槽位」即可完整备份当前港区、剧情 Flags 与主题。'
+                      : `指挥官：${escapeHtml(s.commanderName || '提督')} Lv.${s.commanderLevel ?? 1} · 秘书舰：${escapeHtml(s.flagshipName || '—')} · 剧情 Flags：${s.flagsCount ?? 0} · 主题：${escapeHtml(s.themePreset || '默认')}`
+                  }
+                </p>
+                <div class="lab-btn-grid">
+                  <button type="button" id="btn-vault-save-${slot.slotIndex}" class="btn-primary uikit-touch-target" data-vault-save="${slot.slotIndex}">
+                    ${slot.empty ? `保存到槽位 #${slot.slotIndex}` : `覆盖槽位 #${slot.slotIndex}`}
+                  </button>
+                  <button type="button" id="btn-vault-load-${slot.slotIndex}" class="btn-secondary uikit-touch-target" data-vault-load="${slot.slotIndex}" ${slot.empty ? 'disabled' : ''}>
+                    读取槽位 #${slot.slotIndex}
+                  </button>
+                </div>
+                ${
+                  !slot.empty
+                    ? `<button type="button" id="btn-vault-del-${slot.slotIndex}" class="btn-danger uikit-touch-target" data-vault-del="${slot.slotIndex}">清空槽位 #${slot.slotIndex}</button>`
+                    : ''
+                }
+              </div>
+            `;
+            })
+            .join('')}
+
+          <div class="lab-divider"></div>
+
+          <div class="lab-stack-sm">
+            <strong style="font-size:13.5px;">全量存档文件备份与跨版本无损迁移（v2）</strong>
+            <p class="muted-text" style="font-size:12px;">
+              导出的 JSON 包含自动存档、所有手动槽位与全局设置；导入旧版（v1）存档将自动无损补齐指挥官、剧情 Flags 与主题字段，不会丢失原有舰娘与装备。
+            </p>
+            ${
+              lastExportNote
+                ? `<div class="status-badge badge-ok" id="vault-export-status" style="white-space:normal;">${escapeHtml(lastExportNote)}</div>`
+                : ''
+            }
+            <button type="button" id="btn-vault-export-all" class="btn-primary uikit-touch-target">导出全量存档 JSON 备份</button>
+            <button type="button" id="btn-vault-import-all" class="btn-secondary uikit-touch-target">导入全量存档 JSON 恢复</button>
+            <input type="file" id="input-vault-import-file" accept="application/json,.json" hidden>
+          </div>
+        </div>
+      `;
+
+      const loadAutoBtn = body.querySelector('#btn-vault-load-auto');
+      if (loadAutoBtn) {
+        loadAutoBtn.addEventListener('click', () => {
+          askConfirm(
+            '确认读取自动存档？',
+            '将使用自动存档快照覆盖当前内存中的港区进度、剧情 Flags 与主题设置。',
+            '确认读取恢复',
+            async () => {
+              const rec = await saves.loadAutoSave();
+              if (!rec) return;
+              const { migrated } = await restoreFullWorldSnapshot(rec.data);
+              showToast(migrated ? '自动存档已无损迁移并恢复完成' : '自动存档已恢复完成', 'ok');
+              closeSheet();
+            }
+          );
+        });
+      }
+
+      body.querySelectorAll('[data-vault-save]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const idx = Number(btn.getAttribute('data-vault-save'));
+          const noteInput = body.querySelector(`#vault-note-${idx}`);
+          const noteName = noteInput ? noteInput.value.trim() || `手动存档 #${idx}` : `手动存档 #${idx}`;
+          const targetSlot = primarySlots.find((s) => s.slotIndex === idx);
+
+          const doSave = async () => {
+            await saves.saveSlot(idx, captureFullWorldSnapshot(), {
+              name: noteName,
+              summary: buildSaveSummary(`manual-slot-${idx}`),
+            });
+            fxStage.playSfx('success');
+            showToast(`已保存到手动槽位 #${idx}（${noteName}）`, 'ok');
+            await renderVaultView();
+          };
+
+          if (targetSlot && !targetSlot.empty) {
+            askConfirm(
+              `确认覆盖槽位 #${idx}？`,
+              `槽位 #${idx} 已有存档「${targetSlot.meta?.name || ''}」，覆盖后原槽位记录将被替换为当前最新进度。`,
+              `确认覆盖槽位 #${idx}`,
+              doSave
+            );
+          } else {
+            await doSave();
+          }
+        });
+      });
+
+      body.querySelectorAll('[data-vault-load]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = Number(btn.getAttribute('data-vault-load'));
+          askConfirm(
+            `确认读取手动槽位 #${idx}？`,
+            '读取后将恢复该槽位保存时的所有舰娘、装备、建筑、剧情 Flags 与主题配置。',
+            `确认读取槽位 #${idx}`,
+            async () => {
+              const rec = await saves.loadSlot(idx);
+              if (!rec) return;
+              const { migrated } = await restoreFullWorldSnapshot(rec.data);
+              showToast(
+                migrated
+                  ? `槽位 #${idx} 已通过无损迁移恢复（${rec.meta?.name || ''}）`
+                  : `已恢复槽位 #${idx}（${rec.meta?.name || ''}）`,
+                'ok'
+              );
+              closeSheet();
+            }
+          );
+        });
+      });
+
+      body.querySelectorAll('[data-vault-del]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = Number(btn.getAttribute('data-vault-del'));
+          askConfirm(
+            `确认清空槽位 #${idx}？`,
+            '清空后该手动槽位记录将被移除，不会影响当前正在运行的港区进度。',
+            '确认清空',
+            async () => {
+              await saves.deleteSlot(idx);
+              showToast(`已清空槽位 #${idx}`, 'info');
+              await renderVaultView();
+            }
+          );
+        });
+      });
+
+      body.querySelector('#btn-vault-export-all').addEventListener('click', async () => {
+        const bundle = await saves.exportAllToJSON();
+        const jsonStr = JSON.stringify(bundle, null, 2);
+        const filename = `kancolle-pwa-save-bundle-${new Date().toISOString().slice(0, 10)}.json`;
+        triggerJsonDownload(filename, jsonStr);
+        const slotCount = Object.keys(bundle.zones?.slots || {}).length;
+        lastExportNote = `已导出 ${filename}（含 ${slotCount} 个手动槽位 · ${formatBytes(jsonStr.length)}）`;
+        showToast(lastExportNote, 'ok');
+        await renderVaultView();
+      });
+
+      const vaultFileInput = body.querySelector('#input-vault-import-file');
+      body.querySelector('#btn-vault-import-all').addEventListener('click', () => vaultFileInput.click());
+      vaultFileInput.addEventListener('change', async () => {
+        const file = vaultFileInput.files?.[0];
+        if (!file) return;
+        const text = await file.text();
+        vaultFileInput.value = '';
+        askConfirm(
+          '确认导入存档备份包？',
+          '将合并导入该备份中的手动槽位与自动存档，并对旧版本数据结构自动执行无损迁移。',
+          '确认导入并迁移',
+          async () => {
+            try {
+              const res = await saves.importAllFromJSON(text, { replace: false });
+              showToast(`存档包导入成功（手动槽位 ${res.importedSlots} 个）`, 'ok');
+              await renderVaultView();
+            } catch (err) {
+              showToast(err instanceof Error ? err.message : '导入失败', 'error');
+            }
+          }
+        );
+      });
+    };
+
+    renderVaultView();
+  });
+}
+
 els.btnModules.addEventListener('click', openModulesSheet);
+els.btnTheme.addEventListener('click', openThemeSheet);
+els.btnVault.addEventListener('click', openSaveVaultSheet);
 els.btnApi.addEventListener('click', openApiSheet);
 els.btnData.addEventListener('click', openDataSheet);
 
@@ -621,6 +1192,7 @@ async function bootApplication() {
       buildings.init(),
       interaction.init(),
       contentManager.init(),
+      storyPacks.init(),
     ]);
     await formation.init();
     await Promise.all([
@@ -634,7 +1206,7 @@ async function bootApplication() {
   logs.attachBusListeners();
   fxStage.attachBusListeners();
 
-  // Trigger Auto-Save snapshot whenever commander, formation, expeditions, buildings, interaction, content, equipment, characters, sortie, combat, or resources mutate
+  // Trigger Auto-Save snapshot whenever core engines, story packs, flags, theme, or resources mutate
   saves.bindAutoSaveEvents(
     [
       'commander:updated',
@@ -648,6 +1220,11 @@ async function bootApplication() {
       'interaction:oathed',
       'content:updated',
       'content:mod-imported',
+      'story:flag-changed',
+      'story:packs-changed',
+      'story:choice-resolved',
+      'theme:changed',
+      'theme:layout-changed',
       'inventory:equipped',
       'inventory:unequipped',
       'inventory:consumed',
@@ -671,26 +1248,8 @@ async function bootApplication() {
     ],
     (eventName) => ({
       name: '系统自动存档快照',
-      data: {
-        commander: commander.serialize(),
-        formation: formation.serialize(),
-        expeditions: expeditions.serialize(),
-        buildings: buildings.serialize(),
-        interaction: interaction.serialize(),
-        contentManager: contentManager.serialize(),
-        entities: entities.serialize(),
-        inventory: inventory.serialize(),
-        resources: resources.serialize(),
-        statRules: statRules.getConfig(),
-      },
-      summary: {
-        trigger: eventName,
-        commanderLevel: commander.getProfile().level,
-        fleetCount: formation.getMemberIds().length,
-        customBuildings: buildings.listCustomBuildings().length,
-        characters: entities.list({ kind: 'character' }).length,
-        items: inventory.listItems().length,
-      },
+      data: captureFullWorldSnapshot(),
+      summary: buildSaveSummary(eventName),
     }),
     { debounceMs: 180 }
   );
@@ -741,6 +1300,10 @@ window.__APP_BASE__ = {
   buildings,
   interaction,
   contentManager,
+  storyPacks,
+  theme,
   uiKit,
   modules: moduleManager,
+  captureFullWorldSnapshot,
+  restoreFullWorldSnapshot,
 };

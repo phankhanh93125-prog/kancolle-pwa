@@ -14,6 +14,9 @@
 
 import { NODE_TYPES } from '../core/route-generator.js';
 import { createResourceOverviewBar } from '../core/resource-manager.js';
+import { PACK_CATEGORIES, PACK_CATEGORY_LABELS } from '../core/story-pack-engine.js';
+import { NARRATIVE_MODES } from '../core/prompt-pipeline.js';
+import { triggerJsonDownload } from '../core/save-manager.js';
 import { persistCharacterRoster } from './character-console.js';
 
 function escapeHtml(str) {
@@ -33,8 +36,13 @@ function formatSigned(n) {
 let csState = {
   container: null,
   context: null,
-  mainTab: 'compendium', // 'compendium' | 'studio'
+  mainTab: 'compendium', // 'compendium' | 'story' | 'studio'
   compSubTab: 'shipgirls', // 'shipgirls' | 'equipment' | 'enemies' | 'routes'
+  activePackId: 'pack_sea_investigation',
+  activeNodeId: null,
+  lastStoryOutcome: null,
+  lastRenderedNodeKey: null,
+  storyBusy: false,
   lastExportSummary: null,
   unsubs: [],
 };
@@ -592,6 +600,667 @@ function renderStudioTab(host) {
 }
 
 // ============================================================
+// Tab 3: Hot-Pluggable Event & Story Packs + Global Flags
+// ============================================================
+
+function openAddFlagSheet() {
+  const { storyPacks, uiKit } = csState.context;
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+  wrap.innerHTML = `
+    <div class="form-group">
+      <label class="form-label" for="sf-key">Flag 键名 *</label>
+      <input id="sf-key" class="form-input" type="text" placeholder="例如：inv_ch1_done 或 secret_route">
+    </div>
+    <div class="lab-kv-grid">
+      <div class="form-group">
+        <label class="form-label" for="sf-type">值类型</label>
+        <select id="sf-type" class="form-select">
+          <option value="boolean">布尔值 (true/false)</option>
+          <option value="number">计数数值</option>
+          <option value="string">状态字符串</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="sf-val">值</label>
+        <input id="sf-val" class="form-input" type="text" value="true">
+      </div>
+    </div>
+  `;
+
+  uiKit.openBottomSheet({
+    title: '设置全局剧情 Flag 变量',
+    subtitle: '用于调试或手动控制多章节前置进度锁',
+    content: wrap,
+    actions: [
+      { id: 'cancel', label: '取消', tone: 'secondary' },
+      {
+        id: 'save',
+        label: '写入 Flag',
+        tone: 'primary',
+        onClick: async () => {
+          const key = wrap.querySelector('#sf-key').value.trim();
+          const type = wrap.querySelector('#sf-type').value;
+          const rawVal = wrap.querySelector('#sf-val').value.trim();
+          if (!key) {
+            uiKit.showToast('Flag 键名不能为空', 'warn');
+            return false;
+          }
+          let parsed = rawVal;
+          if (type === 'boolean') parsed = rawVal !== 'false' && rawVal !== '0' && rawVal !== '';
+          else if (type === 'number') parsed = Number(rawVal) || 0;
+          await storyPacks.setFlag(key, parsed);
+          uiKit.showToast(`已写入 Flag：${key} = ${parsed}`, 'ok');
+          renderCompendiumStudio();
+          return true;
+        },
+      },
+    ],
+  });
+}
+
+function openNewStoryPackSheet() {
+  const { storyPacks, uiKit } = csState.context;
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+  wrap.innerHTML = `
+    <div class="form-group">
+      <label class="form-label" for="sp-name">剧情/事件包名称 *</label>
+      <input id="sp-name" class="form-input" type="text" placeholder="例如：港区夏日烟火祭典包">
+    </div>
+    <div class="lab-kv-grid">
+      <div class="form-group">
+        <label class="form-label" for="sp-cat">分类</label>
+        <select id="sp-cat" class="form-select">
+          ${Object.entries(PACK_CATEGORY_LABELS)
+            .map(([k, lbl]) => `<option value="${k}">${escapeHtml(lbl)}</option>`)
+            .join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="sp-ver">版本号</label>
+        <input id="sp-ver" class="form-input" type="text" value="1.0.0">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="sp-desc">简介</label>
+      <input id="sp-desc" class="form-input" type="text" placeholder="填写事件包说明...">
+    </div>
+    <div class="lab-divider"></div>
+    <div class="form-group">
+      <label class="form-label" for="sp-n1-title">起始节点标题 *</label>
+      <input id="sp-n1-title" class="form-input" type="text" value="第一章 · 序幕事件">
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="sp-n1-body">起始节点剧情文本（支持 {actor.name} / {commander.name}）</label>
+      <textarea id="sp-n1-body" class="form-textarea">海面微风轻拂，{actor.name}拿着刚收到的电报走进{commander.name}的指挥室。</textarea>
+    </div>
+    <div class="lab-kv-grid">
+      <div class="form-group">
+        <label class="form-label" for="sp-c1-label">分支选项文案</label>
+        <input id="sp-c1-label" class="form-input" type="text" value="立刻展开调查">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="sp-c1-flag">写入 Flag 键名</label>
+        <input id="sp-c1-flag" class="form-input" type="text" value="custom_story_started">
+      </div>
+    </div>
+  `;
+
+  uiKit.openBottomSheet({
+    title: '新建自定义事件/剧情包',
+    subtitle: '创建后可继续可视化增改更多章节节点与分支选项，或导出独立 .json 分享',
+    content: wrap,
+    actions: [
+      { id: 'cancel', label: '取消', tone: 'secondary' },
+      {
+        id: 'create',
+        label: '创建并挂载',
+        tone: 'primary',
+        onClick: async () => {
+          const name = wrap.querySelector('#sp-name').value.trim();
+          if (!name) {
+            uiKit.showToast('请输入剧情包名称', 'warn');
+            return false;
+          }
+          const flagKey = wrap.querySelector('#sp-c1-flag').value.trim();
+          const pack = await storyPacks.savePack({
+            name,
+            version: wrap.querySelector('#sp-ver').value.trim() || '1.0.0',
+            category: wrap.querySelector('#sp-cat').value,
+            description: wrap.querySelector('#sp-desc').value.trim(),
+            enabled: true,
+            entryNodeId: 'node_01',
+            nodes: [
+              {
+                id: 'node_01',
+                title: wrap.querySelector('#sp-n1-title').value.trim() || '起始节点',
+                body: wrap.querySelector('#sp-n1-body').value.trim() || '一段新的港区物语正式展开。',
+                conditions: [],
+                choices: [
+                  {
+                    id: 'c_01',
+                    label: wrap.querySelector('#sp-c1-label').value.trim() || '推进剧情',
+                    conditions: [],
+                    check: null,
+                    effects: {
+                      flags: flagKey ? { [flagKey]: true } : {},
+                      resources: { silver: 50 },
+                      affinity: 4,
+                      commanderExp: 15,
+                    },
+                    resultText: '{actor.name}记录下了这次行动的成果，新的线索已经显现。',
+                    nextNodeId: null,
+                  },
+                ],
+              },
+            ],
+          });
+          csState.activePackId = pack.id;
+          csState.activeNodeId = pack.entryNodeId;
+          csState.lastStoryOutcome = null;
+          uiKit.showToast(`已创建并挂载「${pack.name}」`, 'ok');
+          renderCompendiumStudio();
+          return true;
+        },
+      },
+    ],
+  });
+}
+
+function openEditStoryPackSheet(packId) {
+  const { storyPacks, uiKit } = csState.context;
+  const pack = storyPacks.getPack(packId);
+  if (!pack) return;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+
+  const renderInner = () => {
+    const curPack = storyPacks.getPack(packId);
+    if (!curPack) return;
+
+    wrap.innerHTML = `
+      <div class="lab-stack-sm">
+        <div class="section-header-row" style="margin-bottom:0;">
+          <strong>${escapeHtml(curPack.name)}（v${escapeHtml(curPack.version)}）</strong>
+          <span class="status-badge badge-ok">${curPack.nodes.length} 节点</span>
+        </div>
+        <p class="muted-text" style="font-size:12px;">现有节点列表（点击可新增后续章节并绑定前置 Flag 锁）：</p>
+        ${curPack.nodes
+          .map(
+            (n, i) => `
+          <div class="lab-slot-card">
+            <div class="lab-slot-head">
+              <strong>#${i + 1} ${escapeHtml(n.title)}</strong>
+              <code>${escapeHtml(n.id)}</code>
+            </div>
+            <p class="muted-text" style="font-size:12px;">${escapeHtml(n.body.slice(0, 80))}${n.body.length > 80 ? '...' : ''}</p>
+            <span class="muted-text" style="font-size:11px;">前置条件：${(n.conditions || []).length} 条 · 选项：${(n.choices || []).length} 个</span>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+
+      <div class="lab-divider"></div>
+      <strong style="font-size:13.5px;">+ 追加/覆写剧情节点</strong>
+      <div class="lab-kv-grid">
+        <div class="form-group">
+          <label class="form-label" for="sn-id">节点 ID *</label>
+          <input id="sn-id" class="form-input" type="text" value="node_${curPack.nodes.length + 1}">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="sn-req-flag">前置 Flag 锁（选填）</label>
+          <input id="sn-req-flag" class="form-input" type="text" placeholder="例如：inv_ch1_done">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="sn-title">节点标题 *</label>
+        <input id="sn-title" class="form-input" type="text" placeholder="例如：隐藏终章 · 星海回响">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="sn-body">节点叙述文本 *</label>
+        <textarea id="sn-body" class="form-textarea" placeholder="支持 {actor.name} / {commander.name}..."></textarea>
+      </div>
+      <div class="lab-kv-grid">
+        <div class="form-group">
+          <label class="form-label" for="sn-choice">选项文案</label>
+          <input id="sn-choice" class="form-input" type="text" value="确认并记录调查报告">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="sn-out-flag">结算写入 Flag</label>
+          <input id="sn-out-flag" class="form-input" type="text" placeholder="例如：epilogue_clear">
+        </div>
+      </div>
+      <div class="lab-kv-grid">
+        <div class="form-group">
+          <label class="form-label" for="sn-silver">奖励银条</label>
+          <input id="sn-silver" class="form-input" type="number" min="0" value="60">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="sn-aff">奖励好感</label>
+          <input id="sn-aff" class="form-input" type="number" min="0" value="5">
+        </div>
+      </div>
+      <button type="button" id="btn-sn-save-node" class="btn-primary uikit-touch-target">保存节点到剧情包</button>
+    `;
+
+    wrap.querySelector('#btn-sn-save-node').addEventListener('click', async () => {
+      const nodeId = wrap.querySelector('#sn-id').value.trim();
+      const title = wrap.querySelector('#sn-title').value.trim();
+      const bodyText = wrap.querySelector('#sn-body').value.trim();
+      if (!nodeId || !title || !bodyText) {
+        uiKit.showToast('节点 ID、标题与叙述文本均不可为空', 'warn');
+        return;
+      }
+      const reqFlag = wrap.querySelector('#sn-req-flag').value.trim();
+      const outFlag = wrap.querySelector('#sn-out-flag').value.trim();
+      const silver = Math.max(0, Number(wrap.querySelector('#sn-silver').value) || 0);
+      const aff = Math.max(0, Number(wrap.querySelector('#sn-aff').value) || 0);
+      await storyPacks.saveNode(packId, {
+        id: nodeId,
+        title,
+        body: bodyText,
+        conditions: reqFlag ? [{ type: 'flag', key: reqFlag, op: 'truthy' }] : [],
+        choices: [
+          {
+            id: `c_${nodeId}`,
+            label: wrap.querySelector('#sn-choice').value.trim() || '继续',
+            conditions: [],
+            check: null,
+            effects: {
+              flags: outFlag ? { [outFlag]: true } : {},
+              resources: silver > 0 ? { silver } : {},
+              affinity: aff,
+              commanderExp: 18,
+            },
+            resultText: '节点剧情已顺利推进，所有奖励与 Flag 均已结算入库。',
+            nextNodeId: null,
+          },
+        ],
+      });
+      uiKit.showToast(`已保存节点「${title}」`, 'ok');
+      renderInner();
+      renderCompendiumStudio();
+    });
+  };
+
+  renderInner();
+
+  uiKit.openBottomSheet({
+    title: '可视化编辑剧情包节点',
+    subtitle: '支持自定义章节、前置 Flag 锁、选项与结算奖励',
+    content: wrap,
+    actions: [{ id: 'close', label: '完成', tone: 'secondary' }],
+  });
+}
+
+async function renderStoryPacksTab(host) {
+  const { storyPacks, narrative, fxStage, theme, entities, rootStorage, uiKit } = csState.context;
+  if (!storyPacks) {
+    const empty = document.createElement('section');
+    empty.className = 'surface-card';
+    empty.innerHTML = '<p class="muted-text">剧情包引擎尚未初始化。</p>';
+    host.appendChild(empty);
+    return;
+  }
+
+  const flags = storyPacks.getAllFlags();
+  const flagEntries = Object.entries(flags);
+  const packs = storyPacks.listPacks();
+  const isAiMode = narrative.getMode() !== NARRATIVE_MODES.LOCAL;
+
+  // 1. Global Story Flags Panel
+  const flagsCard = document.createElement('section');
+  flagsCard.className = 'surface-card lab-stack-sm';
+  flagsCard.id = 'cs-flags-panel';
+  flagsCard.innerHTML = `
+    <div class="section-header-row" style="margin-bottom:0;">
+      <h2 class="section-title">全局剧情变量与进度锁（Flags）</h2>
+      <span class="status-badge badge-ok" id="cs-flags-count">${flagEntries.length} 项已记录</span>
+    </div>
+    <div class="chip-row" id="cs-flags-chips">
+      ${
+        flagEntries.length === 0
+          ? '<span class="muted-text" style="font-size:12px;">尚无剧情进度标记，体验下方内置剧情包即可自动解锁并记录 Flag。</span>'
+          : flagEntries
+              .map(
+                ([k, v]) =>
+                  `<span class="story-flag-chip" data-flag-key="${escapeHtml(k)}">${escapeHtml(k)} = ${escapeHtml(String(v))}</span>`
+              )
+              .join('')
+      }
+    </div>
+    <div class="lab-btn-grid">
+      <button type="button" id="btn-cs-add-flag" class="btn-secondary uikit-touch-target">+ 手动写入 Flag</button>
+      <button type="button" id="btn-cs-clear-flags" class="btn-danger uikit-touch-target" ${flagEntries.length === 0 ? 'disabled' : ''}>清空 Flags</button>
+    </div>
+  `;
+
+  flagsCard.querySelector('#btn-cs-add-flag').addEventListener('click', () => openAddFlagSheet());
+  flagsCard.querySelector('#btn-cs-clear-flags').addEventListener('click', () => {
+    uiKit.openBottomSheet({
+      title: '确认清空全部剧情 Flags？',
+      subtitle: '清空后，依赖前置 Flag 的章节将重新回到锁定状态',
+      content: '<p class="muted-text">此操作仅清空全局进度标记，不会删除你的剧情包、角色或资源。</p>',
+      actions: [
+        { id: 'cancel', label: '取消', tone: 'secondary' },
+        {
+          id: 'confirm',
+          label: '确认清空 Flags',
+          tone: 'danger',
+          onClick: async () => {
+            for (const [k] of Object.entries(storyPacks.getAllFlags())) {
+              await storyPacks.deleteFlag(k);
+            }
+            csState.lastStoryOutcome = null;
+            uiKit.showToast('已清空全部剧情 Flags', 'info');
+            renderCompendiumStudio();
+            return true;
+          },
+        },
+      ],
+    });
+  });
+  host.appendChild(flagsCard);
+
+  // 2. Interactive Story Player
+  const activePack = packs.find((p) => p.id === csState.activePackId) || packs.find((p) => p.enabled) || packs[0] || null;
+  if (activePack) {
+    csState.activePackId = activePack.id;
+    const targetNodeId = csState.activeNodeId && activePack.nodes.some((n) => n.id === csState.activeNodeId)
+      ? csState.activeNodeId
+      : activePack.entryNodeId || activePack.nodes[0]?.id;
+    csState.activeNodeId = targetNodeId;
+
+    const playerCard = document.createElement('section');
+    playerCard.className = 'surface-card lab-stack-sm';
+    playerCard.id = 'cs-story-player';
+    playerCard.innerHTML = '<p class="muted-text">正在加载剧情节点...</p>';
+    host.appendChild(playerCard);
+
+    try {
+      const view = await storyPacks.renderNodeView(activePack.id, targetNodeId);
+      const outcome = csState.lastStoryOutcome;
+      const nodeKey = `${activePack.id}::${view.node.id}`;
+      const shouldTypewrite = csState.lastRenderedNodeKey !== nodeKey;
+      csState.lastRenderedNodeKey = nodeKey;
+
+      playerCard.innerHTML = `
+        <div class="section-header-row" style="margin-bottom:0;">
+          <h2 class="section-title">交互剧情演绎台 · ${escapeHtml(activePack.name)}</h2>
+          <button type="button" id="btn-story-mode-toggle" class="ac-mode-toggle ${isAiMode ? 'is-ai' : ''}">
+            ${isAiMode ? 'AI 润色增强' : '纯本地演绎'}
+          </button>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="cs-node-jump">当前章节节点（执勤角色：${escapeHtml(view.actorName)}）</label>
+          <select id="cs-node-jump" class="form-select">
+            ${activePack.nodes
+              .map((n, idx) => {
+                const cond = storyPacks.checkConditions(n.conditions || []);
+                return `<option value="${escapeHtml(n.id)}" ${n.id === view.node.id ? 'selected' : ''}>${
+                  cond.ok ? '🔓' : '🔒'
+                } 第${idx + 1}节 · ${escapeHtml(n.title)}</option>`;
+              })
+              .join('')}
+          </select>
+        </div>
+
+        <div class="section-header-row" style="margin-bottom:0;">
+          <strong id="cs-story-node-title" style="font-size:15px;">${escapeHtml(view.node.title)}</strong>
+          <span class="status-badge ${view.nodeUnlocked ? 'badge-ok' : 'badge-warn'}" id="cs-story-lock-badge">
+            ${view.nodeUnlocked ? '已解锁可执行' : '前置条件锁定'}
+          </span>
+        </div>
+
+        ${
+          !view.nodeUnlocked
+            ? `<div class="surface-card" style="padding:10px; border-color:var(--warn);" id="cs-story-lock-reason">
+                <strong style="font-size:12.5px; color:var(--warn);">未满足进入前置条件：</strong>
+                <div class="muted-text" style="font-size:12px;">${escapeHtml(view.unmetReasons.join('；'))}</div>
+              </div>`
+            : ''
+        }
+
+        <div class="story-narrative-box" id="cs-story-body">${escapeHtml(view.node.renderedBody)}</div>
+
+        ${
+          !activePack.enabled
+            ? '<p class="muted-text" style="color:var(--warn);">该剧情包当前已停用，请在下方包列表中重新启用后继续游玩。</p>'
+            : ''
+        }
+
+        <div class="lab-stack-sm" id="cs-story-choices">
+          ${view.choices
+            .map(
+              (ch) => `
+            <button
+              type="button"
+              class="story-choice-btn"
+              data-story-choice="${escapeHtml(ch.id)}"
+              ${ch.unlocked && activePack.enabled && !csState.storyBusy ? '' : 'disabled'}
+            >
+              <strong>${escapeHtml(ch.label)}</strong>
+              <span class="muted-text" style="font-size:11.5px;">
+                ${
+                  !ch.unlocked
+                    ? `🔒 条件未满足：${escapeHtml(ch.unmetReasons.join('；'))}`
+                    : ch.check
+                      ? `D20 属性检定：${escapeHtml(ch.check.statKey)} · DC ${ch.check.dc}`
+                      : '直接推进分支并结算奖励与 Flag'
+                }
+              </span>
+            </button>
+          `
+            )
+            .join('')}
+        </div>
+
+        ${
+          outcome && outcome.packId === activePack.id
+            ? `
+          <div class="surface-card lab-stack-sm" id="cs-story-outcome" style="padding:12px; border-color:var(--accent);">
+            <div class="section-header-row" style="margin-bottom:0;">
+              <strong style="font-size:13.5px;">结算回执 · ${escapeHtml(outcome.nodeTitle)}</strong>
+              <span class="status-badge ${outcome.passed ? 'badge-ok' : 'badge-warn'}">${outcome.passed ? '推进成功' : '遇阻分支'}</span>
+            </div>
+            ${
+              outcome.check
+                ? `<div class="muted-text" style="font-size:12px;">检定：${escapeHtml(outcome.check.breakdown)}（${escapeHtml(outcome.check.outcomeLabel)}）</div>`
+                : ''
+            }
+            <div id="cs-story-outcome-text" style="font-size:13.5px; line-height:1.55;">${escapeHtml(outcome.text)}</div>
+            <div class="chip-row">
+              ${(outcome.chips || [])
+                .map((c) => `<span class="status-badge ${c.negative ? 'badge-danger' : 'badge-ok'}">${escapeHtml(c.text)}</span>`)
+                .join('')}
+            </div>
+            ${
+              outcome.nextNodeId
+                ? `<button type="button" id="btn-story-next-node" class="btn-primary uikit-touch-target" data-next-node="${escapeHtml(outcome.nextNodeId)}">进入下一章 / 节点 →</button>`
+                : '<span class="muted-text" style="font-size:12px;">本条剧情分支已告一段落，可切换其他章节或剧情包。</span>'
+            }
+          </div>
+        `
+            : ''
+        }
+      `;
+
+      if (shouldTypewrite && fxStage && typeof fxStage.typewrite === 'function') {
+        const bodyEl = playerCard.querySelector('#cs-story-body');
+        if (bodyEl) {
+          fxStage.typewrite(bodyEl, view.node.renderedBody, {
+            speedMs: theme ? theme.getTypewriterSpeed() : 16,
+          });
+        }
+      }
+
+      playerCard.querySelector('#btn-story-mode-toggle').addEventListener('click', () => {
+        const next = isAiMode ? NARRATIVE_MODES.LOCAL : NARRATIVE_MODES.AI_POLISH;
+        narrative.setMode(next);
+        uiKit.showToast(next === NARRATIVE_MODES.LOCAL ? '切换为纯本地离线剧情模板' : '切换为 AI 剧情润色增强', 'ok');
+        renderCompendiumStudio();
+      });
+
+      playerCard.querySelector('#cs-node-jump').addEventListener('change', (e) => {
+        csState.activeNodeId = e.target.value;
+        csState.lastStoryOutcome = null;
+        renderCompendiumStudio();
+      });
+
+      playerCard.querySelectorAll('[data-story-choice]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (csState.storyBusy) return;
+          csState.storyBusy = true;
+          try {
+            const choiceId = btn.getAttribute('data-story-choice');
+            const rec = await storyPacks.executeChoice(activePack.id, view.node.id, choiceId);
+            await persistCharacterRoster({ storage: rootStorage, entities });
+            csState.lastStoryOutcome = rec;
+            uiKit.showToast(`剧情推进完成：${rec.chips.slice(0, 2).map((c) => c.text).join(' · ') || '已记录'}`, 'ok');
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '执行选项失败', 'warn');
+          } finally {
+            csState.storyBusy = false;
+            renderCompendiumStudio();
+          }
+        });
+      });
+
+      const nextBtn = playerCard.querySelector('#btn-story-next-node');
+      if (nextBtn) {
+        nextBtn.addEventListener('click', () => {
+          csState.activeNodeId = nextBtn.getAttribute('data-next-node');
+          csState.lastStoryOutcome = null;
+          renderCompendiumStudio();
+        });
+      }
+    } catch (err) {
+      playerCard.innerHTML = `<p class="muted-text">加载剧情节点失败：${escapeHtml(err instanceof Error ? err.message : String(err))}</p>`;
+    }
+  }
+
+  // 3. Mounted Story Packs Manager
+  const listCard = document.createElement('section');
+  listCard.className = 'surface-card lab-stack-sm';
+  listCard.id = 'cs-story-packs-list';
+  listCard.innerHTML = `
+    <div class="section-header-row" style="margin-bottom:0;">
+      <h2 class="section-title">已挂载本地事件包与剧情包（热插拔）</h2>
+      <span class="status-badge badge-ok">${packs.filter((p) => p.enabled).length}/${packs.length} 启用</span>
+    </div>
+    <div class="lab-btn-grid">
+      <button type="button" id="btn-cs-new-pack" class="btn-primary uikit-touch-target">+ 新建剧情包</button>
+      <button type="button" id="btn-cs-import-pack" class="btn-secondary uikit-touch-target">导入 .json 剧情包</button>
+      <input type="file" id="input-cs-import-pack" accept="application/json,.json" hidden>
+    </div>
+
+    ${packs
+      .map(
+        (p) => `
+      <div class="lab-slot-card" data-pack-card="${escapeHtml(p.id)}">
+        <div class="lab-slot-head">
+          <strong>${escapeHtml(p.name)}</strong>
+          <span class="status-badge ${p.enabled ? 'badge-ok' : 'badge-muted'}">
+            ${escapeHtml(PACK_CATEGORY_LABELS[p.category] || p.category)} · v${escapeHtml(p.version)}
+          </span>
+        </div>
+        <p class="muted-text" style="font-size:12px;">${escapeHtml(p.description || '')}（共 ${p.nodes.length} 个节点）</p>
+        <div class="lab-btn-grid">
+          <button type="button" class="btn-primary uikit-touch-target" data-play-pack="${escapeHtml(p.id)}" ${p.enabled ? '' : 'disabled'}>开始/继续演绎</button>
+          <button type="button" class="btn-secondary uikit-touch-target" data-toggle-pack="${escapeHtml(p.id)}">${p.enabled ? '停用此包' : '启用此包'}</button>
+          <button type="button" class="btn-secondary uikit-touch-target" data-edit-pack="${escapeHtml(p.id)}">编辑节点</button>
+          <button type="button" class="btn-secondary uikit-touch-target" data-export-pack="${escapeHtml(p.id)}">导出 JSON</button>
+        </div>
+        ${
+          !p.builtIn
+            ? `<button type="button" class="btn-danger uikit-touch-target" data-delete-pack="${escapeHtml(p.id)}">删除自定义包</button>`
+            : ''
+        }
+      </div>
+    `
+      )
+      .join('')}
+  `;
+
+  listCard.querySelector('#btn-cs-new-pack').addEventListener('click', () => openNewStoryPackSheet());
+
+  const packFileInput = listCard.querySelector('#input-cs-import-pack');
+  listCard.querySelector('#btn-cs-import-pack').addEventListener('click', () => packFileInput.click());
+  packFileInput.addEventListener('change', async () => {
+    const file = packFileInput.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const imported = await storyPacks.importPackFromJSON(text);
+      csState.activePackId = imported.id;
+      csState.activeNodeId = imported.entryNodeId;
+      csState.lastStoryOutcome = null;
+      uiKit.showToast(`已热插拔挂载剧情包「${imported.name}」`, 'ok');
+      renderCompendiumStudio();
+    } catch (err) {
+      uiKit.showToast(err instanceof Error ? err.message : '导入剧情包失败', 'error');
+    } finally {
+      packFileInput.value = '';
+    }
+  });
+
+  listCard.querySelectorAll('[data-play-pack]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-play-pack');
+      const target = storyPacks.getPack(id);
+      if (!target) return;
+      csState.activePackId = target.id;
+      csState.activeNodeId = target.entryNodeId || target.nodes[0]?.id || null;
+      csState.lastStoryOutcome = null;
+      csState.lastRenderedNodeKey = null;
+      renderCompendiumStudio();
+    });
+  });
+
+  listCard.querySelectorAll('[data-toggle-pack]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-toggle-pack');
+      const target = storyPacks.getPack(id);
+      if (!target) return;
+      await storyPacks.togglePack(id, !target.enabled);
+      uiKit.showToast(`剧情包「${target.name}」已${!target.enabled ? '启用' : '停用'}`, 'ok');
+      renderCompendiumStudio();
+    });
+  });
+
+  listCard.querySelectorAll('[data-edit-pack]').forEach((btn) => {
+    btn.addEventListener('click', () => openEditStoryPackSheet(btn.getAttribute('data-edit-pack')));
+  });
+
+  listCard.querySelectorAll('[data-export-pack]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-export-pack');
+      const exported = storyPacks.exportPackToJSON(id);
+      triggerJsonDownload(`story-pack-${id}.json`, exported);
+      uiKit.showToast(`已导出独立剧情包：story-pack-${id}.json`, 'ok');
+    });
+  });
+
+  listCard.querySelectorAll('[data-delete-pack]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await storyPacks.deletePack(btn.getAttribute('data-delete-pack'));
+        uiKit.showToast('已删除自定义剧情包', 'info');
+        renderCompendiumStudio();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '删除失败', 'warn');
+      }
+    });
+  });
+
+  host.appendChild(listCard);
+}
+
+// ============================================================
 // Root Renderer
 // ============================================================
 
@@ -608,14 +1277,19 @@ function renderCompendiumStudio() {
   const navCard = document.createElement('section');
   navCard.className = 'surface-card lab-stack-sm';
   navCard.innerHTML = `
-    <div class="lab-btn-grid" id="cs-main-tabs">
-      <button type="button" id="btn-cs-tab-compendium" class="${csState.mainTab === 'compendium' ? 'btn-primary' : 'btn-secondary'} uikit-touch-target">全要素图鉴</button>
-      <button type="button" id="btn-cs-tab-studio" class="${csState.mainTab === 'studio' ? 'btn-primary' : 'btn-secondary'} uikit-touch-target">自定义内容与模组</button>
+    <div class="lab-btn-grid" id="cs-main-tabs" style="grid-template-columns:repeat(3,minmax(0,1fr));">
+      <button type="button" id="btn-cs-tab-compendium" class="${csState.mainTab === 'compendium' ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" style="padding:0 6px; font-size:12.5px;">全要素图鉴</button>
+      <button type="button" id="btn-cs-tab-story" class="${csState.mainTab === 'story' ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" style="padding:0 6px; font-size:12.5px;">事件与剧情包</button>
+      <button type="button" id="btn-cs-tab-studio" class="${csState.mainTab === 'studio' ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" style="padding:0 6px; font-size:12.5px;">自定义模组</button>
     </div>
     <button type="button" id="btn-cs-back-port" class="btn-secondary uikit-touch-target">返回港区大本营</button>
   `;
   navCard.querySelector('#btn-cs-tab-compendium').addEventListener('click', () => {
     csState.mainTab = 'compendium';
+    renderCompendiumStudio();
+  });
+  navCard.querySelector('#btn-cs-tab-story').addEventListener('click', () => {
+    csState.mainTab = 'story';
     renderCompendiumStudio();
   });
   navCard.querySelector('#btn-cs-tab-studio').addEventListener('click', () => {
@@ -629,6 +1303,8 @@ function renderCompendiumStudio() {
 
   if (csState.mainTab === 'compendium') {
     renderCompendiumTab(root);
+  } else if (csState.mainTab === 'story') {
+    renderStoryPacksTab(root);
   } else {
     renderStudioTab(root);
   }
@@ -639,7 +1315,7 @@ function renderCompendiumStudio() {
 export default {
   id: 'compendium-studio',
   name: '图鉴与内容台',
-  description: '全要素图鉴（舰娘/装备服装/敌舰档案/海域航线收集统计）与自定义敌舰/台词/礼物/JSON世界模组导出导入管理台。',
+  description: '全要素图鉴、热插拔本地事件包与多章节剧情包（含 Flags 进度锁）以及自定义敌舰/台词/礼物/JSON世界模组管理台。',
 
   mount(container, context) {
     csState.container = container;
@@ -662,17 +1338,20 @@ export default {
         },
       },
       {
+        id: 'cs-q-story',
+        label: '事件与剧情包',
+        onClick: () => {
+          csState.mainTab = 'story';
+          renderCompendiumStudio();
+        },
+      },
+      {
         id: 'cs-q-studio',
         label: '内容与模组',
         onClick: () => {
           csState.mainTab = 'studio';
           renderCompendiumStudio();
         },
-      },
-      {
-        id: 'cs-q-new-enemy',
-        label: '+ 自定义敌舰',
-        onClick: () => openNewEnemySheet(),
       },
       {
         id: 'cs-q-port',

@@ -18,7 +18,8 @@ export const SAVE_ZONES = Object.freeze({
 });
 
 export const DEFAULT_SLOT_COUNT = 5;
-const SAVE_SCHEMA_VERSION = 1;
+export const VAULT_PRIMARY_SLOTS = 3;
+export const SAVE_SCHEMA_VERSION = 2;
 
 function deepClone(value) {
   if (typeof structuredClone === 'function') {
@@ -29,6 +30,46 @@ function deepClone(value) {
     }
   }
   return JSON.parse(JSON.stringify(value ?? null));
+}
+
+/**
+ * Lossless save payload migration: preserves every existing character, item, resource,
+ * building, or custom field while safely backfilling any fields introduced in v2+.
+ */
+export function migrateSavePayload(rawData = {}) {
+  const data = rawData && typeof rawData === 'object' ? deepClone(rawData) : {};
+  let migrated = false;
+
+  if (!data.commander || typeof data.commander !== 'object') {
+    data.commander = {
+      name: '港区指挥官',
+      title: '新任提督',
+      level: 1,
+      exp: 0,
+      freePoints: 0,
+      stats: { command: 10, tactics: 10, charisma: 10, affinity: 10, dispatch: 10, maintenance: 10 },
+      luck: 0,
+    };
+    migrated = true;
+  } else if (data.commander.luck === undefined) {
+    data.commander.luck = 0;
+    migrated = true;
+  }
+
+  if (!data.storyPacks || typeof data.storyPacks !== 'object') {
+    data.storyPacks = { version: 1, flags: {}, packs: [], playHistory: [] };
+    migrated = true;
+  } else if (!data.storyPacks.flags || typeof data.storyPacks.flags !== 'object') {
+    data.storyPacks.flags = {};
+    migrated = true;
+  }
+
+  if (!data.theme || typeof data.theme !== 'object') {
+    data.theme = { presetId: 'deep_tactical', cardRadius: 14, texture: 'grid', typewriterSpeed: 18 };
+    migrated = true;
+  }
+
+  return { data, migrated };
 }
 
 function slotKey(slotIndex) {
@@ -132,7 +173,11 @@ export class SaveManager {
   async loadAutoSave() {
     const record = await this._autoScope.getLarge('latest', null);
     if (record) {
-      this._emit('save:auto-loaded', { meta: record.meta });
+      const { data, migrated } = migrateSavePayload(record.data);
+      record.data = data;
+      record.schemaVersion = SAVE_SCHEMA_VERSION;
+      record.migrated = migrated;
+      this._emit('save:auto-loaded', { meta: record.meta, migrated });
     }
     return record;
   }
@@ -249,7 +294,11 @@ export class SaveManager {
     const idx = this._assertSlotIndex(slotIndex);
     const record = await this._slotsScope.getLarge(slotKey(idx), null);
     if (record) {
-      this._emit('save:loaded', { slotIndex: idx, meta: record.meta });
+      const { data, migrated } = migrateSavePayload(record.data);
+      record.data = data;
+      record.schemaVersion = SAVE_SCHEMA_VERSION;
+      record.migrated = migrated;
+      this._emit('save:loaded', { slotIndex: idx, meta: record.meta, migrated });
     }
     return record;
   }
@@ -349,7 +398,8 @@ export class SaveManager {
     }
     const idx = this._assertSlotIndex(targetSlotIndex ?? parsed.slotIndex ?? parsed.record.slotIndex ?? 1);
     const srcMeta = parsed.record.meta || {};
-    return this.saveSlot(idx, parsed.record.data, {
+    const { data } = migrateSavePayload(parsed.record.data);
+    return this.saveSlot(idx, data, {
       name: srcMeta.name || `导入存档 #${idx}`,
       summary: srcMeta.summary ?? null,
       tags: srcMeta.tags || [],
@@ -401,13 +451,23 @@ export class SaveManager {
     }
 
     if (autoSave && typeof autoSave === 'object') {
-      await this._autoScope.setLarge('latest', autoSave);
+      const { data } = migrateSavePayload(autoSave.data);
+      await this._autoScope.setLarge('latest', {
+        ...autoSave,
+        schemaVersion: SAVE_SCHEMA_VERSION,
+        data,
+      });
     }
 
     if (slots && typeof slots === 'object') {
       for (const [k, rec] of Object.entries(slots)) {
         if (!rec || typeof rec !== 'object') continue;
-        await this._slotsScope.setLarge(k, rec);
+        const { data } = migrateSavePayload(rec.data);
+        await this._slotsScope.setLarge(k, {
+          ...rec,
+          schemaVersion: SAVE_SCHEMA_VERSION,
+          data,
+        });
         importedSlots += 1;
       }
     }

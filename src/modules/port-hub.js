@@ -53,6 +53,7 @@ let portState = {
   selectedExpMissionId: 'exp_harbor_patrol',
   selectedExpShipIds: [],
   busy: false,
+  lastTypewrittenId: null,
   timerHandle: null,
   unsubs: [],
 };
@@ -1406,6 +1407,8 @@ async function renderPortHub() {
     buildings,
     interaction,
     narrative,
+    fxStage,
+    theme,
     rootStorage,
     modules,
     uiKit,
@@ -1437,8 +1440,10 @@ async function renderPortHub() {
   const root = document.createElement('div');
   root.className = 'port-root';
 
-  // 1. Unified 6-Resource & Dual-Currency Overview Bar
+  // 1. Unified 6-Resource & Dual-Currency Overview Bar (Always pinned top)
   root.appendChild(createResourceOverviewBar(resources, { showCaps: true, id: 'port-resource-bar' }));
+
+  const sectionElements = {};
 
   // 2. Top Commander Character Card Summary
   const cmdCard = document.createElement('section');
@@ -1483,9 +1488,10 @@ async function renderPortHub() {
     </button>
   `;
   cmdCard.querySelector('#btn-port-edit-commander').addEventListener('click', () => openCommanderSheet());
-  root.appendChild(cmdCard);
+  sectionElements.commander = cmdCard;
 
   // 3. Center Secretary Daily Interaction & Oath Stage
+  let freshSpeechInfo = null;
   if (secretary) {
     const assetId = secretary.meta?.avatarAssetId || null;
     const cacheKey = `sec::${secretary.id}::${assetId || 'none'}`;
@@ -1620,7 +1626,15 @@ async function renderPortHub() {
     secCard.querySelector('#btn-sec-oath').addEventListener('click', () => openOathSheet(secretary));
     secCard.querySelector('#btn-sec-switch').addEventListener('click', () => openSwitchSecretarySheet());
 
-    root.appendChild(secCard);
+    if (lastTalk && lastTalk.characterId === secretary.id && lastTalk.timestamp && portState.lastTypewrittenId !== lastTalk.timestamp) {
+      portState.lastTypewrittenId = lastTalk.timestamp;
+      freshSpeechInfo = {
+        el: secCard.querySelector('#port-sec-dialogue'),
+        text: speechText,
+      };
+    }
+
+    sectionElements.secretary = secCard;
   }
 
   // 4. Port Operations Bar
@@ -1648,7 +1662,7 @@ async function renderPortHub() {
     <div class="lab-btn-grid">
       <button type="button" id="btn-port-goto-char" class="btn-secondary uikit-touch-target">角色控制台</button>
       <button type="button" id="btn-port-goto-workshop" class="btn-secondary uikit-touch-target">物资工坊</button>
-      <button type="button" id="btn-port-goto-compendium" class="btn-secondary uikit-touch-target">图鉴与内容台</button>
+      <button type="button" id="btn-port-goto-compendium" class="btn-secondary uikit-touch-target">图鉴与剧情包</button>
       <button type="button" id="btn-port-goto-action" class="btn-secondary uikit-touch-target">行动事件台</button>
     </div>
   `;
@@ -1671,7 +1685,7 @@ async function renderPortHub() {
   opsCard.querySelector('#btn-port-goto-action').addEventListener('click', () => {
     if (modules.has('action-console')) modules.mount('action-console');
   });
-  root.appendChild(opsCard);
+  sectionElements.operations = opsCard;
 
   // 5. Port Buildings & Facilities Grid (Dormitory, Dockyard, Formation, Expedition, Custom Buildings)
   const buffParts = [];
@@ -1757,8 +1771,38 @@ async function renderPortHub() {
     btn.addEventListener('click', () => openCustomBuildingDetailSheet(btn.getAttribute('data-open-custom-building')));
   });
 
-  root.appendChild(bldCard);
+  sectionElements.buildings = bldCard;
+
+  // Render cards according to user's Modular Port Hub Layout (order & visibility)
+  const layoutOrder = theme
+    ? theme.getPortLayout()
+    : [
+        { id: 'commander', visible: true },
+        { id: 'secretary', visible: true },
+        { id: 'operations', visible: true },
+        { id: 'buildings', visible: true },
+      ];
+
+  let appendedCount = 0;
+  for (const entry of layoutOrder) {
+    if (entry.visible !== false && sectionElements[entry.id]) {
+      root.appendChild(sectionElements[entry.id]);
+      appendedCount += 1;
+    }
+  }
+  if (appendedCount === 0) {
+    const emptyHint = document.createElement('section');
+    emptyHint.className = 'surface-card';
+    emptyHint.innerHTML = '<p class="muted-text">所有港区卡片已在桌面布局中隐藏，请点击顶部「主题」按钮恢复显示。</p>';
+    root.appendChild(emptyHint);
+  }
+
   portState.container.appendChild(root);
+
+  if (freshSpeechInfo && freshSpeechInfo.el && fxStage && typeof fxStage.typewrite === 'function') {
+    const speedMs = theme ? theme.getTypewriterSpeed() : 18;
+    fxStage.typewrite(freshSpeechInfo.el, freshSpeechInfo.text, { speedMs });
+  }
 }
 
 export default {
@@ -1800,7 +1844,7 @@ export default {
       },
       {
         id: 'port-q-compendium',
-        label: '图鉴内容台',
+        label: '图鉴与剧情包',
         onClick: () => context.modules.mount('compendium-studio'),
       },
     ]);
@@ -1820,6 +1864,7 @@ export default {
       context.bus.on('interaction:talked', () => renderPortHub()),
       context.bus.on('interaction:gifted', () => renderPortHub()),
       context.bus.on('interaction:oathed', () => renderPortHub()),
+      context.bus.on('theme:layout-changed', () => renderPortHub()),
       context.bus.on('storage:changed', (detail) => {
         if (detail?.action === 'resetAll' || detail?.action === 'import') {
           renderPortHub();

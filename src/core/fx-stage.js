@@ -1,22 +1,24 @@
 /**
- * Decoupled FX & Presentation Stage (`fx-stage.js`).
+ * Decoupled FX, Presentation, Haptics, Typewriter & Web Audio SFX Stage (`fx-stage.js`).
  *
- * Provides a lightweight animation/effect dispatcher `playEffect(type, payload)`
- * and subscribes to core EventBus signals (checks, hits, crits, scans, resource deltas)
- * while keeping presentation 100% decoupled from game logic.
- *
- * Built-in effect types:
- *   - 'shake'       : subtle micro-shake on the app shell
- *   - 'float-text'  : floating numeric/status callout text
- *   - 'scan-ripple' : expanding radar scan ring overlay
- *   - 'dice-roll'   : compact D20 roll/outcome badge animation
- *   - 'crit-flash'  : brief highlight pulse on critical hit / critical success
- *
- * Future skins or rich animations can replace any renderer via `registerRenderer(type, fn)`.
+ * Upgraded capabilities:
+ *   - Built-in visual effect types:
+ *       * 'shake'        : micro-shake on app shell (light / heavy)
+ *       * 'float-text'   : floating damage / buff / resource delta callouts
+ *       * 'scan-ripple'  : expanding radar scan pulse ring
+ *       * 'dice-roll'    : 3D rolling/flipping D20 badge animation
+ *       * 'crit-flash'   : bright highlight flash on crit success / crit hit / oath
+ *       * 'damage-flash' : red edge vignette warning flash on taking combat damage
+ *   - Typewriter text reveal helper: `typewrite(el, text, { speedMs })` with tap-to-complete
+ *   - Optional lightweight mobile haptic feedback (`navigator.vibrate`)
+ *   - Optional zero-dependency Web Audio synthesized SFX (dice, hit, crit, scan, click, chime)
+ *     with global mute toggles persisted in localStorage.
  */
 
 const STORAGE_NS = 'core-fx';
 const ENABLED_KEY = 'fx-enabled';
+const SOUND_KEY = 'fx-sound-enabled';
+const HAPTICS_KEY = 'fx-haptics-enabled';
 
 export const FX_TYPES = Object.freeze({
   SHAKE: 'shake',
@@ -24,6 +26,7 @@ export const FX_TYPES = Object.freeze({
   SCAN_RIPPLE: 'scan-ripple',
   DICE_ROLL: 'dice-roll',
   CRIT_FLASH: 'crit-flash',
+  DAMAGE_FLASH: 'damage-flash',
 });
 
 export class FxStage {
@@ -37,6 +40,8 @@ export class FxStage {
     this._bus = bus;
     this._store = storage ? storage.namespace(STORAGE_NS) : null;
     this._enabled = this._store ? this._store.get(ENABLED_KEY, true) !== false : true;
+    this._soundEnabled = this._store ? this._store.get(SOUND_KEY, false) === true : false;
+    this._hapticsEnabled = this._store ? this._store.get(HAPTICS_KEY, true) !== false : true;
     /** @type {Map<string, (payload: any, ctx: { overlay: HTMLElement }) => void>} */
     this._renderers = new Map();
     this._attached = false;
@@ -44,6 +49,7 @@ export class FxStage {
     /** @type {HTMLElement | null} */
     this._overlay = null;
     this._history = [];
+    this._audioCtx = null;
 
     this._registerBuiltInRenderers();
   }
@@ -65,15 +71,128 @@ export class FxStage {
     return el;
   }
 
+  _vibrate(pattern) {
+    if (!this._hapticsEnabled) return;
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate(pattern);
+      }
+    } catch {
+      // ignore unsupported environments
+    }
+  }
+
+  /**
+   * Zero-dependency Web Audio synthesized sound effects (guarded by global mute toggle).
+   */
+  playSfx(kind = 'click') {
+    if (!this._soundEnabled || typeof window === 'undefined') return;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    try {
+      if (!this._audioCtx) this._audioCtx = new AudioCtx();
+      const ctx = this._audioCtx;
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      if (kind === 'crit') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(520, now);
+        osc.frequency.exponentialRampToValueAtTime(980, now + 0.14);
+        gain.gain.setValueAtTime(0.12, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+        osc.start(now);
+        osc.stop(now + 0.23);
+      } else if (kind === 'hit') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(190, now);
+        osc.frequency.exponentialRampToValueAtTime(70, now + 0.12);
+        gain.gain.setValueAtTime(0.11, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+        osc.start(now);
+        osc.stop(now + 0.15);
+      } else if (kind === 'scan') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(420, now);
+        osc.frequency.exponentialRampToValueAtTime(760, now + 0.18);
+        gain.gain.setValueAtTime(0.08, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+        osc.start(now);
+        osc.stop(now + 0.21);
+      } else if (kind === 'dice') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(640, now);
+        osc.frequency.setValueAtTime(780, now + 0.05);
+        gain.gain.setValueAtTime(0.07, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+        osc.start(now);
+        osc.stop(now + 0.13);
+      } else {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(520, now);
+        gain.gain.setValueAtTime(0.06, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+        osc.start(now);
+        osc.stop(now + 0.07);
+      }
+    } catch {
+      // ignore audio autoplay blocks
+    }
+  }
+
+  /**
+   * Adjustable-speed typewriter text reveal helper.
+   * Tapping the element finishes the text immediately.
+   */
+  typewrite(element, text, { speedMs = 18 } = {}) {
+    if (!element) return () => {};
+    const full = String(text ?? '');
+    const spd = Math.max(0, Number(speedMs) || 0);
+    if (spd === 0 || full.length === 0) {
+      element.textContent = full;
+      return () => {};
+    }
+
+    let idx = 0;
+    let done = false;
+    element.textContent = '';
+
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearInterval(timer);
+      element.textContent = full;
+      element.removeEventListener('click', finish);
+    };
+
+    element.addEventListener('click', finish);
+    const step = full.length > 140 ? 3 : full.length > 70 ? 2 : 1;
+    const timer = setInterval(() => {
+      idx += step;
+      if (idx >= full.length) {
+        finish();
+      } else {
+        element.textContent = full.slice(0, idx);
+      }
+    }, spd);
+
+    return finish;
+  }
+
   _registerBuiltInRenderers() {
     this.registerRenderer(FX_TYPES.SHAKE, (payload = {}) => {
       const target = document.getElementById('app-shell') || document.body;
       if (!target) return;
       const cls = payload.heavy ? 'fx-shake-heavy' : 'fx-shake-light';
       target.classList.remove('fx-shake-light', 'fx-shake-heavy');
-      // Force reflow so rapid consecutive shakes restart cleanly
       void target.offsetWidth;
       target.classList.add(cls);
+      this._vibrate(payload.heavy ? [25, 25, 35] : 18);
       setTimeout(() => target.classList.remove(cls), 340);
     });
 
@@ -98,6 +217,8 @@ export class FxStage {
       const ring = document.createElement('div');
       ring.className = 'fx-scan-ripple';
       overlay.appendChild(ring);
+      this.playSfx('scan');
+      this._vibrate(15);
       setTimeout(() => ring.remove(), 820);
       if (payload.label) {
         this.playEffect(FX_TYPES.FLOAT_TEXT, { text: payload.label, tone: 'accent' });
@@ -114,9 +235,10 @@ export class FxStage {
           ? 'danger'
           : 'warn';
       badge.className = `fx-dice-pill fx-tone-${tone}`;
-      badge.textContent = `1D20 · ${payload.naturalRoll ?? '?'} → ${payload.outcomeLabel || ''}`;
+      badge.innerHTML = `<span class="fx-dice-cube" aria-hidden="true">D20</span><span>${payload.naturalRoll ?? '?'} → ${payload.outcomeLabel || ''}</span>`;
       overlay.appendChild(badge);
-      setTimeout(() => badge.remove(), 1200);
+      this.playSfx('dice');
+      setTimeout(() => badge.remove(), 1280);
     });
 
     this.registerRenderer(FX_TYPES.CRIT_FLASH, (_payload = {}, { overlay }) => {
@@ -124,13 +246,21 @@ export class FxStage {
       const flash = document.createElement('div');
       flash.className = 'fx-crit-flash';
       overlay.appendChild(flash);
-      setTimeout(() => flash.remove(), 420);
+      this.playSfx('crit');
+      this._vibrate([20, 20, 30]);
+      setTimeout(() => flash.remove(), 440);
+    });
+
+    this.registerRenderer(FX_TYPES.DAMAGE_FLASH, (_payload = {}, { overlay }) => {
+      if (!overlay) return;
+      const vig = document.createElement('div');
+      vig.className = 'fx-damage-vignette';
+      overlay.appendChild(vig);
+      this.playSfx('hit');
+      setTimeout(() => vig.remove(), 460);
     });
   }
 
-  /**
-   * Register or override an effect renderer for custom skins / future animation packs.
-   */
   registerRenderer(type, fn) {
     if (typeof fn !== 'function') {
       throw new TypeError(`FxStage renderer for "${type}" must be a function`);
@@ -145,21 +275,34 @@ export class FxStage {
 
   setEnabled(flag) {
     this._enabled = Boolean(flag);
-    if (this._store) {
-      this._store.set(ENABLED_KEY, this._enabled);
-    }
+    if (this._store) this._store.set(ENABLED_KEY, this._enabled);
     return this._enabled;
+  }
+
+  isSoundEnabled() {
+    return this._soundEnabled;
+  }
+
+  setSoundEnabled(flag) {
+    this._soundEnabled = Boolean(flag);
+    if (this._store) this._store.set(SOUND_KEY, this._soundEnabled);
+    return this._soundEnabled;
+  }
+
+  isHapticsEnabled() {
+    return this._hapticsEnabled;
+  }
+
+  setHapticsEnabled(flag) {
+    this._hapticsEnabled = Boolean(flag);
+    if (this._store) this._store.set(HAPTICS_KEY, this._hapticsEnabled);
+    return this._hapticsEnabled;
   }
 
   getRecentEffects() {
     return [...this._history];
   }
 
-  /**
-   * Play a named effect through the registered renderer.
-   * @param {string} type
-   * @param {object} [payload={}]
-   */
   playEffect(type, payload = {}) {
     const cleanType = String(type || '');
     this._history.push({ type: cleanType, payload, timestamp: Date.now() });
@@ -179,10 +322,6 @@ export class FxStage {
     }
   }
 
-  /**
-   * Bind EventBus listeners so business modules automatically emit visual effects
-   * without directly touching DOM animation code.
-   */
   attachBusListeners() {
     if (!this._bus || this._attached) return;
     this._attached = true;
@@ -210,6 +349,7 @@ export class FxStage {
       this._bus.on('combat:hit', (ev) => {
         this.playEffect(FX_TYPES.SHAKE, { heavy: Boolean(ev?.crit) });
         if (ev?.crit) this.playEffect(FX_TYPES.CRIT_FLASH, {});
+        else this.playSfx('hit');
         if (ev?.damage > 0) {
           this.playEffect(FX_TYPES.FLOAT_TEXT, {
             text: `${ev.crit ? '暴击 ' : ''}-${ev.damage}`,
@@ -218,7 +358,8 @@ export class FxStage {
         }
       }),
       this._bus.on('combat:enemy-hit', (ev) => {
-        this.playEffect(FX_TYPES.SHAKE, { heavy: (ev?.damage || 0) >= 16 });
+        this.playEffect(FX_TYPES.SHAKE, { heavy: (ev?.damage || 0) >= 14 });
+        this.playEffect(FX_TYPES.DAMAGE_FLASH, {});
         if (ev?.damage > 0) {
           this.playEffect(FX_TYPES.FLOAT_TEXT, {
             text: `受击 HP -${ev.damage}`,
