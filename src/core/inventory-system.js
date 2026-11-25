@@ -19,10 +19,15 @@
 import {
   ITEM_RARITIES,
   ITEM_RARITY_MAP,
+  KNOWN_EQUIPMENT_TYPES,
+  KNOWN_EQUIPMENT_TYPE_DEFS,
+  KNOWN_EQUIPMENT_TYPE_MAP,
   NAVAL_EIGHT_STAT_DEFS,
   NAVAL_EIGHT_STAT_MAP,
   getDisassembleYieldByRarity,
+  inferEquipmentTypeId,
   inferItemRarity,
+  normalizeEquipmentTypeId,
   normalizeRarity,
   normalizeStatKey,
 } from './stat-rules.js';
@@ -51,20 +56,31 @@ export const ITEM_CATEGORY_LABELS = Object.freeze({
 });
 
 /**
- * Unified Visual Editor Subcategory Presets covering Core 3-piece, Main Weapons,
- * Tactical Support, and Shipgirl Outfits.
+ * Unified Visual Editor & Warehouse Subcategory Presets strictly derived from
+ * `KNOWN_EQUIPMENT_TYPE_DEFS` (+ Shipgirl Outfits) so expandable slots and the
+ * equipment editor always share 100% identical equipment type IDs.
  */
 export const EQUIPMENT_SUBCATEGORY_DEFS = Object.freeze([
-  { id: 'engine', group: '核心三件套', label: '引擎部件', category: ITEM_CATEGORIES.ENGINE, subGroup: 'core', defaultIcon: 'engine' },
-  { id: 'armor', group: '核心三件套', label: '装甲部件', category: ITEM_CATEGORIES.ARMOR, subGroup: 'core', defaultIcon: 'armor' },
-  { id: 'core', group: '核心三件套', label: '核心部件', category: ITEM_CATEGORIES.CORE, subGroup: 'core', defaultIcon: 'core' },
-  { id: 'main_gun', group: '主战武器', label: '主炮', category: ITEM_CATEGORIES.EXTENSION, subGroup: 'weapon', defaultIcon: 'main_gun' },
-  { id: 'torpedo', group: '主战武器', label: '鱼雷', category: ITEM_CATEGORIES.EXTENSION, subGroup: 'weapon', defaultIcon: 'torpedo' },
-  { id: 'aircraft', group: '主战武器', label: '舰载机', category: ITEM_CATEGORIES.EXTENSION, subGroup: 'weapon', defaultIcon: 'aircraft' },
-  { id: 'radar', group: '战术辅助', label: '雷达', category: ITEM_CATEGORIES.EXTENSION, subGroup: 'tactical', defaultIcon: 'radar' },
-  { id: 'sonar', group: '战术辅助', label: '声呐', category: ITEM_CATEGORIES.EXTENSION, subGroup: 'tactical', defaultIcon: 'sonar' },
-  { id: 'aa_gun', group: '战术辅助', label: '防空炮', category: ITEM_CATEGORIES.EXTENSION, subGroup: 'tactical', defaultIcon: 'aa_gun' },
-  { id: 'outfit', group: '舰娘服装', label: '舰娘服装', category: ITEM_CATEGORIES.OUTFIT, subGroup: 'outfit', defaultIcon: 'outfit_dress' },
+  ...KNOWN_EQUIPMENT_TYPE_DEFS.map((d) => ({
+    id: d.id,
+    group: d.group,
+    label: d.label,
+    slotLabel: d.slotLabel,
+    category: d.category,
+    subGroup: d.subGroup,
+    defaultIcon: d.defaultIcon,
+    desc: d.desc,
+  })),
+  {
+    id: 'outfit',
+    group: '舰娘服装',
+    label: '舰娘服装',
+    slotLabel: '服装槽',
+    category: ITEM_CATEGORIES.OUTFIT,
+    subGroup: 'outfit',
+    defaultIcon: 'outfit_dress',
+    desc: '舰娘日常与仪式服装，支持风格标签联动秘书舰台词',
+  },
 ]);
 
 export const ITEM_ICON_PRESETS = Object.freeze([
@@ -93,9 +109,33 @@ export const OUTFIT_STYLE_PRESETS = Object.freeze([
 ]);
 
 export const MANDATORY_CORE_SLOTS = Object.freeze([
-  { id: 'engine', label: '引擎', required: true, custom: false, allowedCategories: [ITEM_CATEGORIES.ENGINE] },
-  { id: 'armor', label: '装甲', required: true, custom: false, allowedCategories: [ITEM_CATEGORIES.ARMOR] },
-  { id: 'core', label: '核心', required: true, custom: false, allowedCategories: [ITEM_CATEGORIES.CORE] },
+  {
+    id: 'engine',
+    label: '引擎',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.ENGINE,
+    required: true,
+    custom: false,
+    allowedCategories: [ITEM_CATEGORIES.ENGINE],
+    allowedEquipmentTypes: [KNOWN_EQUIPMENT_TYPES.ENGINE],
+  },
+  {
+    id: 'armor',
+    label: '装甲',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.ARMOR,
+    required: true,
+    custom: false,
+    allowedCategories: [ITEM_CATEGORIES.ARMOR],
+    allowedEquipmentTypes: [KNOWN_EQUIPMENT_TYPES.ARMOR],
+  },
+  {
+    id: 'core',
+    label: '核心',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.CORE,
+    required: true,
+    custom: false,
+    allowedCategories: [ITEM_CATEGORIES.CORE],
+    allowedEquipmentTypes: [KNOWN_EQUIPMENT_TYPES.CORE],
+  },
 ]);
 
 export const MANDATORY_SLOT_IDS = new Set(['engine', 'armor', 'core']);
@@ -103,9 +143,11 @@ export const MANDATORY_SLOT_IDS = new Set(['engine', 'armor', 'core']);
 export const OPTIONAL_OUTFIT_SLOT = Object.freeze({
   id: 'outfit',
   label: '服装',
+  equipmentType: 'outfit',
   required: false,
   custom: false,
   allowedCategories: [ITEM_CATEGORIES.OUTFIT],
+  allowedEquipmentTypes: ['outfit'],
 });
 
 export const WAREHOUSE_GROUPS = Object.freeze({
@@ -620,18 +662,49 @@ export class InventorySystem {
   }
 
   // ------------------------------------------------------------
-  // Per-Character Slot Architecture (3 Mandatory Core + Outfit + Freeform Custom)
+  // Per-Character Slot Architecture (3 Mandatory Core + Outfit + Typed Expandable Slots)
   // ------------------------------------------------------------
+
+  _normalizeExpandedSlot(rawSlot = {}, equippedItem = null) {
+    // When migrating a legacy slot that already has an equipped item, infer type from the equipped item first
+    // so historical saves NEVER unequip or drop existing stat bonuses!
+    const inferredType = rawSlot.equipmentType && KNOWN_EQUIPMENT_TYPE_MAP[rawSlot.equipmentType]
+      ? rawSlot.equipmentType
+      : equippedItem
+      ? inferEquipmentTypeId(equippedItem, KNOWN_EQUIPMENT_TYPES.MAIN_GUN)
+      : inferEquipmentTypeId(rawSlot, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+    const typeId = KNOWN_EQUIPMENT_TYPE_MAP[inferredType] ? inferredType : KNOWN_EQUIPMENT_TYPES.MAIN_GUN;
+    const typeDef = KNOWN_EQUIPMENT_TYPE_MAP[typeId] || KNOWN_EQUIPMENT_TYPE_MAP[KNOWN_EQUIPMENT_TYPES.MAIN_GUN];
+
+    return {
+      id: String(rawSlot.id || `slot_${typeId}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`),
+      equipmentType: typeDef.id,
+      label: typeDef.slotLabel || typeDef.label,
+      typeLabel: typeDef.label,
+      group: typeDef.group,
+      iconKey: typeDef.defaultIcon,
+      required: false,
+      custom: true,
+      expandable: true,
+      allowedCategories: [typeDef.category],
+      allowedEquipmentTypes: [typeDef.id],
+    };
+  }
 
   getCharacterSlots(characterId) {
     const cid = String(characterId || '');
     const customList = Array.isArray(this._customSlotsByCharacter[cid])
       ? this._customSlotsByCharacter[cid]
       : [];
+    const slotMap = this._equipped[cid] || {};
+    const normalizedExpanded = customList.map((s) => {
+      const eqItem = slotMap[s.id] ? this._items.get(slotMap[s.id]) : null;
+      return this._normalizeExpandedSlot(s, eqItem);
+    });
     return [
       ...deepClone(MANDATORY_CORE_SLOTS),
       deepClone(OPTIONAL_OUTFIT_SLOT),
-      ...deepClone(customList),
+      ...normalizedExpanded,
     ];
   }
 
@@ -639,41 +712,89 @@ export class InventorySystem {
     return this.getCharacterSlots(characterId).find((s) => s.id === slotId) || null;
   }
 
-  async addCharacterCustomSlot(characterId, label) {
+  /**
+   * Expand a new typed equipment slot on a shipgirl chosen from KNOWN_EQUIPMENT_TYPES.
+   */
+  async addExpandedSlot(characterId, equipmentTypeId) {
     const cid = String(characterId || '').trim();
-    const cleanLabel = String(label || '').trim();
     if (!cid) throw new Error('角色 ID 不能为空');
-    if (!cleanLabel) throw new Error('自定义槽位名称不能为空');
+    const typeId = normalizeEquipmentTypeId(equipmentTypeId, null);
+    if (!typeId || !KNOWN_EQUIPMENT_TYPE_MAP[typeId]) {
+      throw new Error('请选择有效的已知装备类型');
+    }
+    const typeDef = KNOWN_EQUIPMENT_TYPE_MAP[typeId];
 
     if (!Array.isArray(this._customSlotsByCharacter[cid])) {
       this._customSlotsByCharacter[cid] = [];
     }
-    const slot = {
-      id: `custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
-      label: cleanLabel,
-      required: false,
-      custom: true,
-      allowedCategories: [ITEM_CATEGORIES.EXTENSION],
-    };
+    const slot = this._normalizeExpandedSlot({
+      id: `slot_${typeDef.id}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
+      equipmentType: typeDef.id,
+      label: typeDef.slotLabel,
+    });
     this._customSlotsByCharacter[cid].push(slot);
     await this.persist();
     this._emit('inventory:slot-added', { characterId: cid, slot: deepClone(slot) });
     return deepClone(slot);
   }
 
-  async renameCharacterCustomSlot(characterId, slotId, newLabel) {
+  /**
+   * Backward-compatible wrapper: maps any label/type string to its matching Known Equipment Type.
+   */
+  async addCharacterCustomSlot(characterId, labelOrTypeId) {
+    const typeId = normalizeEquipmentTypeId(labelOrTypeId, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+    return this.addExpandedSlot(characterId, typeId);
+  }
+
+  /**
+   * Change an existing expanded slot to another Known Equipment Type.
+   * Automatically returns any incompatible equipped item back to warehouse cleanly.
+   */
+  async changeExpandedSlotType(characterId, slotId, nextEquipmentTypeId) {
     const cid = String(characterId || '').trim();
-    const cleanLabel = String(newLabel || '').trim();
-    if (!cleanLabel) throw new Error('槽位名称不能为空');
-    const list = this._customSlotsByCharacter[cid] || [];
-    const target = list.find((s) => s.id === slotId);
-    if (!target || !target.custom) {
-      throw new Error('仅支持重命名自定义槽位');
+    const typeId = normalizeEquipmentTypeId(nextEquipmentTypeId, null);
+    if (!typeId || !KNOWN_EQUIPMENT_TYPE_MAP[typeId]) {
+      throw new Error('请选择有效的已知装备类型');
     }
-    target.label = cleanLabel;
+    const list = this._customSlotsByCharacter[cid] || [];
+    const idx = list.findIndex((s) => s.id === slotId);
+    if (idx < 0 || !list[idx]?.custom) {
+      throw new Error('仅支持变更已扩建的装备槽位类型');
+    }
+
+    const updatedSlot = this._normalizeExpandedSlot({
+      ...list[idx],
+      id: list[idx].id,
+      equipmentType: typeId,
+    });
+    list[idx] = updatedSlot;
+
+    let unequippedItem = null;
+    const eqId = this._equipped[cid]?.[slotId];
+    if (eqId) {
+      const curItem = this._items.get(eqId);
+      if (curItem && !this.isItemCompatibleWithSlot(updatedSlot, curItem)) {
+        unequippedItem = deepClone(curItem);
+        delete this._equipped[cid][slotId];
+        this.syncCharacterModifiers(cid);
+      }
+    }
+
     await this.persist();
-    this._emit('inventory:slot-renamed', { characterId: cid, slotId, label: cleanLabel });
-    return deepClone(target);
+    this._emit('inventory:slot-renamed', {
+      characterId: cid,
+      slotId,
+      equipmentType: updatedSlot.equipmentType,
+      label: updatedSlot.label,
+      unequippedItem,
+    });
+    return { slot: deepClone(updatedSlot), unequippedItem };
+  }
+
+  async renameCharacterCustomSlot(characterId, slotId, newLabelOrTypeId) {
+    const typeId = normalizeEquipmentTypeId(newLabelOrTypeId, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+    const res = await this.changeExpandedSlotType(characterId, slotId, typeId);
+    return res.slot;
   }
 
   async removeCharacterCustomSlot(characterId, slotId) {
@@ -681,7 +802,7 @@ export class InventorySystem {
     const slot = this.getCharacterSlot(cid, slotId);
     if (!slot) return false;
     if (slot.required || !slot.custom) {
-      throw new Error(`「${slot.label}」为基础固定槽位，不可删除`);
+      throw new Error(`「${slot.label}」为基础固定槽位，不可拆除`);
     }
 
     if (this._equipped[cid]?.[slotId]) {
@@ -694,6 +815,45 @@ export class InventorySystem {
     await this.persist();
     this._emit('inventory:slot-removed', { characterId: cid, slotId, label: slot.label });
     return true;
+  }
+
+  async removeExpandedSlot(characterId, slotId) {
+    return this.removeCharacterCustomSlot(characterId, slotId);
+  }
+
+  /**
+   * Authoritative check whether an equipment/outfit item matches a specific slot's type.
+   */
+  isItemCompatibleWithSlot(slot, item) {
+    if (!slot || !item) return false;
+    if (item.category === ITEM_CATEGORIES.CONSUMABLE) return false;
+
+    const slotType = slot.equipmentType || (slot.id === 'outfit' ? 'outfit' : inferEquipmentTypeId(slot, KNOWN_EQUIPMENT_TYPES.MAIN_GUN));
+    const itemType = inferEquipmentTypeId(item, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+
+    if (slotType === 'outfit') {
+      return item.category === ITEM_CATEGORIES.OUTFIT;
+    }
+    if (item.category === ITEM_CATEGORIES.OUTFIT) {
+      return false;
+    }
+    if (
+      slotType === KNOWN_EQUIPMENT_TYPES.ENGINE ||
+      slotType === KNOWN_EQUIPMENT_TYPES.ARMOR ||
+      slotType === KNOWN_EQUIPMENT_TYPES.CORE
+    ) {
+      return item.category === slotType || itemType === slotType;
+    }
+    return itemType === slotType;
+  }
+
+  /**
+   * Return all warehouse items strictly matching a slot's equipment type (sorted by rarity -> level).
+   */
+  getSlotCompatibleItems(characterId, slotId) {
+    const slot = this.getCharacterSlot(characterId, slotId);
+    if (!slot) return [];
+    return this.listItems().filter((it) => this.isItemCompatibleWithSlot(slot, it));
   }
 
   checkSeaworthiness(characterId) {
@@ -1058,6 +1218,7 @@ export class InventorySystem {
       category,
       ...(def.subGroup ? { subGroup: String(def.subGroup) } : {}),
       ...(def.subCategory ? { subCategory: String(def.subCategory) } : {}),
+      ...(def.equipmentType ? { equipmentType: String(def.equipmentType) } : {}),
       ...(def.iconKey ? { iconKey: String(def.iconKey) } : {}),
       ...(def.outfitStyle ? { outfitStyle: String(def.outfitStyle).trim() } : {}),
       tags: Array.isArray(def.tags)
@@ -1075,6 +1236,11 @@ export class InventorySystem {
       updatedAt: now,
     };
     draft.rarity = def.rarity ? normalizeRarity(def.rarity) : inferItemRarity(draft);
+    if (category !== ITEM_CATEGORIES.CONSUMABLE) {
+      const resolvedType = inferEquipmentTypeId(draft, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+      draft.equipmentType = resolvedType;
+      draft.subCategory = resolvedType;
+    }
 
     this._items.set(id, draft);
     await this.persist();
@@ -1110,6 +1276,7 @@ export class InventorySystem {
       category: nextCategory,
       subGroup: patch.subGroup !== undefined ? String(patch.subGroup) : existing.subGroup,
       subCategory: patch.subCategory !== undefined ? String(patch.subCategory) : existing.subCategory,
+      equipmentType: patch.equipmentType !== undefined ? String(patch.equipmentType) : patch.subCategory !== undefined ? String(patch.subCategory) : existing.equipmentType,
       iconKey: patch.iconKey !== undefined ? String(patch.iconKey) : existing.iconKey,
       outfitStyle: patch.outfitStyle !== undefined ? String(patch.outfitStyle).trim() : existing.outfitStyle || '',
       rarity:
@@ -1233,7 +1400,7 @@ export class InventorySystem {
   getCompatibleSlotIdForItem(characterId, item) {
     if (!item || item.category === ITEM_CATEGORIES.CONSUMABLE) return null;
     const slots = this.getCharacterSlots(characterId);
-    const matching = slots.filter((s) => s.allowedCategories.includes(item.category));
+    const matching = slots.filter((s) => this.isItemCompatibleWithSlot(s, item));
     if (matching.length === 0) return null;
     const slotMap = this._equipped[String(characterId)] || {};
     const empty = matching.find((s) => !slotMap[s.id]);
@@ -1429,14 +1596,18 @@ export class InventorySystem {
     const targetSlotId = slotId || this.getCompatibleSlotIdForItem(cid, item);
     const slot = this.getCharacterSlot(cid, targetSlotId);
     if (!slot) {
+      const itemTypeId = inferEquipmentTypeId(item, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+      const itemTypeLabel = KNOWN_EQUIPMENT_TYPE_MAP[itemTypeId]?.label || ITEM_CATEGORY_LABELS[item.category] || '装备';
       if (item.category === ITEM_CATEGORIES.EXTENSION) {
-        throw new Error('当前角色尚无自定义扩展槽位，请先点击「+ 添加自定义槽位」');
+        throw new Error(`当前角色尚未扩建「${itemTypeLabel}」装备槽位，请先在角色卡点击「+ 扩建装备槽位」添加${itemTypeLabel}槽`);
       }
-      throw new Error(`未找到兼容槽位 "${targetSlotId}"`);
+      throw new Error(`未找到兼容的「${itemTypeLabel}」槽位`);
     }
-    if (!slot.allowedCategories.includes(item.category)) {
+    if (!this.isItemCompatibleWithSlot(slot, item)) {
+      const itemTypeId = inferEquipmentTypeId(item, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+      const itemTypeLabel = itemTypeId === 'outfit' ? '服装' : KNOWN_EQUIPMENT_TYPE_MAP[itemTypeId]?.label || ITEM_CATEGORY_LABELS[item.category];
       throw new Error(
-        `「${item.name}」(${ITEM_CATEGORY_LABELS[item.category]}) 无法装入「${slot.label}」槽位`
+        `「${item.name}」（${itemTypeLabel}）与「${slot.label}」类型不匹配，请先扩建或变更对应装备槽位`
       );
     }
 
@@ -1556,7 +1727,7 @@ export class InventorySystem {
 
   serialize() {
     return {
-      version: 3,
+      version: 4,
       customSlotsByCharacter: deepClone(this._customSlotsByCharacter),
       items: Array.from(this._items.values()).map((it) => deepClone(it)),
       equipped: deepClone(this._equipped),
@@ -1565,7 +1736,6 @@ export class InventorySystem {
 
   deserialize(snapshot, { persist = true } = {}) {
     if (!snapshot || typeof snapshot !== 'object') return;
-    this._customSlotsByCharacter = deepClone(snapshot.customSlotsByCharacter || {});
     this._items.clear();
     if (Array.isArray(snapshot.items)) {
       for (const it of snapshot.items) {
@@ -1580,11 +1750,30 @@ export class InventorySystem {
             bonuses,
           };
           merged.rarity = it.rarity ? normalizeRarity(it.rarity) : inferItemRarity(merged);
+          if (merged.category !== ITEM_CATEGORIES.CONSUMABLE) {
+            const resolvedType = inferEquipmentTypeId(merged, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+            merged.equipmentType = resolvedType;
+            merged.subCategory = resolvedType;
+          }
           this._items.set(String(it.id), merged);
         }
       }
     }
     this._equipped = deepClone(snapshot.equipped || {});
+
+    // Losslessly normalize all historical custom slots into typed expandable slots
+    const rawSlotsMap = snapshot.customSlotsByCharacter || {};
+    const normalizedMap = {};
+    for (const [charId, slotList] of Object.entries(rawSlotsMap)) {
+      if (!Array.isArray(slotList)) continue;
+      const eqMap = this._equipped[charId] || {};
+      normalizedMap[charId] = slotList.map((s) => {
+        const eqItem = s?.id && eqMap[s.id] ? this._items.get(eqMap[s.id]) : null;
+        return this._normalizeExpandedSlot(s, eqItem);
+      });
+    }
+    this._customSlotsByCharacter = normalizedMap;
+
     this.syncAllCharacters();
     if (persist) {
       this.persist();

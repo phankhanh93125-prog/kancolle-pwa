@@ -10,7 +10,12 @@
  * Supports event-driven auto-saving, single-slot and full-bundle JSON export/import.
  */
 
-import { inferItemRarity } from './stat-rules.js';
+import {
+  KNOWN_EQUIPMENT_TYPES,
+  KNOWN_EQUIPMENT_TYPE_MAP,
+  inferEquipmentTypeId,
+  inferItemRarity,
+} from './stat-rules.js';
 
 export const SAVE_ZONES = Object.freeze({
   GLOBAL_SETTINGS: 'save-global-settings',
@@ -21,7 +26,7 @@ export const SAVE_ZONES = Object.freeze({
 
 export const DEFAULT_SLOT_COUNT = 5;
 export const VAULT_PRIMARY_SLOTS = 3;
-export const SAVE_SCHEMA_VERSION = 4;
+export const SAVE_SCHEMA_VERSION = 5;
 
 function deepClone(value) {
   if (typeof structuredClone === 'function') {
@@ -36,7 +41,7 @@ function deepClone(value) {
 
 /**
  * Lossless save payload migration: preserves every existing character, item, resource,
- * building, or custom field while safely backfilling any fields introduced in v2/v3/v4+.
+ * building, or custom field while safely backfilling any fields introduced in v2/v3/v4/v5+.
  */
 export function migrateSavePayload(rawData = {}) {
   const data = rawData && typeof rawData === 'object' ? deepClone(rawData) : {};
@@ -91,13 +96,59 @@ export function migrateSavePayload(rawData = {}) {
     }
   }
 
-  // Losslessly backfill universal White->Orange rarity on all historical equipment & outfits
+  // Losslessly backfill universal White->Orange rarity & canonical equipmentType on all items
   const invItems = Array.isArray(data.inventory?.items) ? data.inventory.items : [];
+  const itemById = new Map();
   for (const it of invItems) {
     if (!it || typeof it !== 'object') continue;
     if (!it.rarity) {
       it.rarity = inferItemRarity(it);
       migrated = true;
+    }
+    if (it.category !== 'consumable' && !it.equipmentType) {
+      const eqType = inferEquipmentTypeId(it, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+      it.equipmentType = eqType;
+      if (!it.subCategory) it.subCategory = eqType;
+      migrated = true;
+    }
+    if (it.id) itemById.set(String(it.id), it);
+  }
+
+  // Schema v5: Losslessly migrate historical freeform custom slots into typed expandable slots
+  const customSlotsMap = data.inventory?.customSlotsByCharacter;
+  if (customSlotsMap && typeof customSlotsMap === 'object') {
+    const equippedMap = data.inventory?.equipped || {};
+    for (const [charId, slotList] of Object.entries(customSlotsMap)) {
+      if (!Array.isArray(slotList)) continue;
+      const charEq = equippedMap[charId] || {};
+      customSlotsMap[charId] = slotList.map((slot) => {
+        if (!slot || typeof slot !== 'object') return slot;
+        if (slot.equipmentType && KNOWN_EQUIPMENT_TYPE_MAP[slot.equipmentType] && Array.isArray(slot.allowedEquipmentTypes)) {
+          return slot;
+        }
+        // Prefer currently equipped item's type so zero equipped gear or stats are ever lost
+        const equippedItemId = slot.id ? charEq[slot.id] : null;
+        const equippedItem = equippedItemId ? itemById.get(String(equippedItemId)) : null;
+        const inferredType = equippedItem
+          ? inferEquipmentTypeId(equippedItem, KNOWN_EQUIPMENT_TYPES.MAIN_GUN)
+          : inferEquipmentTypeId(slot, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+        const typeId = KNOWN_EQUIPMENT_TYPE_MAP[inferredType] ? inferredType : KNOWN_EQUIPMENT_TYPES.MAIN_GUN;
+        const typeDef = KNOWN_EQUIPMENT_TYPE_MAP[typeId];
+        migrated = true;
+        return {
+          ...slot,
+          equipmentType: typeDef.id,
+          label: typeDef.slotLabel || typeDef.label,
+          typeLabel: typeDef.label,
+          group: typeDef.group,
+          iconKey: typeDef.defaultIcon,
+          required: false,
+          custom: true,
+          expandable: true,
+          allowedCategories: [typeDef.category],
+          allowedEquipmentTypes: [typeDef.id],
+        };
+      });
     }
   }
 

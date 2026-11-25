@@ -1270,9 +1270,9 @@ export function getDisassembleYieldByRarity(item = {}, { dropMultiplier = 1.0 } 
 // ============================================================
 
 export const RESOURCE_DROP_MULTIPLIER_PRESETS = Object.freeze([
-  { id: 'standard', label: '1.0x 常规', multiplier: 1.0, desc: '标准丰度产出与装备掉落率' },
-  { id: 'abundant', label: '2.0x 丰饶', multiplier: 2.0, desc: '双倍资源产出、离线恢复与高阶掉落权重提升' },
-  { id: 'chill', label: '3.0x 畅玩', multiplier: 3.0, desc: '三倍资源涌流与超高紫/橙装备箱掉落体验' },
+  { id: 'standard', label: '1.0x 常规', multiplier: 1.0, value: 1.0, desc: '标准丰度产出与装备掉落率' },
+  { id: 'abundant', label: '2.0x 丰饶', multiplier: 2.0, value: 2.0, desc: '双倍资源产出、离线恢复与高阶掉落权重提升' },
+  { id: 'chill', label: '3.0x 畅玩', multiplier: 3.0, value: 3.0, desc: '三倍资源涌流与超高紫/橙装备箱掉落体验' },
 ]);
 
 export function clampResourceDropMultiplier(val) {
@@ -1280,5 +1280,207 @@ export function clampResourceDropMultiplier(val) {
   if (!Number.isFinite(num)) return 1.0;
   return Number(clamp(Math.round(num * 10) / 10, 0.5, 5.0).toFixed(1));
 }
+
+// ============================================================
+// Canonical Known Equipment Types (Shared across Expandable Slots,
+// Warehouse Filtering, Custom Equipment Editor & Save v5 Migration)
+// ============================================================
+
+export const KNOWN_EQUIPMENT_TYPES = Object.freeze({
+  MAIN_GUN: 'main_gun',
+  TORPEDO: 'torpedo',
+  AIRCRAFT: 'aircraft',
+  RADAR: 'radar',
+  SONAR: 'sonar',
+  AA_GUN: 'aa_gun',
+  ENGINE: 'engine',
+  ARMOR: 'armor',
+  CORE: 'core',
+});
+
+export const KNOWN_EQUIPMENT_TYPE_DEFS = Object.freeze([
+  {
+    id: KNOWN_EQUIPMENT_TYPES.MAIN_GUN,
+    label: '主炮',
+    slotLabel: '主炮槽',
+    group: '主战武器',
+    category: 'extension',
+    subGroup: 'weapon',
+    defaultIcon: 'main_gun',
+    desc: '舰炮与穿甲重炮武器，大幅强化火力输出',
+    keywords: ['主炮', '舰炮', '重炮', '火炮', '炮塔', '炮击', 'gun', 'cannon', 'turret'],
+  },
+  {
+    id: KNOWN_EQUIPMENT_TYPES.TORPEDO,
+    label: '鱼雷',
+    slotLabel: '鱼雷槽',
+    group: '主战武器',
+    category: 'extension',
+    subGroup: 'weapon',
+    defaultIcon: 'torpedo',
+    desc: '酸素鱼雷与近距雷装，强化雷击与高破甲暴击',
+    keywords: ['鱼雷', '酸素', '氧雷', '雷装', '鱼雷管', 'torpedo'],
+  },
+  {
+    id: KNOWN_EQUIPMENT_TYPES.AIRCRAFT,
+    label: '舰载机',
+    slotLabel: '舰载机槽',
+    group: '主战武器',
+    category: 'extension',
+    subGroup: 'weapon',
+    defaultIcon: 'aircraft',
+    desc: '俯冲轰炸机、鱼雷机与制空战机联队',
+    keywords: ['舰载机', '舰载', '轰炸机', '攻击机', '战斗机', '空袭', '航空', '侦察机', 'aircraft', 'plane'],
+  },
+  {
+    id: KNOWN_EQUIPMENT_TYPES.RADAR,
+    label: '雷达',
+    slotLabel: '雷达槽',
+    group: '战术辅助',
+    category: 'extension',
+    subGroup: 'tactical',
+    defaultIcon: 'radar',
+    desc: '相控电探、火控校准与夜战侦察系统',
+    keywords: ['雷达', '电探', '侦查', '侦察', '火控', '夜战', '探照灯', '通信', '协同', '增幅', '补给型', 'radar', 'recon'],
+  },
+  {
+    id: KNOWN_EQUIPMENT_TYPES.SONAR,
+    label: '声呐',
+    slotLabel: '声呐槽',
+    group: '战术辅助',
+    category: 'extension',
+    subGroup: 'tactical',
+    defaultIcon: 'sonar',
+    desc: '水下主动声呐与深水炸弹反潜组件',
+    keywords: ['声呐', '声纳', '反潜', '深水', '爆雷', '投射机', '潜艇', 'sonar', 'asw'],
+  },
+  {
+    id: KNOWN_EQUIPMENT_TYPES.AA_GUN,
+    label: '防空',
+    slotLabel: '防空槽',
+    group: '战术辅助',
+    category: 'extension',
+    subGroup: 'tactical',
+    defaultIcon: 'aa_gun',
+    desc: '速射高炮、近防机炮与对空弹幕火网',
+    keywords: ['防空', '高炮', '对空', '机炮', '高射', '弹幕', 'aa_gun', 'aa'],
+  },
+  {
+    id: KNOWN_EQUIPMENT_TYPES.ENGINE,
+    label: '引擎',
+    slotLabel: '引擎扩建槽',
+    group: '核心三件套',
+    category: 'engine',
+    subGroup: 'core',
+    defaultIcon: 'engine',
+    desc: '额外动力推进引擎模块，强化机动与航速',
+    keywords: ['引擎', '轮机', '涡轮', '动力', '锅炉', '推进', 'engine', 'turbine'],
+  },
+  {
+    id: KNOWN_EQUIPMENT_TYPES.ARMOR,
+    label: '装甲',
+    slotLabel: '装甲扩建槽',
+    group: '核心三件套',
+    category: 'armor',
+    subGroup: 'core',
+    defaultIcon: 'armor',
+    desc: '额外复合装甲带与防雷隔舱，提升耐久与防护',
+    keywords: ['装甲', '防雷', '护盾', '钢甲', '甲板', '防护', 'armor', 'shield'],
+  },
+  {
+    id: KNOWN_EQUIPMENT_TYPES.CORE,
+    label: '核心',
+    slotLabel: '核心扩建槽',
+    group: '核心三件套',
+    category: 'core',
+    subGroup: 'core',
+    defaultIcon: 'core',
+    desc: '额外火控中枢与战术晶核，全面提升核心属性',
+    keywords: ['核心', '中枢', '晶核', '芯片', '模块', '组件', 'core', 'module'],
+  },
+]);
+
+export const KNOWN_EQUIPMENT_TYPE_MAP = Object.freeze(
+  Object.fromEntries(KNOWN_EQUIPMENT_TYPE_DEFS.map((d) => [d.id, d]))
+);
+
+/**
+ * Normalize any equipment type id or Chinese/English keyword string to a canonical Known Equipment Type id.
+ */
+export function normalizeEquipmentTypeId(raw, fallback = KNOWN_EQUIPMENT_TYPES.MAIN_GUN) {
+  const s = String(raw || '').trim();
+  if (!s) return fallback;
+  const lower = s.toLowerCase();
+  if (KNOWN_EQUIPMENT_TYPE_MAP[lower]) return lower;
+  for (const def of KNOWN_EQUIPMENT_TYPE_DEFS) {
+    if (def.label === s || def.slotLabel === s) return def.id;
+  }
+  for (const def of KNOWN_EQUIPMENT_TYPE_DEFS) {
+    if (def.keywords.some((kw) => lower.includes(kw.toLowerCase()))) {
+      return def.id;
+    }
+  }
+  return fallback;
+}
+
+/**
+ * Infer canonical Known Equipment Type id for any equipment item or legacy custom slot.
+ * Returns 'outfit' for outfit items, or one of KNOWN_EQUIPMENT_TYPES for all equipment/slots.
+ */
+export function inferEquipmentTypeId(target = null, fallback = KNOWN_EQUIPMENT_TYPES.MAIN_GUN) {
+  if (!target || typeof target !== 'object') return fallback;
+
+  if (target.category === 'outfit' || target.equipmentType === 'outfit' || target.subCategory === 'outfit') {
+    return 'outfit';
+  }
+
+  // 1. Direct canonical equipmentType / subCategory match
+  const explicit = String(target.equipmentType || target.subCategory || '').trim().toLowerCase();
+  if (KNOWN_EQUIPMENT_TYPE_MAP[explicit]) return explicit;
+
+  // 2. Mandatory core categories
+  if (target.category === 'engine') return KNOWN_EQUIPMENT_TYPES.ENGINE;
+  if (target.category === 'armor') return KNOWN_EQUIPMENT_TYPES.ARMOR;
+  if (target.category === 'core') return KNOWN_EQUIPMENT_TYPES.CORE;
+
+  // 3. Icon key match
+  const icon = String(target.iconKey || '').trim().toLowerCase();
+  if (KNOWN_EQUIPMENT_TYPE_MAP[icon]) return icon;
+
+  // 4. Keyword match with priority: name/label -> tags -> description
+  const primaryText = `${target.name || ''} ${target.label || ''}`.trim();
+  const byPrimary = normalizeEquipmentTypeId(primaryText, null);
+  if (byPrimary) return byPrimary;
+
+  const tagsText = Array.isArray(target.tags) ? target.tags.join(' ') : String(target.tags || '');
+  const byTags = normalizeEquipmentTypeId(tagsText, null);
+  if (byTags) return byTags;
+
+  const byDesc = normalizeEquipmentTypeId(String(target.description || ''), null);
+  if (byDesc) return byDesc;
+
+  // 5. Fallback heuristic from dominant stat bonus
+  const bonuses = Array.isArray(target.bonuses) && target.bonuses.length > 0 ? target.bonuses : target.baseBonuses || [];
+  let topStat = null;
+  let topVal = 0;
+  for (const b of bonuses) {
+    const k = normalizeStatKey(b?.stat);
+    const v = Math.abs(Number(b?.value) || 0);
+    if (k && k !== 'checkBonus' && v > topVal) {
+      topStat = k;
+      topVal = v;
+    }
+  }
+  if (topStat === 'torpedo') return KNOWN_EQUIPMENT_TYPES.TORPEDO;
+  if (topStat === 'asw') return KNOWN_EQUIPMENT_TYPES.SONAR;
+  if (topStat === 'aa') return KNOWN_EQUIPMENT_TYPES.AA_GUN;
+  if (topStat === 'recon') return KNOWN_EQUIPMENT_TYPES.RADAR;
+  if (topStat === 'firepower') return KNOWN_EQUIPMENT_TYPES.MAIN_GUN;
+  if (topStat === 'evasion') return KNOWN_EQUIPMENT_TYPES.ENGINE;
+  if (topStat === 'armor' || topStat === 'maxHp') return KNOWN_EQUIPMENT_TYPES.ARMOR;
+
+  return fallback;
+}
+
 
 

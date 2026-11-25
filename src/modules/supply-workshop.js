@@ -904,6 +904,7 @@ export function openEquipmentOutfitEditorSheet(
             category: curSub.category,
             subGroup: curSub.subGroup,
             subCategory: curSub.id,
+            equipmentType: curSub.id,
             rarity: normalizeRarity(draft.rarity),
             iconKey: draft.iconKey,
             outfitStyle: curSub.category === ITEM_CATEGORIES.OUTFIT ? draft.outfitStyle : '',
