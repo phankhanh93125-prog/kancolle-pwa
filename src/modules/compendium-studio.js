@@ -391,6 +391,7 @@ function renderCompendiumTab(host) {
         .map((it) => {
           const rId = inferItemRarity(it);
           const rDef = ITEM_RARITY_MAP[rId] || ITEM_RARITY_MAP.common;
+          const canEdit = it.category !== 'consumable';
           return `
         <div class="lab-slot-card is-rarity-${rId}" data-comp-equip="${escapeHtml(it.id)}">
           <div class="lab-slot-head">
@@ -408,6 +409,11 @@ function renderCompendiumTab(host) {
               .map((b) => `<span class="ns-chip">${escapeHtml(b.stat)} ${formatSigned(b.value)}</span>`)
               .join('') || '<span class="ns-chip">无属性词条</span>'}
           </div>
+          ${
+            canEdit
+              ? `<button type="button" class="btn-secondary uikit-touch-target" data-edit-comp-item="${escapeHtml(it.id)}">编辑品级/属性</button>`
+              : ''
+          }
         </div>
       `;
         })
@@ -417,6 +423,18 @@ function renderCompendiumTab(host) {
     listCard.querySelector('#btn-cs-new-eq-tpl')?.addEventListener('click', () => {
       openEquipmentOutfitEditorSheet(csState.context, {
         onSaved: () => renderCompendiumStudio(),
+      });
+    });
+
+    listCard.querySelectorAll('[data-edit-comp-item]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-edit-comp-item');
+        const realItem = csState.context.inventory?.getItem(id);
+        if (!realItem) return;
+        openEquipmentOutfitEditorSheet(csState.context, {
+          item: realItem,
+          onSaved: () => renderCompendiumStudio(),
+        });
       });
     });
 
@@ -584,6 +602,81 @@ function renderStudioTab(host) {
     }
   });
   host.appendChild(modCard);
+
+  // 1B. Custom Equipment & Outfit Templates Section (also accessible from Compendium -> Equipment)
+  const customEqList = contentManager.listCustomEquipment();
+  const eqTplCard = document.createElement('section');
+  eqTplCard.className = 'surface-card lab-stack-sm';
+  eqTplCard.id = 'cs-studio-custom-eq-card';
+  eqTplCard.innerHTML = `
+    <div class="section-header-row" style="margin-bottom:0;">
+      <h3 class="section-title">自定义装备与服装模板（${customEqList.length}）</h3>
+      <button type="button" id="btn-cs-studio-new-eq" class="btn-primary uikit-touch-target" style="padding:0 12px;">+ 新建装备/服装</button>
+    </div>
+    ${
+      customEqList.length === 0
+        ? '<p class="muted-text" style="font-size:12px;">暂无自定义装备或服装模板。点击「+ 新建装备/服装」可自由定制五阶品级、八维属性、图标与服装风格，并一键发放到仓库或导出到模组包。</p>'
+        : customEqList
+            .map((tpl) => {
+              const rId = inferItemRarity(tpl);
+              const rDef = ITEM_RARITY_MAP[rId] || ITEM_RARITY_MAP.common;
+              return `
+        <div class="lab-slot-card is-rarity-${rId}">
+          <div class="lab-slot-head">
+            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+              <span class="wh-item-ico">${getItemIconSvg(tpl, { size: 18 })}</span>
+              <span class="rarity-pill is-rarity-${rId}">${escapeHtml(rDef.shortLabel)}</span>
+              <strong>${escapeHtml(tpl.name)}</strong>
+              ${tpl.outfitStyle ? `<span class="status-badge badge-ok">${escapeHtml(tpl.outfitStyle)}</span>` : ''}
+            </div>
+          </div>
+          <div class="lab-btn-grid">
+            <button type="button" class="btn-primary uikit-touch-target" data-studio-issue-eq="${escapeHtml(tpl.id)}">发放到仓库</button>
+            <button type="button" class="btn-secondary uikit-touch-target" data-studio-edit-eq="${escapeHtml(tpl.id)}">编辑</button>
+            <button type="button" class="btn-danger uikit-touch-target" data-studio-del-eq="${escapeHtml(tpl.id)}">删除</button>
+          </div>
+        </div>
+      `;
+            })
+            .join('')
+    }
+  `;
+  eqTplCard.querySelector('#btn-cs-studio-new-eq')?.addEventListener('click', () => {
+    openEquipmentOutfitEditorSheet(csState.context, {
+      onSaved: () => renderCompendiumStudio(),
+    });
+  });
+  eqTplCard.querySelectorAll('[data-studio-issue-eq]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-studio-issue-eq');
+      try {
+        const issued = await contentManager.issueEquipmentToWarehouse(id, 1);
+        uiKit.showToast(`已发放「${issued[0]?.name || '自定义物品'}」×1 到仓库！`, 'ok');
+        renderCompendiumStudio();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '发放失败', 'warn');
+      }
+    });
+  });
+  eqTplCard.querySelectorAll('[data-studio-edit-eq]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-studio-edit-eq');
+      const tpl = customEqList.find((t) => t.id === id);
+      if (!tpl) return;
+      openEquipmentOutfitEditorSheet(csState.context, {
+        template: tpl,
+        onSaved: () => renderCompendiumStudio(),
+      });
+    });
+  });
+  eqTplCard.querySelectorAll('[data-studio-del-eq]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      await contentManager.deleteCustomEquipmentTemplate(btn.getAttribute('data-studio-del-eq'));
+      uiKit.showToast('已删除自定义装备/服装模板', 'info');
+      renderCompendiumStudio();
+    });
+  });
+  host.appendChild(eqTplCard);
 
   // 2. Custom Enemies Section
   const enemyCard = document.createElement('section');
@@ -1510,6 +1603,7 @@ export default {
       context.bus.on('content:mod-imported', () => renderCompendiumStudio()),
       context.bus.on('character:saved', () => renderCompendiumStudio()),
       context.bus.on('inventory:item-created', () => renderCompendiumStudio()),
+      context.bus.on('inventory:item-updated', () => renderCompendiumStudio()),
     ];
 
     renderCompendiumStudio();

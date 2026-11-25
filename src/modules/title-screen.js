@@ -73,6 +73,7 @@ function openNewJourneyModal(context) {
     title: '新的征程 · 开局偏好设置',
     renderContent: (body, close) => {
       const renderForm = () => {
+        const prevScroll = body.scrollTop;
         body.innerHTML = `
           <div class="module-stack" id="new-journey-form">
             <div class="form-group">
@@ -120,10 +121,11 @@ function openNewJourneyModal(context) {
             </label>
 
             <button type="button" id="btn-nj-confirm" class="btn-primary port-cta-btn">
-              确认偏好 · 启航新征程
+              确认出发 · 开启新征程
             </button>
           </div>
         `;
+        body.scrollTop = prevScroll;
 
         const syncName = () => {
           const inp = body.querySelector('#nj-cmd-name');
@@ -146,23 +148,25 @@ function openNewJourneyModal(context) {
           });
         });
 
-        body.querySelector('#nj-keep-custom').addEventListener('change', (e) => {
+        body.querySelector('#nj-keep-custom')?.addEventListener('change', (e) => {
           prefs.keepCustomData = Boolean(e.target.checked);
         });
 
-        body.querySelector('#btn-nj-confirm').addEventListener('click', async () => {
+        body.querySelector('#btn-nj-confirm')?.addEventListener('click', async () => {
           syncName();
           const btn = body.querySelector('#btn-nj-confirm');
+          if (!btn || btn.disabled) return;
           btn.disabled = true;
           btn.textContent = '正在整备新港区...';
           try {
-            if (appActions && typeof appActions.startNewJourney === 'function') {
-              await appActions.startNewJourney(prefs);
+            if (!appActions || typeof appActions.startNewJourney !== 'function') {
+              throw new Error('新征程初始化处理器未就绪');
             }
             close();
+            await appActions.startNewJourney(prefs);
           } catch (err) {
             btn.disabled = false;
-            btn.textContent = '确认偏好 · 启航新征程';
+            btn.textContent = '确认出发 · 开启新征程';
             uiKit.showToast(err instanceof Error ? err.message : '开启新征程失败', 'error');
           }
         });
@@ -176,27 +180,46 @@ function openNewJourneyModal(context) {
 let titleState = {
   container: null,
   context: null,
+  renderSeq: 0,
 };
 
 async function renderTitleScreen() {
   if (!titleState.container || !titleState.context) return;
-  const { commander, entities, formation, interaction, resources, saves, modules, appActions } =
-    titleState.context;
+  const seq = ++titleState.renderSeq;
+  const ctx = titleState.context;
+  const { commander, entities, formation, interaction, resources, saves, modules, appActions, uiKit } = ctx;
 
-  const autoMeta = saves ? await saves.getAutoSaveMeta() : null;
-  const manualSlots = saves ? (await saves.listSlots()).filter((s) => !s.empty) : [];
+  let autoMeta = null;
+  let manualSlots = [];
+  try {
+    if (saves) {
+      autoMeta = await saves.getAutoSaveMeta();
+      manualSlots = (await saves.listSlots()).filter((s) => !s.empty);
+    }
+  } catch (err) {
+    console.warn('[TitleScreen] Failed to read save metadata:', err);
+  }
+
+  // Guard against unmount or newer render while awaiting IndexedDB
+  if (seq !== titleState.renderSeq || !titleState.container || !titleState.context) return;
+
+  const latestManual = manualSlots
+    .slice()
+    .sort((a, b) => (Number(b.meta?.timestamp) || 0) - (Number(a.meta?.timestamp) || 0))[0] || null;
+  const latestMeta = autoMeta || latestManual?.meta || null;
+
   const cmd = commander ? commander.getProfile() : { name: '港区指挥官', level: 1 };
   const chars = entities ? entities.list({ kind: 'character' }) : [];
   const activeFleetCount = formation ? formation.getMemberIds().length : 0;
   const secretary = interaction?.getSecretary() || chars[0] || null;
-  const hasContinuableSave = Boolean(autoMeta || manualSlots.length > 0 || chars.length > 0);
+  const hasContinuableSave = Boolean(latestMeta || chars.length > 0);
   const dropMult = resources && typeof resources.getDropMultiplier === 'function' ? resources.getDropMultiplier() : 1.0;
 
-  const continueCmdName = autoMeta?.summary?.commanderName || cmd.name || '港区指挥官';
-  const continueCmdLv = autoMeta?.summary?.commanderLevel ?? cmd.level ?? 1;
-  const continueTotalShips = Math.max(chars.length, autoMeta?.summary?.characters || 0);
-  const continueFleetShips = Math.max(activeFleetCount, autoMeta?.summary?.fleetCount || 0);
-  const continueSecName = secretary?.name || autoMeta?.summary?.flagshipName || '';
+  const continueCmdName = latestMeta?.summary?.commanderName || cmd.name || '港区指挥官';
+  const continueCmdLv = latestMeta?.summary?.commanderLevel ?? cmd.level ?? 1;
+  const continueTotalShips = Math.max(chars.length, latestMeta?.summary?.characters || 0);
+  const continueFleetShips = Math.max(activeFleetCount, latestMeta?.summary?.fleetCount || 0);
+  const continueSecName = secretary?.name || latestMeta?.summary?.flagshipName || '';
 
   titleState.container.innerHTML = '';
   const root = document.createElement('section');
@@ -220,18 +243,16 @@ async function renderTitleScreen() {
     </div>
 
     <div class="title-action-stack">
-      ${
-        hasContinuableSave
-          ? `
-        <button type="button" id="btn-title-continue" class="title-cta-primary">
-          <span class="title-cta-label">继续航行</span>
-          <span class="title-cta-meta">
-            指挥官：${escapeHtml(continueCmdName)} Lv.${continueCmdLv} · 舰队 ${continueFleetShips}/${continueTotalShips} 舰${continueSecName ? ` · 秘书舰 ${escapeHtml(continueSecName)}` : ''}
-          </span>
-        </button>
-      `
-          : ''
-      }
+      <button type="button" id="btn-title-continue" class="${hasContinuableSave ? 'title-cta-primary' : 'title-cta-secondary'}">
+        <span class="title-cta-label">继续航行</span>
+        <span class="title-cta-meta">
+          ${
+            hasContinuableSave
+              ? `指挥官：${escapeHtml(continueCmdName)} Lv.${continueCmdLv} · 舰队 ${continueFleetShips}/${continueTotalShips} 舰${continueSecName ? ` · 秘书舰 ${escapeHtml(continueSecName)}` : ''}`
+              : '暂无已保存的航程，点击后可引导开启「新的征程」'
+          }
+        </span>
+      </button>
 
       <button type="button" id="btn-title-new-journey" class="${hasContinuableSave ? 'title-cta-secondary' : 'title-cta-primary'}">
         <span class="title-cta-label">新的征程</span>
@@ -254,25 +275,54 @@ async function renderTitleScreen() {
     </div>
   `;
 
-  root.querySelector('#btn-title-continue')?.addEventListener('click', () => {
-    if (modules.has('port-hub')) {
-      modules.mount('port-hub', { transition: 'left' });
+  root.querySelector('#btn-title-continue')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try {
+      if (appActions && typeof appActions.continueLatestSave === 'function') {
+        const res = await appActions.continueLatestSave();
+        if (res && !res.ok && res.reason === 'no-save') {
+          btn.disabled = false;
+          uiKit.showToast('暂无可继续的存档，请先配置「新的征程」偏好！', 'warn');
+          openNewJourneyModal(ctx);
+        }
+      } else if (modules.has('port-hub')) {
+        modules.mount('port-hub', { transition: 'left' });
+      }
+    } catch (err) {
+      btn.disabled = false;
+      uiKit.showToast(err instanceof Error ? err.message : '读取存档失败', 'error');
     }
   });
 
   root.querySelector('#btn-title-new-journey')?.addEventListener('click', () => {
-    openNewJourneyModal(titleState.context);
+    try {
+      openNewJourneyModal(ctx);
+    } catch (err) {
+      uiKit.showToast(err instanceof Error ? err.message : '打开开局偏好设置失败', 'error');
+    }
   });
 
   root.querySelector('#btn-title-load-save')?.addEventListener('click', () => {
-    if (appActions && typeof appActions.openSaveVault === 'function') {
-      appActions.openSaveVault();
+    try {
+      if (appActions && typeof appActions.openSaveVault === 'function') {
+        appActions.openSaveVault();
+      } else {
+        uiKit.showToast('存档保险箱尚未就绪', 'warn');
+      }
+    } catch (err) {
+      uiKit.showToast(err instanceof Error ? err.message : '打开存档保险箱失败', 'error');
     }
   });
 
   root.querySelector('#btn-title-settings')?.addEventListener('click', () => {
-    if (appActions && typeof appActions.openSettings === 'function') {
-      appActions.openSettings();
+    try {
+      if (appActions && typeof appActions.openSettings === 'function') {
+        appActions.openSettings();
+      }
+    } catch (err) {
+      uiKit.showToast(err instanceof Error ? err.message : '打开设置失败', 'error');
     }
   });
 
@@ -296,6 +346,7 @@ export default {
   },
 
   unmount() {
+    titleState.renderSeq += 1;
     if (titleState.context?.ui && typeof titleState.context.ui.setTitleScreenMode === 'function') {
       titleState.context.ui.setTitleScreenMode(false);
     }

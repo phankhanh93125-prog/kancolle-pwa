@@ -1017,7 +1017,7 @@ async function startNewJourney(prefs = {}) {
       { persist: true }
     );
     storyPacks.deserialize({ version: 1, flags: {}, packs: [], history: [] }, { persist: true });
-    await storyPacks.init();
+    await storyPacks.ensureStarterStoryPacks();
   } else {
     // Keep all installed story packs & custom content packs, only reset progression flags for the fresh run
     const spSnap = storyPacks.serialize();
@@ -1178,7 +1178,15 @@ async function startNewJourney(prefs = {}) {
   if (validMemberIds.length > 0) {
     await interaction.setSecretary(validMemberIds[0]);
   }
-  await persistCharacterRoster({ storage, entities });
+  await Promise.all([
+    commander.persist(),
+    resources.persist(),
+    inventory.persist(),
+    formation.persist(),
+    buildings.persist(),
+    interaction.persist(),
+    persistCharacterRoster({ storage, entities }),
+  ]);
 
   // 8. Capture fresh Auto-Save snapshot immediately and enter Port Hub
   await saves.autoSave(captureFullWorldSnapshot(), {
@@ -1195,7 +1203,42 @@ async function startNewJourney(prefs = {}) {
   moduleManager.mount('port-hub', { transition: 'left' });
 }
 
+async function continueLatestSave() {
+  const autoRec = await saves.loadAutoSave();
+  if (autoRec && autoRec.data) {
+    const { migrated } = await restoreFullWorldSnapshot(autoRec.data);
+    showToast(migrated ? '已无损迁移并读取最近自动存档，欢迎回港！' : '已读取最近自动存档，欢迎回到港区！', 'ok');
+    return { ok: true, source: 'auto' };
+  }
+
+  const slots = (await saves.listSlots())
+    .filter((s) => !s.empty)
+    .sort((a, b) => (Number(b.meta?.timestamp) || 0) - (Number(a.meta?.timestamp) || 0));
+  if (slots.length > 0) {
+    const latestRec = await saves.loadSlot(slots[0].slotIndex);
+    if (latestRec && latestRec.data) {
+      const { migrated } = await restoreFullWorldSnapshot(latestRec.data);
+      showToast(
+        migrated
+          ? `已无损迁移并读取槽位 #${slots[0].slotIndex}，欢迎回港！`
+          : `已读取存档槽位 #${slots[0].slotIndex}，欢迎回到港区！`,
+        'ok'
+      );
+      return { ok: true, source: `slot-${slots[0].slotIndex}` };
+    }
+  }
+
+  if (entities.list({ kind: 'character' }).length > 0) {
+    moduleManager.mount('port-hub', { transition: 'left' });
+    showToast('欢迎回到港区大本营！', 'ok');
+    return { ok: true, source: 'live' };
+  }
+
+  return { ok: false, reason: 'no-save' };
+}
+
 appActions.startNewJourney = startNewJourney;
+appActions.continueLatestSave = continueLatestSave;
 
 function formatTimeShort(ts) {
   if (!ts) return '—';
@@ -1841,6 +1884,8 @@ async function bootApplication() {
       'inventory:consumed',
       'inventory:enhanced',
       'inventory:cleaned',
+      'inventory:item-created',
+      'inventory:item-updated',
       'inventory:slot-added',
       'inventory:slot-renamed',
       'inventory:slot-removed',

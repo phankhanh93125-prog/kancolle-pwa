@@ -4836,6 +4836,29 @@ body.is-title-screen .module-nav-strip {
   text-align: right;
 }
 
+/* v17: Modal layering & mobile portrait touch scroll guarantees */
+.sheet-backdrop {
+  z-index: 100;
+}
+
+.uikit-sheet-backdrop {
+  z-index: 120;
+}
+
+.toast-region {
+  z-index: 200;
+}
+
+.uikit-modal-dialog {
+  max-height: 90dvh;
+}
+
+.uikit-modal-dialog .sheet-body {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+
 
 
 

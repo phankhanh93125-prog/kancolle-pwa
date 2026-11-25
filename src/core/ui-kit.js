@@ -199,6 +199,34 @@ export function openBottomSheet({
 }
 
 /**
+ * Open a scrollable mobile modal sheet supporting dynamic `renderContent(body, close)`.
+ * Built on `openBottomSheet` so it stacks cleanly above all page content with full touch scrolling.
+ */
+export function openModal({
+  title = '面板',
+  subtitle = '',
+  renderContent = null,
+  content = null,
+  actions = [],
+  dismissible = true,
+  onClose = null,
+} = {}) {
+  const sheet = openBottomSheet({
+    title,
+    subtitle,
+    content: typeof renderContent === 'function' ? null : content,
+    actions,
+    dismissible,
+    onClose,
+  });
+  sheet.dialog.classList.add('uikit-modal-dialog');
+  if (typeof renderContent === 'function') {
+    renderContent(sheet.body, sheet.close);
+  }
+  return sheet;
+}
+
+/**
  * One-handed confirmation dialog built on Bottom Sheet.
  * @returns {Promise<boolean>}
  */
@@ -553,6 +581,7 @@ export function createUIKit() {
   return {
     showToast,
     openBottomSheet,
+    openModal,
     confirmDialog,
     createProgressBar,
     createTabs,

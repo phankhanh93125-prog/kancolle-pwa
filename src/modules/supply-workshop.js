@@ -725,6 +725,7 @@ export function openEquipmentOutfitEditorSheet(
       : '+ 新建自定义装备与服装',
     renderContent: (body, close) => {
       const renderEditor = () => {
+        const prevScroll = body.scrollTop;
         const subDef =
           EQUIPMENT_SUBCATEGORY_DEFS.find((d) => d.id === draft.subCategory) || EQUIPMENT_SUBCATEGORY_DEFS[3];
         const isOutfit = subDef.category === ITEM_CATEGORIES.OUTFIT;
@@ -756,8 +757,8 @@ export function openEquipmentOutfitEditorSheet(
 
             <!-- 1. Category / Subcategory Selector -->
             <div class="form-group">
-              <label class="form-label">1. 装备 / 服装类别</label>
-              <select id="eq-ed-subcat" class="form-input">
+              <label class="form-label" for="eq-ed-subcat">1. 装备 / 服装类别</label>
+              <select id="eq-ed-subcat" class="form-select">
                 ${['核心三件套', '主战武器', '战术辅助', '舰娘服装']
                   .map(
                     (grp) => `
@@ -871,6 +872,7 @@ export function openEquipmentOutfitEditorSheet(
             </div>
           </div>
         `;
+        body.scrollTop = prevScroll;
 
         const syncInputsToDraft = () => {
           draft.name = body.querySelector('#eq-ed-name')?.value.trim() || '';
@@ -911,7 +913,7 @@ export function openEquipmentOutfitEditorSheet(
           };
         };
 
-        body.querySelector('#eq-ed-subcat').addEventListener('change', (e) => {
+        body.querySelector('#eq-ed-subcat')?.addEventListener('change', (e) => {
           syncInputsToDraft();
           draft.subCategory = e.target.value;
           const nextSub = EQUIPMENT_SUBCATEGORY_DEFS.find((d) => d.id === draft.subCategory);
@@ -946,6 +948,8 @@ export function openEquipmentOutfitEditorSheet(
         const btnUpdate = body.querySelector('#btn-eq-ed-update');
         if (btnUpdate && item) {
           btnUpdate.addEventListener('click', async () => {
+            if (btnUpdate.disabled) return;
+            btnUpdate.disabled = true;
             try {
               const payload = buildPayload();
               if (!payload.name) throw new Error('请输入装备/服装名称');
@@ -957,6 +961,7 @@ export function openEquipmentOutfitEditorSheet(
               close();
               if (typeof onSaved === 'function') onSaved();
             } catch (err) {
+              btnUpdate.disabled = false;
               uiKit.showToast(err instanceof Error ? err.message : '保存失败', 'warn');
             }
           });
@@ -965,6 +970,8 @@ export function openEquipmentOutfitEditorSheet(
         const btnSaveTpl = body.querySelector('#btn-eq-ed-save-tpl');
         if (btnSaveTpl) {
           btnSaveTpl.addEventListener('click', async () => {
+            if (btnSaveTpl.disabled) return;
+            btnSaveTpl.disabled = true;
             try {
               const payload = buildPayload();
               if (!payload.name) throw new Error('请输入装备/服装名称');
@@ -974,6 +981,7 @@ export function openEquipmentOutfitEditorSheet(
               close();
               if (typeof onSaved === 'function') onSaved();
             } catch (err) {
+              btnSaveTpl.disabled = false;
               uiKit.showToast(err instanceof Error ? err.message : '保存模板失败', 'warn');
             }
           });
@@ -982,6 +990,8 @@ export function openEquipmentOutfitEditorSheet(
         const btnSaveIssue = body.querySelector('#btn-eq-ed-save-and-issue');
         if (btnSaveIssue) {
           btnSaveIssue.addEventListener('click', async () => {
+            if (btnSaveIssue.disabled) return;
+            btnSaveIssue.disabled = true;
             try {
               const payload = buildPayload();
               if (!payload.name) throw new Error('请输入装备/服装名称');
@@ -995,6 +1005,7 @@ export function openEquipmentOutfitEditorSheet(
               close();
               if (typeof onSaved === 'function') onSaved();
             } catch (err) {
+              btnSaveIssue.disabled = false;
               uiKit.showToast(err instanceof Error ? err.message : '保存发放失败', 'warn');
             }
           });
@@ -1015,6 +1026,7 @@ function openBatchDisassembleSheet(context, { onDone = null } = {}) {
     title: '按品级批量拆解闲置装备',
     renderContent: (body, close) => {
       const renderPanel = () => {
+        const prevScroll = body.scrollTop;
         const dropMult = typeof resources.getDropMultiplier === 'function' ? resources.getDropMultiplier() : 1.0;
         const preview = inventory.previewBatchDisassemble({
           rarities: Array.from(selectedRarities),
@@ -1070,6 +1082,7 @@ function openBatchDisassembleSheet(context, { onDone = null } = {}) {
             </button>
           </div>
         `;
+        body.scrollTop = prevScroll;
 
         body.querySelectorAll('[data-dis-rarity]').forEach((btn) => {
           btn.addEventListener('click', () => {
@@ -1080,30 +1093,38 @@ function openBatchDisassembleSheet(context, { onDone = null } = {}) {
           });
         });
 
-        body.querySelector('#chk-dis-enhanced').addEventListener('change', (e) => {
+        body.querySelector('#chk-dis-enhanced')?.addEventListener('change', (e) => {
           includeEnhanced = Boolean(e.target.checked);
           renderPanel();
         });
 
-        body.querySelector('#btn-confirm-disassemble').addEventListener('click', async () => {
-          const res = await inventory.disassembleItemsByRarity({
-            rarities: Array.from(selectedRarities),
-            includeEnhanced,
-            resources,
-          });
-          if (res.removedCount > 0) {
-            logs.add({
-              category: LOG_CATEGORIES.EQUIPMENT,
-              title: `按品级批量拆解 ${res.removedCount} 件闲置装备`,
-              detail: `返还 钢材+${res.yield.steel} / 铝材+${res.yield.bauxite} / 银条+${res.yield.silver}`,
+        body.querySelector('#btn-confirm-disassemble')?.addEventListener('click', async (e) => {
+          const btn = e.currentTarget;
+          if (btn.disabled) return;
+          btn.disabled = true;
+          try {
+            const res = await inventory.disassembleItemsByRarity({
+              rarities: Array.from(selectedRarities),
+              includeEnhanced,
+              resources,
             });
-            uiKit.showToast(
-              `拆解 ${res.removedCount} 件装备成功！返还 钢+${res.yield.steel} 铝+${res.yield.bauxite} 银+${res.yield.silver}`,
-              'ok'
-            );
+            if (res.removedCount > 0) {
+              logs.add({
+                category: LOG_CATEGORIES.EQUIPMENT,
+                title: `按品级批量拆解 ${res.removedCount} 件闲置装备`,
+                detail: `返还 钢材+${res.yield.steel} / 铝材+${res.yield.bauxite} / 银条+${res.yield.silver}`,
+              });
+              uiKit.showToast(
+                `拆解 ${res.removedCount} 件装备成功！返还 钢+${res.yield.steel} 铝+${res.yield.bauxite} 银+${res.yield.silver}`,
+                'ok'
+              );
+            }
+            close();
+            if (typeof onDone === 'function') onDone();
+          } catch (err) {
+            btn.disabled = false;
+            uiKit.showToast(err instanceof Error ? err.message : '批量拆解失败', 'error');
           }
-          close();
-          if (typeof onDone === 'function') onDone();
         });
       };
 
@@ -1553,6 +1574,8 @@ export default {
       context.bus.on('inventory:enhanced', () => renderWorkshop()),
       context.bus.on('inventory:cleaned', () => renderWorkshop()),
       context.bus.on('inventory:item-created', () => renderWorkshop()),
+      context.bus.on('inventory:item-updated', () => renderWorkshop()),
+      context.bus.on('content:updated', () => renderWorkshop()),
       context.bus.on('content:mod-imported', () => renderWorkshop()),
       context.bus.on('storage:changed', (detail) => {
         if (detail?.action === 'resetAll' || detail?.action === 'import') {
