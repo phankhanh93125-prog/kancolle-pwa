@@ -11,6 +11,11 @@
  */
 
 import { clamp } from './calc-engine.js';
+import {
+  getFleetSlotCostFactor,
+  getShipClassProfile,
+  resolveShipClass,
+} from './stat-rules.js';
 
 const STORAGE_NS = 'core-formation';
 const STATE_KEY = 'formation-state-v1';
@@ -339,8 +344,59 @@ export class FormationSystem {
   }
 
   /**
-   * Aggregate full-fleet 8 naval stats with active formation multipliers & Commander synergy factor.
-   * Returns both total sums and combat-effective averaged/scaled values used in 1D20 checks & damage.
+   * 3~12 Fleet Staggered Resource Consumption Formula:
+   *   - Ships #1..#3  : 100% of ship-class base fuel/ammo
+   *   - Ships #4..#6  :  75%
+   *   - Ships #7..#12 :  55%
+   *   Summed total is then multiplied by Commander `dispatch` logistics discount.
+   */
+  computeStaggeredStepCost(customMemberIds = null) {
+    const memberIds = Array.isArray(customMemberIds) ? customMemberIds : this.getMemberIds();
+    const members = memberIds.map((id) => this._entities?.get(id)).filter(Boolean);
+    let rawFuel = 0;
+    let rawAmmo = 0;
+    const breakdown = [];
+
+    for (let i = 0; i < members.length; i++) {
+      const m = members[i];
+      const prof = getShipClassProfile(m.meta?.shipType);
+      const tierFactor = getFleetSlotCostFactor(i);
+      const shipFuel = Number((prof.stepCost.fuel * tierFactor).toFixed(2));
+      const shipAmmo = Number((prof.stepCost.ammo * tierFactor).toFixed(2));
+      rawFuel += shipFuel;
+      rawAmmo += shipAmmo;
+      breakdown.push({
+        slotIndex: i + 1,
+        id: m.id,
+        name: m.name,
+        shipType: m.meta?.shipType || prof.fullName,
+        classCode: prof.code,
+        tierFactor,
+        tierLabel: `${Math.round(tierFactor * 100)}%`,
+        fuel: Math.round(shipFuel),
+        ammo: Math.round(shipAmmo),
+      });
+    }
+
+    const dispatchDiscount = this._commander ? this._commander.getSortieStepDiscount() : 0;
+    const scale = Math.max(0.5, 1 - dispatchDiscount);
+    const fuel = Math.max(4, Math.round(rawFuel * scale));
+    const ammo = Math.max(4, Math.round(rawAmmo * scale));
+
+    return {
+      fuel,
+      ammo,
+      rawFuel: Math.round(rawFuel),
+      rawAmmo: Math.round(rawAmmo),
+      dispatchDiscount,
+      fleetCount: members.length,
+      breakdown,
+    };
+  }
+
+  /**
+   * Aggregate full-fleet 8 naval stats with active formation multipliers, ship-class composition,
+   * staggered step costs, vision range, and Commander synergy factor.
    */
   computeFleetSummary(customMemberIds = null, customFormationId = null) {
     const memberIds = Array.isArray(customMemberIds) ? customMemberIds : this.getMemberIds();
@@ -363,6 +419,7 @@ export class FormationSystem {
       moraleSum: 0,
       checkBonus: 0,
     };
+    const classCounts = { DD: 0, CL: 0, CA: 0, BB: 0, CV: 0 };
 
     const memberDetails = [];
     for (let idx = 0; idx < members.length; idx++) {
@@ -373,11 +430,13 @@ export class FormationSystem {
       const hp = clamp(Math.round(Number(m.stats.hp ?? maxHp)), 0, maxHp);
       const morale = clamp(Math.round(Number(m.stats.morale ?? 60)), 0, 100);
       const alive = hp > 0;
+      const classCode = resolveShipClass(m.meta?.shipType);
 
       const row = {
         id: m.id,
         name: m.name,
         shipType: m.meta?.shipType || '通用舰',
+        classCode,
         isFlagship: idx === 0,
         alive,
         hp,
@@ -397,6 +456,7 @@ export class FormationSystem {
       totals.hp += hp;
       totals.maxHp += maxHp;
       if (alive) {
+        classCounts[classCode] = (classCounts[classCode] || 0) + 1;
         totals.firepower += row.firepower;
         totals.armor += row.armor;
         totals.torpedo += row.torpedo;
@@ -427,7 +487,6 @@ export class FormationSystem {
       asw: Math.round(totals.asw * mods.asw),
     };
 
-    // Normalized check rating (keeps 1D20 checks balanced across 1..12 ships while rewarding larger fleets)
     const checkRatings = {
       firepower: Math.round((totals.firepower / count) * mods.firepower * synergyFactor),
       armor: effective.armor,
@@ -438,6 +497,16 @@ export class FormationSystem {
       asw: Math.round((totals.asw / count) * mods.asw * synergyFactor),
     };
 
+    const hasCarrier = classCounts.CV > 0;
+    const cmdTactics = this._commander ? this._commander.getProfile().stats.tactics : 10;
+    const visionRange =
+      1 +
+      (hasCarrier ? 1 : 0) +
+      (effective.recon >= 90 ? 1 : 0) +
+      (cmdTactics >= 25 ? 1 : 0);
+
+    const staggeredStepCost = this.computeStaggeredStepCost(memberIds);
+
     return {
       count: members.length,
       aliveCount,
@@ -446,6 +515,10 @@ export class FormationSystem {
       formationName: formation.name,
       formationMods: mods,
       synergyFactor,
+      classCounts,
+      hasCarrier,
+      visionRange,
+      staggeredStepCost,
       avgMorale: Math.round(totals.moraleSum / count),
       totalHp: totals.hp,
       totalMaxHp: totals.maxHp,

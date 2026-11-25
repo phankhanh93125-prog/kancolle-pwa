@@ -19,6 +19,7 @@ const STORAGE_NS = 'core-fx';
 const ENABLED_KEY = 'fx-enabled';
 const SOUND_KEY = 'fx-sound-enabled';
 const HAPTICS_KEY = 'fx-haptics-enabled';
+const SPEED_KEY = 'fx-battle-speed';
 
 export const FX_TYPES = Object.freeze({
   SHAKE: 'shake',
@@ -42,6 +43,8 @@ export class FxStage {
     this._enabled = this._store ? this._store.get(ENABLED_KEY, true) !== false : true;
     this._soundEnabled = this._store ? this._store.get(SOUND_KEY, false) === true : false;
     this._hapticsEnabled = this._store ? this._store.get(HAPTICS_KEY, true) !== false : true;
+    const savedSpeed = this._store ? Number(this._store.get(SPEED_KEY, 1)) : 1;
+    this._battleSpeed = savedSpeed === 2 ? 2 : 1;
     /** @type {Map<string, (payload: any, ctx: { overlay: HTMLElement }) => void>} */
     this._renderers = new Map();
     this._attached = false;
@@ -52,6 +55,26 @@ export class FxStage {
     this._audioCtx = null;
 
     this._registerBuiltInRenderers();
+  }
+
+  getBattleSpeed() {
+    return this._battleSpeed;
+  }
+
+  setBattleSpeed(speed) {
+    this._battleSpeed = Number(speed) === 2 ? 2 : 1;
+    if (this._store) this._store.set(SPEED_KEY, this._battleSpeed);
+    if (this._bus) this._bus.emit('fx:speed-changed', { speed: this._battleSpeed });
+    return this._battleSpeed;
+  }
+
+  toggleBattleSpeed() {
+    return this.setBattleSpeed(this._battleSpeed === 1 ? 2 : 1);
+  }
+
+  wait(baseMs) {
+    const ms = Math.max(30, Math.round((Number(baseMs) || 0) / this._battleSpeed));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   _ensureOverlay() {

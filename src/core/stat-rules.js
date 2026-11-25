@@ -34,6 +34,141 @@ export const SHIP_TYPE_PRESETS = Object.freeze([
 ]);
 
 /**
+ * 5 Canonical Ship-Class Profiles:
+ * Differentiated per-level stat growth, combat role modifiers, base step cost, and geometric SVG emblem.
+ */
+export const SHIP_CLASS_PROFILES = Object.freeze({
+  DD: {
+    code: 'DD',
+    name: '驱逐',
+    fullName: '驱逐舰',
+    color: '#38bdf8',
+    roleSummary: '高机动/雷击/反潜 · 鱼雷高破甲高暴击 · 反潜巨额克制 · 消耗最低',
+    growth: { maxHp: 2, firepower: 1, armor: 1, torpedo: 3, evasion: 3, recon: 1, aa: 1, asw: 3 },
+    stepCost: { fuel: 6, ammo: 6 },
+    combat: {
+      torpedoArmorPen: 0.55,
+      torpedoCritMult: 2.15,
+      aswCounterMult: 1.75,
+    },
+  },
+  CL: {
+    code: 'CL',
+    name: '轻巡',
+    fullName: '轻巡洋舰',
+    color: '#2dd4bf',
+    roleSummary: '均衡成长 · 突出防空/反潜/侦查 · 提升全队扫描与防空屏障',
+    growth: { maxHp: 3, firepower: 2, armor: 2, torpedo: 2, evasion: 2, recon: 3, aa: 3, asw: 3 },
+    stepCost: { fuel: 9, ammo: 9 },
+    combat: {
+      scanCheckBonus: 2,
+      aaBarrierBonus: 0.12,
+    },
+  },
+  CA: {
+    code: 'CA',
+    name: '重巡',
+    fullName: '重巡洋舰',
+    color: '#f59e0b',
+    roleSummary: '侧重火力/装甲/耐久 · 常规炮击扎实 · 僚机援护挡伤率与减伤大增',
+    growth: { maxHp: 4, firepower: 3, armor: 3, torpedo: 1, evasion: 1, recon: 2, aa: 2, asw: 1 },
+    stepCost: { fuel: 13, ammo: 13 },
+    combat: {
+      shellingBonusMult: 1.12,
+      guardChanceBonus: 0.18,
+      guardDamageMult: 0.36,
+    },
+  },
+  BB: {
+    code: 'BB',
+    name: '战列',
+    fullName: '战列舰',
+    color: '#f87171',
+    roleSummary: '最高耐久/火力/装甲 · 重炮高破甲系数击穿重甲 · 消耗最高',
+    growth: { maxHp: 6, firepower: 4, armor: 4, torpedo: 0, evasion: 0, recon: 1, aa: 2, asw: 0 },
+    stepCost: { fuel: 18, ammo: 20 },
+    combat: {
+      shellingBonusMult: 1.24,
+      shellingArmorPen: 0.45,
+    },
+  },
+  CV: {
+    code: 'CV',
+    name: '航母',
+    fullName: '航空母舰',
+    color: '#a78bfa',
+    roleSummary: '高侦查/防空/耐久 · 炮击转为舰载机空袭（无视前排护甲）· 扩大海图视野',
+    growth: { maxHp: 4, firepower: 2, armor: 2, torpedo: 0, evasion: 1, recon: 4, aa: 4, asw: 1 },
+    stepCost: { fuel: 16, ammo: 14 },
+    combat: {
+      airstrikeMode: true,
+      visionRangeBonus: 1,
+    },
+  },
+});
+
+/**
+ * 3~12 Fleet Staggered Resource Consumption Tiers:
+ *   - Ships #1..#3  : 100%
+ *   - Ships #4..#6  :  75%
+ *   - Ships #7..#12 :  55%
+ */
+export const FLEET_COST_TIERS = Object.freeze([
+  { minSlot: 1, maxSlot: 3, factor: 1.0, label: '100%' },
+  { minSlot: 4, maxSlot: 6, factor: 0.75, label: '75%' },
+  { minSlot: 7, maxSlot: 12, factor: 0.55, label: '55%' },
+]);
+
+export function getFleetSlotCostFactor(zeroBasedIndex) {
+  const slotNum = Math.max(1, Math.floor(Number(zeroBasedIndex) || 0) + 1);
+  if (slotNum <= 3) return 1.0;
+  if (slotNum <= 6) return 0.75;
+  return 0.55;
+}
+
+/**
+ * Map any Chinese/English/custom shipType string to one of the 5 canonical class codes ('DD'|'CL'|'CA'|'BB'|'CV').
+ */
+export function resolveShipClass(shipType = '') {
+  const s = String(shipType || '').trim().toUpperCase();
+  if (!s) return 'DD';
+  if (s.includes('航母') || s.includes('空母') || s.includes('CV') || s.includes('CARRIER')) return 'CV';
+  if (s.includes('战列') || s.includes('战巡') || s.includes('BB') || s.includes('BATTLESHIP')) return 'BB';
+  if (s.includes('重巡') || s.includes('CA') || s.includes('HEAVY')) return 'CA';
+  if (s.includes('轻巡') || s.includes('CL') || s.includes('工作') || s.includes('LIGHT')) return 'CL';
+  if (s.includes('驱逐') || s.includes('潜艇') || s.includes('DD') || s.includes('SS') || s.includes('DESTROYER')) return 'DD';
+  return 'CL';
+}
+
+export function getShipClassProfile(shipType = '') {
+  const code = resolveShipClass(shipType);
+  return SHIP_CLASS_PROFILES[code] || SHIP_CLASS_PROFILES.CL;
+}
+
+/**
+ * Pure-vector geometric SVG emblem for each ship class (zero external image dependencies).
+ */
+export function getShipClassSvg(shipType = '', { size = 18 } = {}) {
+  const prof = getShipClassProfile(shipType);
+  const c = prof.color;
+  const s = Math.max(12, Number(size) || 18);
+  if (prof.code === 'DD') {
+    return `<svg class="ship-class-ico" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 3 19 19 12 15 5 19 12 3" fill="${c}" fill-opacity="0.18"/><path d="M12 7v8"/></svg>`;
+  }
+  if (prof.code === 'CL') {
+    return `<svg class="ship-class-ico" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 21 12 12 22 3 12 12 2" fill="${c}" fill-opacity="0.18"/><circle cx="12" cy="12" r="3"/></svg>`;
+  }
+  if (prof.code === 'CA') {
+    return `<svg class="ship-class-ico" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 20 7v6c0 4.5-3.4 7.5-8 9-4.6-1.5-8-4.5-8-9V7l8-4Z" fill="${c}" fill-opacity="0.18"/><path d="M8.5 11.5h7M12 8v7"/></svg>`;
+  }
+  if (prof.code === 'BB') {
+    return `<svg class="ship-class-ico" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 21 7 21 17 12 22 3 17 3 7 12 2" fill="${c}" fill-opacity="0.2"/><path d="M8 9h8M7 13h10M9 17h6"/></svg>`;
+  }
+  // CV
+  return `<svg class="ship-class-ico" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 21 17h-6l-3-4-3 4H3L12 3Z" fill="${c}" fill-opacity="0.2"/><path d="M7 20h10"/></svg>`;
+}
+
+/**
  * Full 8 Naval Stats displayed on every Shipgirl Character Card
  * (maxHp is the survival durability ceiling; the other 7 are combat/utility stats).
  */
@@ -275,6 +410,21 @@ export class StatRulesEngine {
   }
 
   /**
+   * Resolve per-level 8-stat growth weights for a shipgirl based on her ship class (DD/CL/CA/BB/CV)
+   * or optional custom per-class overrides in config.
+   */
+  getShipGrowthForEntity(entity) {
+    const shipType = entity?.meta?.shipType || '';
+    const profile = getShipClassProfile(shipType);
+    const customMap = this._config.shipClassGrowthOverrides || {};
+    const customForClass = customMap[profile.code] || customMap[shipType] || null;
+    return {
+      ...profile.growth,
+      ...(customForClass || {}),
+    };
+  }
+
+  /**
    * Grant experience to a shipgirl character, automatically handling multi-level-up growth & stat refresh.
    */
   grantShipExp(entities, characterId, rawAmount, { reason = '', inventory = null, emitEvent = true } = {}) {
@@ -300,7 +450,7 @@ export class StatRulesEngine {
     }
 
     if (levelsGained > 0) {
-      const growth = this._config.shipGrowthPerLevel;
+      const growth = this.getShipGrowthForEntity(entity);
       for (const def of NAVAL_EIGHT_STAT_DEFS) {
         const delta = Math.round((Number(growth[def.key]) || 0) * levelsGained);
         if (delta <= 0) continue;
@@ -330,6 +480,7 @@ export class StatRulesEngine {
     const result = {
       characterId,
       characterName: entity.name,
+      shipClass: resolveShipClass(entity.meta?.shipType),
       amount,
       reason,
       beforeLevel,
@@ -350,7 +501,7 @@ export class StatRulesEngine {
   }
 
   /**
-   * Manually adjust a shipgirl's level (for testing / debugging), applying proportional growth delta if requested.
+   * Manually adjust a shipgirl's level (for testing / debugging), applying proportional class growth delta if requested.
    */
   setShipLevelManual(entities, characterId, targetLevel, { exp = 0, inventory = null, applyGrowthDelta = true } = {}) {
     if (!entities || !entities.has(characterId)) return null;
@@ -364,7 +515,7 @@ export class StatRulesEngine {
     const statGains = {};
 
     if (applyGrowthDelta && levelDelta !== 0) {
-      const growth = this._config.shipGrowthPerLevel;
+      const growth = this.getShipGrowthForEntity(entity);
       for (const def of NAVAL_EIGHT_STAT_DEFS) {
         const delta = Math.round((Number(growth[def.key]) || 0) * levelDelta);
         if (delta === 0) continue;
@@ -391,6 +542,7 @@ export class StatRulesEngine {
     const result = {
       characterId,
       characterName: entity.name,
+      shipClass: resolveShipClass(entity.meta?.shipType),
       beforeLevel,
       afterLevel: nextLevel,
       levelsGained: Math.max(0, levelDelta),

@@ -3142,5 +3142,486 @@ html[data-theme-mode="light"] .status-badge.badge-muted {
   font-weight: 760;
 }
 
+/* ============================================================
+   Ship-Class SVG Icons, Clickable Avatar Jump & Dorm Full Roster
+   ============================================================ */
+
+.ship-class-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.avatar-jump-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  margin: 0;
+  border: 2px solid transparent;
+  border-radius: 14px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.14s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.avatar-jump-btn:hover,
+.avatar-jump-btn:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline: none;
+}
+
+.avatar-jump-btn:active {
+  transform: scale(0.95);
+}
+
+.dorm-roster-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dorm-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dorm-mini-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  object-fit: cover;
+  border: 1.5px solid var(--border-strong);
+  background: var(--bg-input);
+  display: block;
+}
+
+.dorm-row-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dorm-row-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 13.5px;
+}
+
+/* ============================================================
+   Radar Sea-Chart Route Panel (Tactical Grid + SVG Track + Fog)
+   ============================================================ */
+
+.radar-chart-panel {
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background-color: #0b1626;
+  background-image:
+    linear-gradient(rgba(56, 189, 248, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.08) 1px, transparent 1px);
+  background-size: 20px 20px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: #e2e8f0;
+  overflow: hidden;
+}
+
+.radar-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+.radar-chart-title {
+  font-weight: 700;
+  color: #38bdf8;
+  letter-spacing: 0.03em;
+}
+
+.radar-chart-vision {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.radar-track-svg {
+  width: 100%;
+  height: 44px;
+  display: block;
+}
+
+.radar-track-line {
+  stroke: rgba(56, 189, 248, 0.65);
+}
+
+@keyframes radar-pulse {
+  0% {
+    opacity: 0.95;
+    transform: scale(0.75);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.65);
+  }
+}
+
+.radar-pulse-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: radar-pulse 1.6s ease-out infinite;
+}
+
+.radar-node-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: 6px;
+}
+
+.radar-node {
+  min-width: 0;
+  background: rgba(15, 23, 42, 0.84);
+  border-color: rgba(100, 116, 139, 0.45);
+  color: #e2e8f0;
+}
+
+.radar-node .sortie-node-type {
+  color: #94a3b8;
+}
+
+.radar-node .sortie-node-name {
+  color: #f1f5f9;
+}
+
+.radar-node.is-current {
+  border-color: #38bdf8;
+  background: rgba(14, 116, 144, 0.35);
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.55);
+}
+
+.radar-node.is-cleared {
+  border-color: rgba(52, 211, 153, 0.65);
+  background: rgba(6, 78, 59, 0.38);
+}
+
+.radar-node.is-fogged {
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(30, 41, 59, 0.88),
+    rgba(30, 41, 59, 0.88) 6px,
+    rgba(15, 23, 42, 0.94) 6px,
+    rgba(15, 23, 42, 0.94) 12px
+  );
+  border-style: dashed;
+  border-color: rgba(148, 163, 184, 0.42);
+  opacity: 0.82;
+}
+
+/* ============================================================
+   Zero-Illustration Pure-SVG Tactical Battlefield Stage
+   ============================================================ */
+
+.bf-stage {
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0%, rgba(12, 25, 44, 0.98) 100%);
+  border: 1px solid rgba(56, 189, 248, 0.38);
+  color: #f1f5f9;
+}
+
+.bf-battlefield-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bf-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bf-speed-btn {
+  min-height: 44px;
+  padding: 0 14px;
+  font-size: 12.5px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.bf-unit-card {
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(30, 41, 59, 0.82);
+  border: 1.5px solid rgba(148, 163, 184, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.bf-unit-card.is-enemy {
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+.bf-unit-card.is-player {
+  border-color: rgba(56, 189, 248, 0.48);
+}
+
+.bf-unit-card.is-acting {
+  border-color: #facc15;
+  box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.38), 0 0 18px rgba(250, 204, 21, 0.28);
+  transform: scale(1.015);
+}
+
+@keyframes bf-hit-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-7px); }
+  40% { transform: translateX(7px); }
+  60% { transform: translateX(-5px); }
+  80% { transform: translateX(4px); }
+}
+
+.bf-unit-card.is-hit {
+  border-color: #ef4444;
+  background: rgba(153, 27, 27, 0.52);
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.55);
+  animation: bf-hit-shake 0.36s ease;
+}
+
+.bf-unit-card.is-shielded {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.55), 0 0 16px rgba(59, 130, 246, 0.35);
+}
+
+@keyframes bf-intel-flip {
+  0% { transform: rotateX(0deg); }
+  50% { transform: rotateX(18deg); border-color: #10b981; }
+  100% { transform: rotateX(0deg); border-color: #34d399; }
+}
+
+.bf-unit-card.is-intel-flip {
+  animation: bf-intel-flip 0.45s ease;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.5);
+}
+
+.bf-unit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.bf-unit-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bf-emblem-box {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.bf-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1.5px solid rgba(56, 189, 248, 0.65);
+  flex-shrink: 0;
+}
+
+.bf-unit-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bf-name-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.bf-unit-name {
+  font-size: 13.5px;
+  color: #f8fafc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bf-unit-sub {
+  font-size: 11px;
+  color: #cbd5e1;
+}
+
+.bf-unit-card .progress-meta-label,
+.bf-unit-card .progress-meta-sub {
+  color: #e2e8f0;
+}
+
+.bf-arena {
+  position: relative;
+  min-height: 136px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  background-color: #071222;
+  background-image:
+    radial-gradient(circle at 50% 50%, rgba(56, 189, 248, 0.12), transparent 68%),
+    linear-gradient(rgba(56, 189, 248, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.06) 1px, transparent 1px);
+  background-size: 100% 100%, 22px 22px, 22px 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.bf-svg-layer {
+  width: 100%;
+  height: 136px;
+  display: block;
+}
+
+.bf-banner {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 92%;
+  padding: 4px 12px;
+  border-radius: 99px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  color: #e2e8f0;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 2;
+}
+
+.bf-banner.is-shelling { border-color: #f97316; color: #ffedd5; }
+.bf-banner.is-airstrike { border-color: #c084fc; color: #f3e8ff; }
+.bf-banner.is-torpedo { border-color: #22d3ee; color: #cffafe; }
+.bf-banner.is-scan { border-color: #10b981; color: #d1fae5; }
+.bf-banner.is-evade { border-color: #3b82f6; color: #dbeafe; }
+.bf-banner.is-counter { border-color: #ef4444; color: #fee2e2; }
+
+.bf-callout {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%) scale(0.92);
+  opacity: 0;
+  padding: 5px 14px;
+  border-radius: 99px;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  background: rgba(15, 23, 42, 0.94);
+  color: #f8fafc;
+  border: 1.5px solid #38bdf8;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 3;
+  white-space: nowrap;
+}
+
+.bf-callout.is-visible {
+  opacity: 1;
+  transform: translateX(-50%) scale(1);
+}
+
+.bf-callout.is-crit {
+  border-color: #facc15;
+  color: #fef08a;
+  box-shadow: 0 0 16px rgba(250, 204, 21, 0.45);
+}
+
+.bf-callout.is-dmg {
+  border-color: #fb923c;
+  color: #ffedd5;
+}
+
+.bf-callout.is-scan {
+  border-color: #34d399;
+  color: #d1fae5;
+}
+
+.bf-callout.is-counter {
+  border-color: #ef4444;
+  color: #fecaca;
+}
+
+@keyframes bf-arc-draw {
+  from { stroke-dashoffset: 220; opacity: 0.35; }
+  to { stroke-dashoffset: 0; opacity: 1; }
+}
+
+@keyframes bf-ring-expand {
+  0% { opacity: 1; transform: scale(0.4); }
+  100% { opacity: 0.15; transform: scale(1.45); }
+}
+
+@keyframes bf-sonar-fade {
+  0% { opacity: 0.15; transform: scale(0.7); }
+  60% { opacity: 0.9; transform: scale(1.04); }
+  100% { opacity: 0.35; transform: scale(1); }
+}
+
+.bf-arc-path,
+.bf-speed-line {
+  stroke-dasharray: 220;
+  animation: bf-arc-draw 0.5s ease-out forwards;
+}
+
+.bf-torp-path {
+  animation: bf-arc-draw 0.55s linear forwards;
+}
+
+.bf-impact-ring,
+.bf-torp-ripple {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: bf-ring-expand 0.55s ease-out forwards;
+}
+
+.bf-sonar-fan,
+.bf-shield-hex {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: bf-sonar-fade 0.55s ease-out forwards;
+}
+
 
 

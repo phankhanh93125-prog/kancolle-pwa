@@ -16,6 +16,9 @@ import {
   NAVAL_EIGHT_STAT_DEFS,
   NAVAL_EIGHT_STAT_MAP,
   SHIP_TYPE_PRESETS,
+  getShipClassProfile,
+  getShipClassSvg,
+  resolveShipClass,
 } from '../core/stat-rules.js';
 import {
   ITEM_CATEGORIES,
@@ -297,6 +300,41 @@ export function getActiveCharacterId(storage = null) {
     }
   }
   return null;
+}
+
+/**
+ * Directly jump from any avatar (Dormitory, Port Hub flagship stage, Formation sheet, etc.)
+ * straight to a shipgirl's refined Character Card with zero intermediate modals.
+ */
+export function openCharacterCardById(characterId, context = {}) {
+  const cid = String(characterId || '');
+  if (!cid) return;
+  consoleState.activeCharacterId = cid;
+  consoleState.activeTab = 'overview';
+
+  if (context.rootStorage) {
+    context.rootStorage.namespace(CHAR_STORAGE_NS).set('activeCharacterId', cid);
+  }
+
+  // Close any open UIKit bottom sheets or shell drawer cleanly
+  if (typeof document !== 'undefined') {
+    document.querySelectorAll('.uikit-sheet-backdrop').forEach((el) => el.remove());
+    const shellBackdrop = document.getElementById('sheet-backdrop');
+    if (shellBackdrop) shellBackdrop.hidden = true;
+  }
+
+  if (context.bus) {
+    const entity = context.entities?.get(cid);
+    context.bus.emit('character:selected', { characterId: cid, name: entity?.name || '' });
+  }
+
+  if (context.modules && context.modules.has('character-console')) {
+    if (context.modules.getActiveId && context.modules.getActiveId() === 'character-console') {
+      renderConsole();
+    } else {
+      context.modules.mount('character-console');
+    }
+  }
 }
 
 export async function persistCharacterRoster({ storage, entities, activeCharacterId = null }) {
@@ -2073,7 +2111,19 @@ function renderLogsTab(host) {
 
 async function renderConsole() {
   if (!consoleState.container || !consoleState.context) return;
-  const { entities, inventory, resources, statRules, commander, expeditions, uiKit } = consoleState.context;
+  const {
+    entities,
+    inventory,
+    resources,
+    statRules,
+    commander,
+    expeditions,
+    buildings,
+    formation,
+    interaction,
+    logs,
+    uiKit,
+  } = consoleState.context;
   const roster = getCharacters();
   const char = getActiveCharacter();
   if (!char) return;
@@ -2087,7 +2137,20 @@ async function renderConsole() {
   const affStage = statRules.getAffinityStage(char.stats.affinity ?? 0, { thresholdReduction: affThresholdRed });
   const moraleMod = statRules.getMoraleModifier(char.stats.morale ?? 50);
   const seaworthyInfo = statRules.evaluateSeaworthiness(inventory, char.id);
-  const isDispatched = expeditions ? expeditions.isCharacterDispatched(char.id) : false;
+  const shipClass = resolveShipClass(char.meta?.shipType);
+  const classProfile = getShipClassProfile(char.meta?.shipType);
+  const globalStatus = buildings
+    ? buildings.getCharacterGlobalStatus(char.id, { formation, expeditions, interaction })
+    : {
+        primaryLabel: '待命',
+        primaryTone: 'muted',
+        badges: [{ id: 'idle', label: '待命', tone: 'muted' }],
+        inDorm: false,
+        inDock: false,
+        inFleet: false,
+        onExpedition: false,
+        isSecretary: false,
+      };
 
   consoleState.container.innerHTML = '';
   const root = document.createElement('div');
@@ -2131,7 +2194,7 @@ async function renderConsole() {
   rosterStrip.appendChild(addCharBtn);
   root.appendChild(rosterStrip);
 
-  // 2. Top Core Status Card
+  // 2. Refined Top Core Character Card (Avatar + Class SVG + Global Status + Inline Quick Actions)
   const heroCard = document.createElement('section');
   heroCard.className = 'surface-card lab-stack-sm';
   heroCard.id = 'cc-hero-card';
@@ -2140,20 +2203,35 @@ async function renderConsole() {
       <img class="cc-avatar" id="cc-active-avatar" src="${avatarUrl}" alt="${escapeHtml(char.name)} 头像">
       <div class="cc-hero-info">
         <div class="cc-hero-name-row">
+          <span class="ship-class-ico" id="cc-ship-class-svg">${getShipClassSvg(shipClass, { size: 22 })}</span>
           <h2 class="cc-hero-name" id="cc-active-name">${escapeHtml(char.name)}</h2>
           <span class="status-badge ship-lv-badge" id="cc-level-badge">Lv.${prog.level}</span>
           <span class="status-badge badge-ok" id="cc-overall-score">评分 ${overallScore}</span>
         </div>
-        <div class="cc-badge-row">
-          <span class="status-badge badge-ok" id="cc-ship-type-badge">${escapeHtml(char.meta?.shipType || '驱逐舰')}</span>
+        <div class="cc-badge-row" id="cc-global-status-badges">
+          <span class="status-badge badge-ok" id="cc-ship-type-badge">${escapeHtml(char.meta?.shipType || classProfile.fullName)}</span>
           <span class="status-badge ${seaworthyInfo.seaworthy ? 'badge-ok' : 'badge-danger'}" id="cc-seaworthy-badge">
-            ${seaworthyInfo.seaworthy ? '适航' : '未适航（缺少核心部件）'}
+            ${seaworthyInfo.seaworthy ? '适航' : '未适航'}
           </span>
-          ${isDispatched ? '<span class="status-badge badge-warn">远征派遣中</span>' : ''}
-          <span class="status-badge badge-ok" id="cc-affinity-badge">好感 ${escapeHtml(affStage.label)}(${affStage.value})</span>
+          ${globalStatus.badges
+            .map(
+              (b) =>
+                `<span class="status-badge badge-${escapeHtml(b.tone)}" data-global-status="${escapeHtml(b.id)}">${escapeHtml(b.label)}</span>`
+            )
+            .join('')}
+          ${
+            globalStatus.isSecretary
+              ? '<span class="status-badge badge-ok" id="cc-secretary-badge">★ 秘书舰</span>'
+              : ''
+          }
+          <span class="status-badge badge-muted" id="cc-affinity-badge">好感 ${escapeHtml(affStage.label)}(${affStage.value})</span>
         </div>
       </div>
     </div>
+
+    <p class="muted-text" style="font-size:11.5px; margin:0;" id="cc-class-role-summary">
+      <strong>[${escapeHtml(classProfile.code)} · ${escapeHtml(classProfile.name)}]</strong> ${escapeHtml(classProfile.roleSummary)}
+    </p>
 
     ${
       !seaworthyInfo.seaworthy
@@ -2163,11 +2241,26 @@ async function renderConsole() {
 
     <div id="cc-dynamic-bars" class="lab-stack-sm"></div>
 
-    <div class="lab-btn-grid">
-      <button type="button" id="btn-cc-goto-action" class="btn-primary uikit-touch-target">前往行动台</button>
-      <button type="button" id="btn-cc-goto-workshop" class="btn-secondary uikit-touch-target">物资与工坊台</button>
+    <!-- Streamlined Inline Quick-Action Bar (Dorm / Secretary / Feed / Edit) -->
+    <div class="lab-btn-grid" id="cc-inline-actions">
+      <button type="button" id="btn-cc-toggle-dorm" class="${globalStatus.inDorm ? 'btn-secondary' : 'btn-primary'} uikit-touch-target">
+        ${globalStatus.inDorm ? '移出宿舍' : '入住宿舍'}
+      </button>
+      <button type="button" id="btn-cc-set-secretary" class="${globalStatus.isSecretary ? 'btn-secondary' : 'btn-primary'} uikit-touch-target" ${globalStatus.isSecretary ? 'disabled' : ''}>
+        ${globalStatus.isSecretary ? '★ 当前秘书舰' : '设为秘书舰'}
+      </button>
+      <button type="button" id="btn-cc-quick-feed" class="btn-secondary uikit-touch-target">
+        投喂补给恢复
+      </button>
+      <button type="button" id="btn-cc-edit-char" class="btn-secondary uikit-touch-target">
+        调级 / 改白值
+      </button>
+    </div>
+
+    <div class="cc-btn-3col">
+      <button type="button" id="btn-cc-goto-action" class="btn-secondary uikit-touch-target">行动台</button>
+      <button type="button" id="btn-cc-goto-workshop" class="btn-secondary uikit-touch-target">物资工坊</button>
       <button type="button" id="btn-cc-open-check" class="btn-secondary uikit-touch-target">模拟检定</button>
-      <button type="button" id="btn-cc-edit-char" class="btn-secondary uikit-touch-target">编辑舰娘</button>
     </div>
   `;
 
@@ -2206,6 +2299,56 @@ async function renderConsole() {
       tone: (char.stats.ap ?? 100) / maxAp < 0.25 ? 'warn' : 'accent',
     }).element
   );
+
+  // Inline Quick Action Handlers
+  heroCard.querySelector('#btn-cc-toggle-dorm').addEventListener('click', async () => {
+    if (!buildings) return;
+    try {
+      if (buildings.isInDormitory(char.id)) {
+        await buildings.removeDormResident(char.id);
+        uiKit.showToast(`「${char.name}」已移出宿舍`, 'info');
+      } else {
+        await buildings.assignDormResident(char.id);
+        uiKit.showToast(`「${char.name}」已入住港区宿舍，离线自动恢复士气与好感`, 'ok');
+      }
+      await renderConsole();
+    } catch (err) {
+      uiKit.showToast(err instanceof Error ? err.message : '宿舍操作失败', 'warn');
+    }
+  });
+
+  heroCard.querySelector('#btn-cc-set-secretary').addEventListener('click', async () => {
+    if (!interaction) return;
+    await interaction.setSecretary(char.id);
+    uiKit.showToast(`已将「${char.name}」设为港区秘书舰！`, 'ok');
+    await renderConsole();
+  });
+
+  heroCard.querySelector('#btn-cc-quick-feed').addEventListener('click', async () => {
+    const cost = { fuel: 20, silver: 25 };
+    const spend = await resources.spendBatch(cost, { reason: `快捷投喂补给（${char.name}）` });
+    if (!spend.ok) {
+      uiKit.showToast(spend.reason, 'warn');
+      return;
+    }
+    const maxAff = Number(char.statBounds?.affinity?.max ?? 100);
+    const healHp = Math.max(8, Math.round(maxHp * 0.2));
+    entities.adjustStat(char.id, 'morale', 14, { min: 0, max: 100 });
+    entities.adjustStat(char.id, 'affinity', 2, { min: 0, max: maxAff });
+    entities.adjustStat(char.id, 'hp', healHp, { min: 0, max: maxHp });
+    await saveRosterNow();
+    if (logs) {
+      logs.add({
+        category: LOG_CATEGORIES.STAT,
+        actorId: char.id,
+        actorName: char.name,
+        title: `[${char.name}] 角色卡快捷投喂补给`,
+        detail: `士气 +14 · 好感 +2 · 耐久 +${healHp}（消耗燃油 20 / 银条 25）`,
+      });
+    }
+    uiKit.showToast(`已投喂「${char.name}」：士气 +14 · 好感 +2 · HP +${healHp}`, 'ok');
+    await renderConsole();
+  });
 
   heroCard.querySelector('#btn-cc-goto-action').addEventListener('click', () => {
     if (consoleState.context.modules.has('action-console')) {
@@ -2266,7 +2409,7 @@ async function renderConsole() {
 export default {
   id: 'character-console',
   name: '角色控制台',
-  description: '角色管理、舰娘等级经验成长、三核心必装槽适航校验、完全自由自定义槽位、八维面板与 1D20 检定控制台。',
+  description: '精修舰娘角色卡：全局状态标签、宿舍/秘书舰/投喂行内快捷条、五舰种成长、三核心适航与自定义扩展槽。',
 
   mount(container, context) {
     consoleState.container = container;
@@ -2330,6 +2473,9 @@ export default {
       context.bus.on('inventory:slot-removed', () => renderConsole()),
       context.bus.on('inventory:enhanced', () => renderConsole()),
       context.bus.on('commander:updated', () => renderConsole()),
+      context.bus.on('buildings:updated', () => renderConsole()),
+      context.bus.on('formation:changed', () => renderConsole()),
+      context.bus.on('interaction:secretary-changed', () => renderConsole()),
       context.bus.on('storage:changed', (detail) => {
         if (detail?.action === 'resetAll' || detail?.action === 'import') {
           renderConsole();

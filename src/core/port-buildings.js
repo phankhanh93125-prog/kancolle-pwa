@@ -253,6 +253,41 @@ export class PortBuildingsSystem {
     return this._state.dormitory.residents.includes(String(characterId));
   }
 
+  isInDockyard(characterId) {
+    return this._state.dockyard.queue.some((q) => q.characterId === String(characterId));
+  }
+
+  /**
+   * Compute global status badges for any shipgirl across Dockyard, Expedition, Formation, Dormitory, and Secretary.
+   */
+  getCharacterGlobalStatus(characterId, { formation = null, expeditions = null, interaction = null } = {}) {
+    const cid = String(characterId || '');
+    const inDorm = this.isInDormitory(cid);
+    const inDock = this.isInDockyard(cid);
+    const onExpedition = Boolean(expeditions && typeof expeditions.isCharacterDispatched === 'function' && expeditions.isCharacterDispatched(cid));
+    const inFleet = Boolean(formation && typeof formation.getMemberIds === 'function' && formation.getMemberIds().includes(cid));
+    const isSecretary = Boolean(interaction && typeof interaction.getSecretaryId === 'function' && interaction.getSecretaryId() === cid);
+
+    const badges = [];
+    if (inDock) badges.push({ id: 'dock', label: '船坞维修中', tone: 'danger' });
+    if (onExpedition) badges.push({ id: 'expedition', label: '远征派遣中', tone: 'warn' });
+    if (inFleet) badges.push({ id: 'fleet', label: '出征编队中', tone: 'ok' });
+    if (inDorm) badges.push({ id: 'dorm', label: '宿舍休整中', tone: 'ok' });
+    if (badges.length === 0) badges.push({ id: 'idle', label: '待命', tone: 'muted' });
+
+    const primary = badges[0];
+    return {
+      primaryLabel: primary.label,
+      primaryTone: primary.tone,
+      badges,
+      inDorm,
+      inDock,
+      inFleet,
+      onExpedition,
+      isSecretary,
+    };
+  }
+
   async assignDormResident(characterId) {
     const cid = String(characterId);
     const actor = this._entities?.get(cid);

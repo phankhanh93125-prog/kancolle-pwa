@@ -9,7 +9,12 @@
  *     auto-salvage resource/weather nodes, and dual-track local/AI battle reports.
  */
 
-import { CORE_STAT_DEFS } from '../core/stat-rules.js';
+import {
+  CORE_STAT_DEFS,
+  getShipClassProfile,
+  getShipClassSvg,
+  resolveShipClass,
+} from '../core/stat-rules.js';
 import { createResourceOverviewBar } from '../core/resource-manager.js';
 import { NARRATIVE_MODES } from '../core/prompt-pipeline.js';
 import { LOG_CATEGORIES } from '../core/log-system.js';
@@ -187,9 +192,18 @@ async function launchSortie(route) {
 
   const activeFormation = formation ? formation.getActiveFormation() : { id: 'line_ahead', name: '单纵阵' };
   const dispatchDisc = commander ? commander.getSortieStepDiscount() : 0;
+  const fleetMemberIds = fleetMembers.map((m) => m.id);
+  const staggered = formation
+    ? formation.computeStaggeredStepCost(fleetMemberIds)
+    : {
+        fuel: Math.max(5, Math.round((Number(route.stepCost?.fuel) || 20) * (1 - dispatchDisc))),
+        ammo: Math.max(5, Math.round((Number(route.stepCost?.ammo) || 18) * (1 - dispatchDisc))),
+        breakdown: [],
+      };
   const effStepCost = {
-    fuel: Math.max(5, Math.round((Number(route.stepCost?.fuel) || 20) * (1 - dispatchDisc))),
-    ammo: Math.max(5, Math.round((Number(route.stepCost?.ammo) || 18) * (1 - dispatchDisc))),
+    fuel: staggered.fuel,
+    ammo: staggered.ammo,
+    breakdown: staggered.breakdown || [],
   };
 
   combat.clearSession();
@@ -200,7 +214,7 @@ async function launchSortie(route) {
     seaCondition: route.seaCondition ? deepClone(route.seaCondition) : null,
     characterId: lead.id,
     characterName: lead.name,
-    fleetMemberIds: fleetMembers.map((m) => m.id),
+    fleetMemberIds,
     formationId: activeFormation.id,
     formationName: activeFormation.name,
     stepCost: effStepCost,
@@ -220,10 +234,10 @@ async function launchSortie(route) {
     actorId: lead.id,
     actorName: lead.name,
     title: `[${lead.name} 等 ${fleetMembers.length} 舰] 启航出征「${route.name}」`,
-    detail: `阵型：${activeFormation.name} · 消耗 AP -${route.apCost} · 海况：${route.seaCondition?.label || '标准'} · 共 ${route.nodes.length} 节点`,
+    detail: `阵型：${activeFormation.name} · 阶梯单步消耗 油${effStepCost.fuel}/弹${effStepCost.ammo} · AP -${route.apCost} · 海况：${route.seaCondition?.label || '标准'} · 共 ${route.nodes.length} 节点`,
   });
   bus.emit('sortie:launched', { routeId: route.id, characterId: lead.id, fleetSize: fleetMembers.length });
-  uiKit.showToast(`编队（${fleetMembers.length}舰 · ${activeFormation.name}）已启航！`, 'ok');
+  uiKit.showToast(`编队（${fleetMembers.length}舰 · ${activeFormation.name}）已启航！单步 油${effStepCost.fuel}/弹${effStepCost.ammo}`, 'ok');
   await renderSortieConsole();
 }
 
@@ -455,6 +469,189 @@ async function advanceNextNode() {
   }
 }
 
+// ============================================================
+// Pure-SVG Tactical Battlefield Trajectory & Emblem Helpers
+// ============================================================
+
+function buildEnemyEmblemSvg(tier = 'encounter') {
+  const isBoss = tier === NODE_TYPES.BOSS;
+  const isElite = tier === NODE_TYPES.ELITE;
+  const stroke = isBoss ? '#fb7185' : isElite ? '#f59e0b' : '#f87171';
+  return `<svg class="bf-emblem-svg" width="38" height="38" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+    <polygon points="20,3 36,14 31,35 9,35 4,14" stroke="${stroke}" stroke-width="2" fill="rgba(248,113,113,0.14)"/>
+    <circle cx="20" cy="20" r="${isBoss ? 8 : 6}" stroke="${stroke}" stroke-width="1.8"/>
+    <path d="M20 7V12M20 28V33M7 20H12M28 20H33" stroke="${stroke}" stroke-width="1.8" stroke-linecap="round"/>
+    ${isBoss ? '<circle cx="20" cy="20" r="2.5" fill="#fb7185"/>' : ''}
+  </svg>`;
+}
+
+function buildBattleSvgMarkup(style) {
+  if (style === 'airstrike') {
+    return `
+      <g class="bf-fx-group bf-fx-airstrike" data-fx-kind="airstrike">
+        <path class="bf-arc-path" d="M70,126 Q130,68 175,24" stroke="#f59e0b" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+        <path class="bf-arc-path" d="M180,128 Q182,72 180,22" stroke="#c084fc" stroke-width="3" fill="none" stroke-linecap="round"/>
+        <path class="bf-arc-path" d="M290,126 Q230,68 185,24" stroke="#f59e0b" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+        <polygon class="bf-plane-icon" points="180,38 171,56 180,51 189,56" fill="#fde68a" stroke="#a855f7" stroke-width="1.4"/>
+        <polygon class="bf-plane-icon" points="132,56 125,70 132,66 139,70" fill="#fde68a" stroke="#f59e0b" stroke-width="1.2"/>
+        <polygon class="bf-plane-icon" points="228,56 221,70 228,66 235,70" fill="#fde68a" stroke="#f59e0b" stroke-width="1.2"/>
+        <circle class="bf-impact-ring" cx="180" cy="24" r="14" stroke="#c084fc" stroke-width="2.4" fill="rgba(192,132,252,0.18)"/>
+        <circle class="bf-impact-ring" cx="180" cy="24" r="26" stroke="#f59e0b" stroke-width="1.6" fill="none"/>
+      </g>
+    `;
+  }
+  if (style === 'torpedo') {
+    return `
+      <g class="bf-fx-group bf-fx-torpedo" data-fx-kind="torpedo">
+        <path class="bf-torp-path" d="M105,126 L158,24" stroke="#22d3ee" stroke-width="3" stroke-dasharray="9 6" fill="none" stroke-linecap="round"/>
+        <path class="bf-torp-path" d="M180,128 L180,20" stroke="#38bdf8" stroke-width="3.4" stroke-dasharray="10 6" fill="none" stroke-linecap="round"/>
+        <path class="bf-torp-path" d="M255,126 L202,24" stroke="#22d3ee" stroke-width="3" stroke-dasharray="9 6" fill="none" stroke-linecap="round"/>
+        <circle class="bf-torp-ripple" cx="180" cy="22" r="12" stroke="#38bdf8" stroke-width="2.2" fill="rgba(56,189,248,0.2)"/>
+        <circle class="bf-torp-ripple" cx="180" cy="22" r="28" stroke="#22d3ee" stroke-width="1.5" fill="none"/>
+      </g>
+    `;
+  }
+  if (style === 'scan') {
+    return `
+      <g class="bf-fx-group bf-fx-scan" data-fx-kind="scan">
+        <path class="bf-sonar-fan" d="M180,124 L86,20 A142,142 0 0,1 274,20 Z" fill="rgba(16,185,129,0.18)" stroke="#10b981" stroke-width="1.6"/>
+        <circle class="bf-impact-ring" cx="180" cy="28" r="16" stroke="#34d399" stroke-width="2" fill="none" stroke-dasharray="4 3"/>
+        <circle class="bf-impact-ring" cx="180" cy="28" r="30" stroke="#10b981" stroke-width="1.4" fill="none"/>
+        <path d="M156,28 H204 M180,6 V50" stroke="#34d399" stroke-width="1.5" stroke-dasharray="3 3"/>
+      </g>
+    `;
+  }
+  if (style === 'evade') {
+    return `
+      <g class="bf-fx-group bf-fx-evade" data-fx-kind="evade">
+        <path class="bf-speed-line" d="M40,98 Q180,76 320,98" stroke="#3b82f6" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+        <path class="bf-speed-line" d="M62,114 Q180,92 298,114" stroke="#60a5fa" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+        <polygon class="bf-shield-hex" points="180,58 214,76 214,112 180,130 146,112 146,76" fill="rgba(59,130,246,0.18)" stroke="#60a5fa" stroke-width="2.4"/>
+      </g>
+    `;
+  }
+  if (style === 'enemy-counter') {
+    return `
+      <g class="bf-fx-group bf-fx-counter" data-fx-kind="enemy-counter">
+        <path class="bf-arc-path" d="M140,18 Q162,72 176,124" stroke="#ef4444" stroke-width="3" fill="none" stroke-linecap="round"/>
+        <path class="bf-arc-path" d="M220,18 Q198,72 184,124" stroke="#fb7185" stroke-width="3" fill="none" stroke-linecap="round"/>
+        <circle class="bf-impact-ring" cx="180" cy="122" r="16" stroke="#ef4444" stroke-width="2.4" fill="rgba(239,68,68,0.22)"/>
+      </g>
+    `;
+  }
+  // Default: shelling orange-red ballistic arcs
+  return `
+    <g class="bf-fx-group bf-fx-shelling" data-fx-kind="shelling">
+      <path class="bf-arc-path" d="M88,126 Q116,56 176,22" stroke="#f97316" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <path class="bf-arc-path" d="M180,128 Q180,68 180,18" stroke="#fb923c" stroke-width="3.4" fill="none" stroke-linecap="round"/>
+      <path class="bf-arc-path" d="M272,126 Q244,56 184,22" stroke="#ef4444" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <circle class="bf-impact-ring" cx="180" cy="22" r="14" stroke="#fb923c" stroke-width="2.5" fill="rgba(249,115,22,0.25)"/>
+      <circle class="bf-impact-ring" cx="180" cy="22" r="28" stroke="#ef4444" stroke-width="1.6" fill="none"/>
+    </g>
+  `;
+}
+
+async function playCombatChoreography(turnEntry, session) {
+  const { fxStage } = sortieState.context || {};
+  const wait = (ms) =>
+    fxStage && typeof fxStage.wait === 'function'
+      ? fxStage.wait(ms)
+      : new Promise((r) => setTimeout(r, ms));
+
+  const stageEl = sortieState.container?.querySelector('#sortie-battlefield');
+  if (!stageEl) return;
+
+  const playerCard = stageEl.querySelector('#bf-player-card');
+  const enemyCard = stageEl.querySelector('#bf-enemy-card');
+  const svgCanvas = stageEl.querySelector('#bf-svg-canvas');
+  const bannerEl = stageEl.querySelector('#bf-banner');
+  const calloutEl = stageEl.querySelector('#bf-callout');
+
+  const clearCardStates = () => {
+    playerCard?.classList.remove('is-acting', 'is-hit', 'is-shielded');
+    enemyCard?.classList.remove('is-acting', 'is-hit', 'is-intel-flip');
+  };
+
+  // Stage 1 (400ms @ 1x): Acting unit card glow + Command Banner
+  clearCardStates();
+  playerCard?.classList.add('is-acting');
+  if (bannerEl) {
+    bannerEl.textContent = `${turnEntry.actorName || '舰队'} · 发动【${turnEntry.commandLabel}】`;
+    bannerEl.className = `bf-banner is-visible is-${turnEntry.visualStyle || 'shelling'}`;
+  }
+  await wait(400);
+
+  // Stage 2 (600ms @ 1x): Center pure-SVG trajectory animation
+  if (svgCanvas) {
+    svgCanvas.dataset.activeFx = turnEntry.visualStyle || 'shelling';
+    svgCanvas.innerHTML = buildBattleSvgMarkup(turnEntry.visualStyle || 'shelling');
+  }
+  await wait(600);
+
+  // Stage 3 (400ms @ 1x): Impact shake / red flash / intel flip / evade shield
+  if (turnEntry.damageDealt > 0) {
+    enemyCard?.classList.add('is-hit');
+    if (fxStage && typeof fxStage.playEffect === 'function') {
+      fxStage.playEffect('shake', { intensity: turnEntry.isCrit ? 'heavy' : 'light' });
+    }
+    const enemyHpFill = stageEl.querySelector('#bf-enemy-hp-bar .progress-fill');
+    const enemyHpText = stageEl.querySelector('#bf-enemy-hp-bar .progress-meta-sub');
+    if (enemyHpFill && turnEntry.enemyMaxHp > 0) {
+      const pct = Math.max(0, Math.min(100, (turnEntry.enemyHpAfter / turnEntry.enemyMaxHp) * 100));
+      enemyHpFill.style.width = `${pct.toFixed(1)}%`;
+    }
+    if (enemyHpText && session?.enemy?.scanned) {
+      enemyHpText.textContent = `${turnEntry.enemyHpAfter} / ${turnEntry.enemyMaxHp}`;
+    }
+  } else if (turnEntry.scannedNow) {
+    enemyCard?.classList.add('is-intel-flip');
+  } else if (turnEntry.visualStyle === 'evade') {
+    playerCard?.classList.add('is-shielded');
+  }
+  await wait(400);
+
+  // Stage 4 (1000ms @ 1x): Persistent large callout & optional enemy counterattack
+  if (calloutEl) {
+    const calloutText =
+      turnEntry.damageDealt > 0
+        ? `${turnEntry.isCrit ? '★ 暴击 ' : ''}-${turnEntry.damageDealt}${turnEntry.followUpBy ? ` (+${turnEntry.followUpBy}追击)` : ''}`
+        : turnEntry.outcomeTag;
+    calloutEl.textContent = calloutText;
+    calloutEl.className = `bf-callout is-visible ${
+      turnEntry.isCrit
+        ? 'is-crit'
+        : turnEntry.damageDealt > 0
+        ? 'is-dmg'
+        : turnEntry.scannedNow
+        ? 'is-scan'
+        : 'is-info'
+    }`;
+  }
+
+  if (turnEntry.damageTaken > 0) {
+    await wait(450);
+    clearCardStates();
+    enemyCard?.classList.add('is-acting');
+    if (bannerEl) {
+      bannerEl.textContent = `${session?.enemy?.name || '敌舰'} · 发起反击${turnEntry.guardedBy ? `（${turnEntry.guardedBy}掩护）` : ''}`;
+      bannerEl.className = 'bf-banner is-visible is-counter';
+    }
+    if (svgCanvas) {
+      svgCanvas.dataset.activeFx = 'enemy-counter';
+      svgCanvas.innerHTML = buildBattleSvgMarkup('enemy-counter');
+    }
+    await wait(300);
+    playerCard?.classList.add('is-hit');
+    if (calloutEl) {
+      calloutEl.textContent = `我方受击 -${turnEntry.damageTaken} HP`;
+      calloutEl.className = 'bf-callout is-visible is-counter';
+    }
+    await wait(450);
+  } else {
+    await wait(800);
+  }
+}
+
 async function handleTacticalCommand(commandId) {
   if (sortieState.busy || !sortieState.activeRun) return;
   const run = sortieState.activeRun;
@@ -462,7 +659,10 @@ async function handleTacticalCommand(commandId) {
   if (!combat.isActive()) return;
 
   sortieState.busy = true;
-  await renderSortieConsole();
+  // Lock command buttons in place without wiping the battlefield DOM so SVG choreography plays smoothly
+  sortieState.container?.querySelectorAll('[data-combat-cmd]').forEach((btn) => {
+    btn.disabled = true;
+  });
 
   try {
     const res = await combat.executeCommand(commandId);
@@ -472,6 +672,10 @@ async function handleTacticalCommand(commandId) {
     }
 
     const { turnEntry, session } = res;
+
+    // Play 4-stage slow-motion pure-SVG tactical choreography (scaled by 1x/2x speed)
+    await playCombatChoreography(turnEntry, session);
+
     const nodeIdx = run.nextNodeIndex;
     const node = run.nodes[nodeIdx];
     const memberIds =
@@ -829,40 +1033,94 @@ function openRouteEditorSheet() {
 }
 
 // ============================================================
-// Visual Route Node Map Helper
+// Radar Sea-Chart Route Map Helper (SVG Track + Fog-of-War)
 // ============================================================
 
-function createNodeMapElement(nodes, clearedIndices = [], nextNodeIndex = -1) {
-  const map = document.createElement('div');
-  map.className = 'sortie-node-map';
-  map.id = 'sortie-node-map';
+function createRadarSeaChartElement(
+  nodes,
+  clearedIndices = [],
+  nextNodeIndex = -1,
+  { visionRange = 2, enableFog = false } = {}
+) {
+  const wrap = document.createElement('div');
+  wrap.className = 'radar-chart-panel';
+  wrap.id = enableFog ? 'sortie-radar-chart' : undefined;
 
   const clearedSet = new Set(clearedIndices);
+  const count = Math.max(1, nodes.length);
+  const svgW = 340;
+  const svgH = 44;
+  const stepX = count > 1 ? (svgW - 44) / (count - 1) : 0;
 
+  const pts = nodes.map((_, idx) => {
+    const x = count === 1 ? svgW / 2 : 22 + idx * stepX;
+    const y = idx % 2 === 0 ? 18 : 28;
+    return { x: Math.round(x), y };
+  });
+
+  const pathD = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+  const activePt = nextNodeIndex >= 0 && nextNodeIndex < pts.length ? pts[nextNodeIndex] : null;
+
+  wrap.innerHTML = `
+    <div class="radar-chart-header">
+      <span class="radar-chart-title">战术海图 · 雷达航迹</span>
+      <span class="radar-chart-vision">视野半径 ${visionRange} 节点${enableFog ? ' · 迷雾生效' : ''}</span>
+    </div>
+    <svg class="radar-track-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="none" aria-hidden="true">
+      <path d="${pathD}" class="radar-track-line" fill="none" stroke-width="2" stroke-dasharray="6 4"/>
+      ${pts
+        .map((p, idx) => {
+          const isCleared = clearedSet.has(idx);
+          const isCur = idx === nextNodeIndex;
+          const fill = isCleared ? '#34d399' : isCur ? '#38bdf8' : '#64748b';
+          return `<circle cx="${p.x}" cy="${p.y}" r="${isCur ? 5.5 : 4}" fill="${fill}" stroke="#0f172a" stroke-width="1.5"/>`;
+        })
+        .join('')}
+      ${
+        activePt
+          ? `
+        <circle class="radar-pulse-ring" cx="${activePt.x}" cy="${activePt.y}" r="11" fill="none" stroke="#38bdf8" stroke-width="1.8"/>
+        <polygon points="${activePt.x},${activePt.y - 9} ${activePt.x + 6},${activePt.y + 4} ${activePt.x - 6},${activePt.y + 4}" fill="#38bdf8" stroke="#e0f2fe" stroke-width="1"/>
+      `
+          : ''
+      }
+    </svg>
+    <div class="radar-node-grid" id="sortie-node-map"></div>
+  `;
+
+  const grid = wrap.querySelector('.radar-node-grid');
   nodes.forEach((node, idx) => {
-    if (idx > 0) {
-      const conn = document.createElement('span');
-      conn.className = 'sortie-connector';
-      conn.textContent = '→';
-      map.appendChild(conn);
-    }
     const isCleared = clearedSet.has(idx);
     const isCurrent = idx === nextNodeIndex;
+    const isFogged =
+      enableFog &&
+      !isCleared &&
+      !isCurrent &&
+      !node.intelRevealed &&
+      nextNodeIndex >= 0 &&
+      idx > nextNodeIndex + visionRange;
+
     const step = document.createElement('div');
-    step.className = `sortie-node-step ${isCleared ? 'is-cleared' : ''} ${isCurrent ? 'is-current' : ''} ${
-      node.type === NODE_TYPES.BOSS ? 'is-boss' : ''
-    }`;
+    step.className = `radar-node sortie-node-step ${isCleared ? 'is-cleared' : ''} ${
+      isCurrent ? 'is-current' : ''
+    } ${node.type === NODE_TYPES.BOSS && !isFogged ? 'is-boss' : ''} ${isFogged ? 'is-fogged' : ''}`;
     step.dataset.nodeCode = node.code;
-    step.dataset.nodeType = node.type;
-    step.innerHTML = `
+    step.dataset.nodeType = isFogged ? 'fog' : node.type;
+    step.innerHTML = isFogged
+      ? `
+      <span class="sortie-node-code">${escapeHtml(node.code)}</span>
+      <span class="sortie-node-type">迷雾海域</span>
+      <span class="sortie-node-name">???（需推进/高侦查）</span>
+    `
+      : `
       <span class="sortie-node-code">${isCleared ? '✓' : escapeHtml(node.code)}</span>
       <span class="sortie-node-type">${escapeHtml(NODE_TYPE_LABELS[node.type] || node.type)}</span>
       <span class="sortie-node-name">${escapeHtml(node.name)}</span>
     `;
-    map.appendChild(step);
+    grid.appendChild(step);
   });
 
-  return map;
+  return wrap;
 }
 
 // ============================================================
@@ -881,6 +1139,8 @@ async function renderSortieConsole() {
     combat,
     formation,
     commander,
+    fxStage,
+    assets,
     modules,
     uiKit,
   } = sortieState.context;
@@ -901,6 +1161,9 @@ async function renderSortieConsole() {
     ? formation.computeFleetSummary(runMemberIds, runFormationId)
     : null;
   const fleetCap = formation ? formation.getFleetCap() : 3;
+  const visionRange = fleetSummary?.visionRange ?? 2;
+  const staggeredCost = fleetSummary?.staggeredStepCost || { fuel: 20, ammo: 18 };
+  const flagshipClass = resolveShipClass(char.meta?.shipType);
 
   const seaworthyInfo = statRules.evaluateSeaworthiness(inventory, char.id);
   const mode = narrative.getMode();
@@ -909,6 +1172,13 @@ async function renderSortieConsole() {
   const maxAp = Number(char.stats.maxAp ?? 100);
   const curHp = Math.min(effMaxHp, Math.round(Number(char.stats.hp ?? effMaxHp)));
   const isHeavyDamage = curHp / effMaxHp < 0.25;
+
+  const flagshipAvatarRes = assets
+    ? await assets.getAssetUrl(char.meta?.avatarAssetId || null, {
+        fallbackSeed: char.id,
+        fallbackLabel: char.name.slice(0, 6),
+      })
+    : { url: '' };
 
   sortieState.container.innerHTML = '';
   const root = document.createElement('div');
@@ -924,6 +1194,7 @@ async function renderSortieConsole() {
   topCard.innerHTML = `
     <div class="lab-slot-head">
       <div class="cc-badge-row">
+        <span class="ship-class-ico">${getShipClassSvg(flagshipClass, { size: 22 })}</span>
         <strong>旗舰：${escapeHtml(char.name)}</strong>
         ${
           fleetSummary
@@ -949,13 +1220,14 @@ async function renderSortieConsole() {
         <span class="ns-chip">防空 ${fleetSummary.effective.aa}</span>
         <span class="ns-chip">反潜 ${fleetSummary.effective.asw}</span>
         <span class="ns-chip">侦查 ${fleetSummary.effective.recon}</span>
-        <span class="ns-chip">机动 ${fleetSummary.effective.evasion}</span>
+        <span class="ns-chip">视野 ${visionRange}格</span>
+        <span class="ns-chip" id="sortie-staggered-cost-chip">阶梯单步 油${staggeredCost.fuel}/弹${staggeredCost.ammo}</span>
       </div>
       <div class="port-gear-summary" id="sortie-fleet-hp-strip">
         ${fleetSummary.members
           .map(
             (m, i) => `
-          <span class="ns-chip">${i === 0 ? '★' : `#${i}`}${escapeHtml(m.name)} ${m.hp}/${m.maxHp}</span>
+          <span class="ns-chip">${i === 0 ? '★' : `#${i}`}[${escapeHtml(m.classCode || 'DD')}]${escapeHtml(m.name)} ${m.hp}/${m.maxHp}</span>
         `
           )
           .join('')}
@@ -1044,63 +1316,116 @@ async function renderSortieConsole() {
         累计战利品：<strong>${escapeHtml(formatLootSummary(run.loot, resources))}</strong>
       </div>
     `;
-    activeCard
-      .querySelector('#sortie-map-mount')
-      .appendChild(createNodeMapElement(run.nodes, run.clearedIndices, run.completed ? -1 : run.nextNodeIndex));
+    activeCard.querySelector('#sortie-map-mount').appendChild(
+      createRadarSeaChartElement(run.nodes, run.clearedIndices, run.completed ? -1 : run.nextNodeIndex, {
+        visionRange,
+        enableFog: true,
+      })
+    );
 
-    // Sub-panel A: Active Multi-Command Tactical Combat Panel
+    // Sub-panel A: Zero-Illustration Pure-SVG Slow-Motion Tactical Battlefield
     if (combatSession) {
       const enemy = combatSession.enemy;
+      const curSpeed = fxStage && typeof fxStage.getBattleSpeed === 'function' ? fxStage.getBattleSpeed() : 1;
+      const hasCarrier = Boolean(fleetSummary?.hasCarrier);
       const combatPanel = document.createElement('div');
-      combatPanel.className = 'enemy-hud-card';
+      combatPanel.className = 'enemy-hud-card bf-stage';
       combatPanel.id = 'sortie-combat-panel';
 
       combatPanel.innerHTML = `
-        <div class="lab-slot-head">
-          <strong>敌方目标：${escapeHtml(enemy.name)}</strong>
-          <span class="status-badge badge-danger">
-            ${enemy.forcedEngagement ? '主力决战 · 强制交战' : NODE_TYPE_LABELS[enemy.tier] || '交战'} · 第 ${combatSession.turn} 回合
-          </span>
-        </div>
-        <div id="sortie-enemy-hp-bar"></div>
-        <div class="cc-badge-row" id="sortie-enemy-intel">
-          ${
-            enemy.scanned
-              ? `
-            <span class="status-badge badge-ok">已扫描 · 护甲 ${enemy.armor}</span>
-            <span class="status-badge badge-warn">弱点：${escapeHtml(enemy.weaknessLabel)}</span>
-            <span class="status-badge badge-danger">${escapeHtml(enemy.threatLabel || '水面编队')}${enemy.airThreat > 0 ? ` · 空袭${enemy.airThreat}` : ''}${enemy.subThreat > 0 ? ` · 潜艇${enemy.subThreat}` : ''}</span>
-          `
-              : '<span class="status-badge badge-muted">护甲：??? · 威胁/弱点：???（执行「扫描」揭露）</span>'
-          }
-          ${
-            combatSession.lockOnBonus > 0
-              ? `<span class="status-badge badge-ok" id="sortie-lockon-badge">锁定增益 +${combatSession.lockOnBonus}</span>`
-              : ''
-          }
-          ${
-            combatSession.evasionBuffTurns > 0
-              ? `<span class="status-badge badge-ok">全队闪避减伤 (${combatSession.evasionBuffTurns}回合)</span>`
-              : ''
-          }
-        </div>
-        <div class="tactical-cmd-grid" id="sortie-tactical-cmds">
-          <button type="button" id="btn-cmd-scan" class="tactical-cmd-btn" data-combat-cmd="scan" ${sortieState.busy ? 'disabled' : ''}>
-            <span class="tactical-cmd-title">扫描（Scan）</span>
-            <span class="tactical-cmd-sub">全队侦查+战术 · 揭露弱点/威胁+锁定</span>
-          </button>
-          <button type="button" id="btn-cmd-evade" class="tactical-cmd-btn" data-combat-cmd="evade" ${sortieState.busy ? 'disabled' : ''}>
-            <span class="tactical-cmd-title">迂回（Evade）</span>
-            <span class="tactical-cmd-sub">全队机动+战术 · ${enemy.forcedEngagement ? '先手闪避减伤' : '全队无伤绕过'}</span>
-          </button>
-          <button type="button" id="btn-cmd-shelling" class="tactical-cmd-btn is-shelling" data-combat-cmd="shelling" ${sortieState.busy ? 'disabled' : ''}>
-            <span class="tactical-cmd-title">炮击（Shelling）</span>
-            <span class="tactical-cmd-sub">全队火力+防空/反潜 · 协同齐射</span>
-          </button>
-          <button type="button" id="btn-cmd-torpedo" class="tactical-cmd-btn is-torpedo" data-combat-cmd="torpedo" ${sortieState.busy ? 'disabled' : ''}>
-            <span class="tactical-cmd-title">鱼雷（Torpedo）</span>
-            <span class="tactical-cmd-sub">全队雷击+运气 · 高爆协同补刀</span>
-          </button>
+        <div id="sortie-battlefield" class="bf-battlefield-wrap">
+          <div class="bf-topbar">
+            <span class="status-badge badge-danger">
+              ${enemy.forcedEngagement ? '主力决战 · 强制交战' : NODE_TYPE_LABELS[enemy.tier] || '战术遭遇'} · 第 ${combatSession.turn} 回合
+            </span>
+            <button type="button" id="btn-combat-speed-toggle" class="btn-secondary uikit-touch-target bf-speed-btn">
+              演出倍速：${curSpeed}x
+            </button>
+          </div>
+
+          <!-- Upper Unit Card: Enemy Force -->
+          <div class="bf-unit-card is-enemy" id="bf-enemy-card">
+            <div class="bf-unit-head">
+              <div class="bf-unit-identity">
+                <div class="bf-emblem-box">${buildEnemyEmblemSvg(enemy.tier)}</div>
+                <div class="bf-unit-meta">
+                  <strong class="bf-unit-name">${escapeHtml(enemy.name)}</strong>
+                  <span class="bf-unit-sub">${enemy.scanned ? `护甲 ${enemy.armor} · ${escapeHtml(enemy.threatLabel || '水面编队')}` : '护甲 ??? · 执行「扫描」揭露弱点'}</span>
+                </div>
+              </div>
+              <span class="status-badge ${enemy.scanned ? 'badge-warn' : 'badge-muted'}">
+                ${enemy.scanned ? `弱点：${escapeHtml(enemy.weaknessLabel)}` : '未扫描'}
+              </span>
+            </div>
+            <div id="bf-enemy-hp-bar"></div>
+            <div class="cc-badge-row" id="sortie-enemy-intel">
+              ${
+                enemy.scanned
+                  ? `
+                <span class="status-badge badge-ok">已扫描 · 护甲 ${enemy.armor}</span>
+                <span class="status-badge badge-warn">弱点：${escapeHtml(enemy.weaknessLabel)}</span>
+                <span class="status-badge badge-danger">${escapeHtml(enemy.threatLabel || '水面编队')}${enemy.airThreat > 0 ? ` · 空袭${enemy.airThreat}` : ''}${enemy.subThreat > 0 ? ` · 潜艇${enemy.subThreat}` : ''}</span>
+              `
+                  : '<span class="status-badge badge-muted">护甲：??? · 威胁/弱点：???（执行「扫描」揭露）</span>'
+              }
+            </div>
+          </div>
+
+          <!-- Center Pure-SVG Trajectory & Choreography Arena -->
+          <div class="bf-arena" id="bf-svg-stage">
+            <div class="bf-banner" id="bf-banner" aria-live="polite">待命中 · 请下达战术指令</div>
+            <svg id="bf-svg-canvas" class="bf-svg-layer" viewBox="0 0 360 140" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
+            <div class="bf-callout" id="bf-callout" aria-live="polite"></div>
+          </div>
+
+          <!-- Lower Unit Card: Player Fleet -->
+          <div class="bf-unit-card is-player" id="bf-player-card">
+            <div class="bf-unit-head">
+              <div class="bf-unit-identity">
+                <img class="bf-avatar" src="${flagshipAvatarRes.url}" alt="${escapeHtml(char.name)}">
+                <div class="bf-unit-meta">
+                  <div class="bf-name-line">
+                    <span class="ship-class-ico">${getShipClassSvg(flagshipClass, { size: 18 })}</span>
+                    <strong class="bf-unit-name">${escapeHtml(char.name)}</strong>
+                  </div>
+                  <span class="bf-unit-sub">${fleetSummary ? `${fleetSummary.count}舰编队 · ${escapeHtml(fleetSummary.formationName)}` : '单舰突击'}${hasCarrier ? ' · 航母制空' : ''}</span>
+                </div>
+              </div>
+              <div class="cc-badge-row">
+                ${
+                  combatSession.lockOnBonus > 0
+                    ? `<span class="status-badge badge-ok" id="sortie-lockon-badge">锁定 +${combatSession.lockOnBonus}</span>`
+                    : ''
+                }
+                ${
+                  combatSession.evasionBuffTurns > 0
+                    ? `<span class="status-badge badge-ok">闪避减伤 (${combatSession.evasionBuffTurns}T)</span>`
+                    : ''
+                }
+              </div>
+            </div>
+            <div id="bf-player-hp-bar"></div>
+          </div>
+
+          <!-- Tactical Command Buttons -->
+          <div class="tactical-cmd-grid" id="sortie-tactical-cmds">
+            <button type="button" id="btn-cmd-scan" class="tactical-cmd-btn" data-combat-cmd="scan" ${sortieState.busy ? 'disabled' : ''}>
+              <span class="tactical-cmd-title">扫描（Scan）</span>
+              <span class="tactical-cmd-sub">全队侦查+轻巡强化 · 揭露弱点+锁定</span>
+            </button>
+            <button type="button" id="btn-cmd-evade" class="tactical-cmd-btn" data-combat-cmd="evade" ${sortieState.busy ? 'disabled' : ''}>
+              <span class="tactical-cmd-title">迂回（Evade）</span>
+              <span class="tactical-cmd-sub">全队机动+战术 · ${enemy.forcedEngagement ? '先手闪避减伤' : '全队无伤绕过'}</span>
+            </button>
+            <button type="button" id="btn-cmd-shelling" class="tactical-cmd-btn is-shelling" data-combat-cmd="shelling" ${sortieState.busy ? 'disabled' : ''}>
+              <span class="tactical-cmd-title">${hasCarrier ? '舰载机空袭（CV）' : '炮击（Shelling）'}</span>
+              <span class="tactical-cmd-sub">${hasCarrier ? '航母无视前排护甲 · 火力+侦查空袭' : '全队火力+防空/反潜 · 战列破甲齐射'}</span>
+            </button>
+            <button type="button" id="btn-cmd-torpedo" class="tactical-cmd-btn is-torpedo" data-combat-cmd="torpedo" ${sortieState.busy ? 'disabled' : ''}>
+              <span class="tactical-cmd-title">鱼雷（Torpedo）</span>
+              <span class="tactical-cmd-sub">驱逐高破甲暴击 · 反潜克制水下威胁</span>
+            </button>
+          </div>
         </div>
       `;
 
@@ -1112,7 +1437,28 @@ async function renderSortieConsole() {
         showPercent: false,
         sublabel: enemy.scanned ? `${enemy.hp} / ${enemy.maxHp}` : '??? / ???（未扫描）',
       });
-      combatPanel.querySelector('#sortie-enemy-hp-bar').appendChild(enemyBar.element);
+      combatPanel.querySelector('#bf-enemy-hp-bar').appendChild(enemyBar.element);
+
+      const totalHp = fleetSummary ? fleetSummary.totalHp : curHp;
+      const totalMaxHp = fleetSummary ? Math.max(1, fleetSummary.totalMaxHp) : effMaxHp;
+      const playerBar = uiKit.createProgressBar({
+        label: '我方编队总耐久',
+        value: totalHp,
+        max: totalMaxHp,
+        tone: totalHp / totalMaxHp < 0.3 ? 'danger' : 'accent',
+        showPercent: false,
+        sublabel: `${totalHp} / ${totalMaxHp}`,
+      });
+      combatPanel.querySelector('#bf-player-hp-bar').appendChild(playerBar.element);
+
+      combatPanel.querySelector('#btn-combat-speed-toggle').addEventListener('click', () => {
+        if (fxStage && typeof fxStage.toggleBattleSpeed === 'function') {
+          const nextSpd = fxStage.toggleBattleSpeed();
+          const btn = combatPanel.querySelector('#btn-combat-speed-toggle');
+          if (btn) btn.textContent = `演出倍速：${nextSpd}x`;
+          uiKit.showToast(`战斗慢放演出已切换为 ${nextSpd}x`, 'info');
+        }
+      });
 
       combatPanel.querySelectorAll('[data-combat-cmd]').forEach((btn) => {
         btn.addEventListener('click', () => handleTacticalCommand(btn.getAttribute('data-combat-cmd')));
@@ -1142,8 +1488,8 @@ async function renderSortieConsole() {
         advBtn.disabled = sortieState.busy;
         advBtn.textContent =
           run.nextNodeIndex === 0
-            ? `向首节点 ${nextNode.code} 进发（油-${run.stepCost.fuel} / 弹-${run.stepCost.ammo}）`
-            : `继续向下一节点 ${nextNode.code} 进发（油-${run.stepCost.fuel} / 弹-${run.stepCost.ammo}）`;
+            ? `向首节点 ${nextNode.code} 进发（阶梯单步 油-${run.stepCost.fuel} / 弹-${run.stepCost.ammo}）`
+            : `继续向下一节点 ${nextNode.code} 进发（阶梯单步 油-${run.stepCost.fuel} / 弹-${run.stepCost.ammo}）`;
         advBtn.addEventListener('click', () => advanceNextNode());
         btnStack.appendChild(advBtn);
       }
@@ -1262,14 +1608,18 @@ async function renderSortieConsole() {
     selectCard.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
         <h2 class="section-title">航线列表（${allRoutes.length} 条）</h2>
+        <span class="status-badge badge-muted">编队阶梯单步：油${staggeredCost.fuel} / 弹${staggeredCost.ammo}</span>
       </div>
+      <p class="muted-text" style="font-size:11.5px;">
+        大编队阶梯消耗规则：1~3号舰 100% · 4~6号舰 75% · 7~12号舰 55%，再乘以指挥官「调度」减免。
+      </p>
       ${
         !validation.ok
           ? `<div class="seaworthy-alert" id="sortie-launch-errors">启航条件未满足：${escapeHtml(validation.errors.join('；'))}</div>`
           : ''
       }
       <button type="button" id="btn-sortie-launch" class="btn-primary port-cta-btn" ${validation.ok ? '' : 'disabled'}>
-        ${selectedRoute ? `启航出击：${escapeHtml(selectedRoute.name)}（AP -${selectedRoute.apCost}）` : '请选择航线'}
+        ${selectedRoute ? `启航出击：${escapeHtml(selectedRoute.name)}（AP -${selectedRoute.apCost} · 单步油${staggeredCost.fuel}/弹${staggeredCost.ammo}）` : '请选择航线'}
       </button>
       <div class="lab-stack-sm" id="sortie-route-list"></div>
     `;
@@ -1290,7 +1640,7 @@ async function renderSortieConsole() {
         <p class="muted-text" style="font-size:12px;">${escapeHtml(rt.description)}</p>
         <div data-rt-map></div>
         <div class="cc-stat-sub">
-          海况：${escapeHtml(rt.seaCondition?.label || '标准')} · 最低要求 油≥${rt.minFuel} / 弹≥${rt.minAmmo} / AP≥${rt.apCost} · 单步 油${rt.stepCost.fuel}/弹${rt.stepCost.ammo}
+          海况：${escapeHtml(rt.seaCondition?.label || '标准')} · 最低要求 油≥${rt.minFuel} / 弹≥${rt.minAmmo} / AP≥${rt.apCost} · 当前编队单步 油${staggeredCost.fuel}/弹${staggeredCost.ammo}
         </div>
         <div class="lab-btn-row">
           <button type="button" class="${isSel ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" data-select-route="${escapeHtml(rt.id)}">
@@ -1303,7 +1653,9 @@ async function renderSortieConsole() {
           }
         </div>
       `;
-      card.querySelector('[data-rt-map]').appendChild(createNodeMapElement(rt.nodes, [], -1));
+      card.querySelector('[data-rt-map]').appendChild(
+        createRadarSeaChartElement(rt.nodes, [], -1, { visionRange, enableFog: false })
+      );
       card.querySelector('[data-select-route]').addEventListener('click', () => {
         sortieState.selectedRouteId = rt.id;
         renderSortieConsole();

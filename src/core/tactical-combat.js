@@ -20,6 +20,7 @@
  */
 
 import { clamp } from './calc-engine.js';
+import { getShipClassProfile, resolveShipClass } from './stat-rules.js';
 
 export const COMBAT_COMMANDS = Object.freeze({
   SCAN: {
@@ -277,7 +278,21 @@ export class TacticalCombatEngine {
     const cmdTacticsBonus = this._commander ? this._commander.getTacticsCheckBonus() : 0;
     const cmdLuck = this._commander ? this._commander.getLuck() : 0;
     const wingmanBaseChance = this._commander ? this._commander.getWingmanAssistChance() : 0.15;
-    const guardChance = clamp(wingmanBaseChance + (fleet.formationMods?.guardBonus || 0), 0.1, 0.75);
+
+    // 5 Ship-Class Composition Detection across alive fleet members
+    const aliveClasses = aliveMembers.map((m) => resolveShipClass(m.shipType));
+    const hasDD = aliveClasses.includes('DD');
+    const hasCL = aliveClasses.includes('CL');
+    const hasCA = aliveClasses.includes('CA');
+    const hasBB = aliveClasses.includes('BB');
+    const hasCV = aliveClasses.includes('CV');
+    const isAirstrike = commandId === 'shelling' && hasCV;
+
+    const caGuardBonus = hasCA ? getShipClassProfile('CA').combat.guardChanceBonus : 0;
+    const clScanBonus = hasCL ? getShipClassProfile('CL').combat.scanCheckBonus : 0;
+    const clAaBarrier = hasCL ? getShipClassProfile('CL').combat.aaBarrierBonus : 0;
+
+    const guardChance = clamp(wingmanBaseChance + (fleet.formationMods?.guardBonus || 0) + caGuardBonus, 0.1, 0.82);
     const followUpChance = clamp(wingmanBaseChance + (fleet.formationMods?.critBonus || 0), 0.1, 0.7);
 
     const enemy = session.enemy;
@@ -291,9 +306,13 @@ export class TacticalCombatEngine {
     let isCrit = false;
     let localTemplate = '';
     let outcomeTag = '';
+    const visualStyle = isAirstrike ? 'airstrike' : commandId;
+    let guardedByName = null;
+    let followUpByName = null;
+    let scannedNow = false;
     const extraEvents = [];
 
-    // Helper: Enemy Counterattack with AA interception, ASW suppression, Armor mitigation & Wingman Guard
+    // Helper: Enemy Counterattack with CL AA barrier, ASW suppression, Armor mitigation & CA Wingman Guard
     const runEnemyCounter = (mult = 1.0) => {
       const currentAlive = this._getFleetCombatContext(session).members.filter((m) => m.alive);
       if (currentAlive.length === 0) {
@@ -304,37 +323,46 @@ export class TacticalCombatEngine {
       const evadeMult = session.evasionBuffTurns > 0 ? 0.5 : 1.0;
       let rawThreatDmg = enemy.attackPower * mult * evadeMult;
 
-      // Air Threat vs Fleet AA (防空拦截)
       if (enemy.airThreat > 0) {
-        const aaMitigation = clamp(fleet.effective.aa / (fleet.effective.aa + enemy.airThreat * 4.5), 0.15, 0.85);
+        const aaMitigation = clamp(
+          fleet.effective.aa / (fleet.effective.aa + enemy.airThreat * 4.5) + clAaBarrier,
+          0.15,
+          0.9
+        );
         const airDmg = Math.max(0, Math.round(enemy.airThreat * 0.65 * (1 - aaMitigation)));
         const blocked = Math.max(1, Math.round(enemy.airThreat * 0.65 * aaMitigation));
         rawThreatDmg += airDmg;
-        chips.push({ text: `防空拦截 -${blocked} 空袭伤`, negative: false });
+        chips.push({ text: `${hasCL ? '轻巡防空屏障' : '防空拦截'} -${blocked} 空袭伤`, negative: false });
       }
 
-      // Submarine Threat vs Fleet ASW (反潜压制)
       if (enemy.subThreat > 0) {
-        const aswMitigation = clamp(fleet.effective.asw / (fleet.effective.asw + enemy.subThreat * 4.5), 0.15, 0.85);
+        const aswMitigation = clamp(fleet.effective.asw / (fleet.effective.asw + enemy.subThreat * 4.5), 0.15, 0.88);
         const subDmg = Math.max(0, Math.round(enemy.subThreat * 0.6 * (1 - aswMitigation)));
         const suppressed = Math.max(1, Math.round(enemy.subThreat * 0.6 * aswMitigation));
         rawThreatDmg += subDmg;
         chips.push({ text: `反潜警戒 -${suppressed} 潜袭伤`, negative: false });
       }
 
-      // Target selection (flagship or random alive member)
       let target = currentAlive[Math.floor(rng() * currentAlive.length)];
       let guardedBy = null;
 
-      // Wingman Cover / Guard (僚机援护挡伤) triggered by Commander `affinity` + formation guardBonus
+      // Wingman Cover / Guard (CA cruisers prioritize & mitigate significantly more damage!)
       if (currentAlive.length >= 2) {
-        const protectors = currentAlive.filter((m) => m.id !== target.id && m.hp / m.maxHp > 0.35);
-        if (protectors.length > 0 && rng() < guardChance) {
-          guardedBy = protectors[Math.floor(rng() * protectors.length)];
-          rawThreatDmg *= 0.52;
+        const protectors = currentAlive.filter((m) => m.id !== target.id && m.hp / m.maxHp > 0.3);
+        const caProtectors = protectors.filter((m) => resolveShipClass(m.shipType) === 'CA');
+        const pool = caProtectors.length > 0 ? caProtectors : protectors;
+        if (pool.length > 0 && rng() < guardChance) {
+          guardedBy = pool[Math.floor(rng() * pool.length)];
+          const isCaGuard = resolveShipClass(guardedBy.shipType) === 'CA';
+          const guardMult = isCaGuard ? getShipClassProfile('CA').combat.guardDamageMult : 0.52;
+          rawThreatDmg *= guardMult;
           target = guardedBy;
-          chips.push({ text: `僚机援护：${guardedBy.name} 挡伤减半`, negative: false });
-          extraEvents.push(`僚机「${guardedBy.name}」果断前出援护挡伤`);
+          guardedByName = guardedBy.name;
+          chips.push({
+            text: `${isCaGuard ? '重巡重甲援护' : '僚机援护'}：${guardedBy.name} 减伤${Math.round((1 - guardMult) * 100)}%`,
+            negative: false,
+          });
+          extraEvents.push(`${isCaGuard ? '重巡' : '僚机'}「${guardedBy.name}」果断前出援护挡伤`);
           this._emit('fx:play', {
             type: 'float-text',
             payload: { text: `援护挡伤 · ${guardedBy.name}`, tone: 'ok' },
@@ -342,8 +370,7 @@ export class TacticalCombatEngine {
         }
       }
 
-      // Armor damage mitigation
-      const armorReduction = clamp(target.armor * 0.16, 0, rawThreatDmg * 0.55);
+      const armorReduction = clamp(target.armor * 0.16, 0, rawThreatDmg * 0.58);
       const finalDmg = Math.max(2, Math.round(rawThreatDmg - armorReduction));
 
       const entity = this._entities.get(target.id);
@@ -360,7 +387,6 @@ export class TacticalCombatEngine {
         session.evasionBuffTurns = Math.max(0, session.evasionBuffTurns - 1);
       }
 
-      // Check if all fleet members fell
       const remainingAlive = this._getFleetCombatContext(session).members.filter((m) => m.alive);
       if (remainingAlive.length === 0) {
         session.status = 'defeated';
@@ -368,7 +394,6 @@ export class TacticalCombatEngine {
       return actual;
     };
 
-    // Helper: Wingman Coordinated Follow-up Strike (僚机协同补刀)
     const tryWingmanFollowUp = (baseStrikeDmg, attackKind) => {
       const wingmen = aliveMembers.filter((m) => !m.isFlagship);
       if (wingmen.length === 0 || enemy.hp <= 0) return 0;
@@ -378,6 +403,7 @@ export class TacticalCombatEngine {
       const statContribution = attackKind === 'torpedo' ? wingman.torpedo * 0.32 : wingman.firepower * 0.3;
       const bonusDmg = Math.max(6, Math.round(baseStrikeDmg * 0.3 + statContribution));
       enemy.hp = Math.max(0, enemy.hp - bonusDmg);
+      followUpByName = wingman.name;
       chips.push({ text: `协同补刀：${wingman.name} -${bonusDmg}`, negative: false });
       extraEvents.push(`僚机「${wingman.name}」协同补刀追加 ${bonusDmg} 伤害`);
       this._emit('fx:play', {
@@ -387,13 +413,13 @@ export class TacticalCombatEngine {
       return bonusDmg;
     };
 
-    // Helper: Active AA/ASW bonus strike when engaging air/sub threat enemies
     const computeCounterThreatBonus = () => {
       let bonus = 0;
       if (enemy.subThreat > 0 && fleet.effective.asw > 0) {
-        const aswDmg = Math.max(4, Math.round(fleet.effective.asw * 0.14));
+        const ddMult = hasDD ? getShipClassProfile('DD').combat.aswCounterMult : 1.0;
+        const aswDmg = Math.max(6, Math.round(fleet.effective.asw * 0.16 * ddMult));
         bonus += aswDmg;
-        chips.push({ text: `反潜深弹 +${aswDmg}`, negative: false });
+        chips.push({ text: `${hasDD ? '驱逐反潜深弹暴击' : '反潜深弹'} +${aswDmg}`, negative: false });
       }
       if (enemy.airThreat > 0 && fleet.effective.aa > 0) {
         const aaDmg = Math.max(3, Math.round(fleet.effective.aa * 0.1));
@@ -418,7 +444,7 @@ export class TacticalCombatEngine {
         equipmentCheckBonus: fleet.avgCheckBonus,
         moraleValue: fleet.avgMorale,
         dc,
-        extraModifier: (seaMods.checkBonus || 0) + cmdTacticsBonus,
+        extraModifier: (seaMods.checkBonus || 0) + cmdTacticsBonus + clScanBonus,
         commanderLuck: cmdLuck,
         rng,
       });
@@ -428,9 +454,11 @@ export class TacticalCombatEngine {
 
       if (ok) {
         enemy.scanned = true;
+        scannedNow = true;
         const lockVal = checkResult.outcome === 'crit-success' ? 4 : 3;
         session.lockOnBonus = Math.max(session.lockOnBonus, lockVal);
         outcomeTag = `锁定成功 (+${session.lockOnBonus})`;
+        if (hasCL) chips.push({ text: `轻巡侦查强化 +${clScanBonus}`, negative: false });
         chips.push({ text: `弱点：${enemy.weaknessLabel}`, negative: false });
         chips.push({ text: `威胁：${enemy.threatLabel}`, negative: false });
         chips.push({ text: `锁定增益 +${session.lockOnBonus}`, negative: false });
@@ -492,9 +520,9 @@ export class TacticalCombatEngine {
       checkResult = this._statRules.performCheck({
         actorId: flagship.id,
         actorName: fleetLabel,
-        statKey: 'firepower',
-        baseStatValue: baseFp,
-        effectiveStatValue: effFp,
+        statKey: isAirstrike ? 'recon' : 'firepower',
+        baseStatValue: isAirstrike ? Math.round((baseFp + fleet.checkRatings.recon) / 2) : baseFp,
+        effectiveStatValue: isAirstrike ? Math.round((effFp + fleet.checkRatings.recon) / 2) : effFp,
         equipmentCheckBonus: fleet.avgCheckBonus,
         moraleValue: fleet.avgMorale,
         dc,
@@ -507,36 +535,65 @@ export class TacticalCombatEngine {
       isCrit = checkResult.outcome === 'crit-success';
       if (ok) {
         const weakMult = enemy.weakness === 'shelling' ? 1.3 : 1.0;
-        const critMult = isCrit ? 1.6 : 1.0;
+        const critMult = isCrit ? 1.65 : 1.0;
         const lockDmgMult = session.lockOnBonus > 0 ? seaMods.dmgMult || 1.0 : 1.0;
         const counterBonus = computeCounterThreatBonus();
-        const mainDmg = Math.max(
-          10,
-          Math.round((fleet.effective.firepower * 0.24 + effFp * 0.22 - enemy.armor * 0.65) * weakMult * critMult * lockDmgMult) +
-            counterBonus
-        );
+        let mainDmg = 0;
+
+        if (isAirstrike) {
+          const enemyAaMit = Math.round((enemy.airThreat || 0) * 0.35);
+          mainDmg = Math.max(
+            14,
+            Math.round((fleet.effective.firepower * 0.24 + fleet.effective.recon * 0.44 - enemyAaMit) * weakMult * critMult * lockDmgMult) +
+              counterBonus
+          );
+          chips.push({ text: '航母空袭 · 无视前排护甲', negative: false });
+          if (enemyAaMit > 0) chips.push({ text: `敌方防空削减 -${enemyAaMit}`, negative: true });
+        } else {
+          const bbProf = getShipClassProfile('BB').combat;
+          const caProf = getShipClassProfile('CA').combat;
+          const classMult = hasBB ? bbProf.shellingBonusMult : hasCA ? caProf.shellingBonusMult : 1.0;
+          const effArmor = hasBB ? enemy.armor * (1 - bbProf.shellingArmorPen) : enemy.armor;
+          mainDmg = Math.max(
+            12,
+            Math.round((fleet.effective.firepower * 0.24 + effFp * 0.22 - effArmor * 0.65) * weakMult * critMult * lockDmgMult * classMult) +
+              counterBonus
+          );
+          if (hasBB) chips.push({ text: '战列重炮破甲 45%', negative: false });
+          else if (hasCA) chips.push({ text: '重巡扎实火力 +12%', negative: false });
+        }
+
         enemy.hp = Math.max(0, enemy.hp - mainDmg);
         const followUpDmg = tryWingmanFollowUp(mainDmg, 'shelling');
         damageDealt = mainDmg + followUpDmg;
 
-        this._emit('combat:hit', { command: 'shelling', damage: damageDealt, crit: isCrit });
-        chips.push({ text: `炮击齐射 -${mainDmg}`, negative: false });
-        outcomeTag = isCrit ? `炮击暴击 -${damageDealt}` : `炮击命中 -${damageDealt}`;
+        this._emit('combat:hit', { command: visualStyle, damage: damageDealt, crit: isCrit });
+        chips.push({ text: `${isAirstrike ? '舰载机空袭' : '炮击齐射'} -${mainDmg}`, negative: false });
+        outcomeTag = isAirstrike
+          ? isCrit
+            ? `空袭暴击 -${damageDealt}`
+            : `空袭命中 -${damageDealt}`
+          : isCrit
+          ? `炮击暴击 -${damageDealt}`
+          : `炮击命中 -${damageDealt}`;
 
         if (enemy.hp <= 0) {
           session.status = 'victory';
-          localTemplate =
-            '{actor.name}（{formation}）齐射【炮击】（{check.total} vs DC {check.dc}），造成总计 {damageDealt} 点伤害，彻底击破「{enemy.name}」！{extraText}';
+          localTemplate = isAirstrike
+            ? '{actor.name}放飞舰载机编队发动【舰载机空袭】（{check.total} vs DC {check.dc}），无视前排护甲打出 {damageDealt} 点致命打击，彻底击破「{enemy.name}」！{extraText}'
+            : '{actor.name}（{formation}）齐射【炮击】（{check.total} vs DC {check.dc}），造成总计 {damageDealt} 点伤害，彻底击破「{enemy.name}」！{extraText}';
         } else {
           damageTaken = runEnemyCounter(0.85);
-          localTemplate =
-            '{actor.name}（{formation}）发动【炮击】命中（{check.total} vs DC {check.dc}），造成 {damageDealt} 点伤害；敌方反击造成 -{damageTaken} HP。{extraText}';
+          localTemplate = isAirstrike
+            ? '{actor.name}发起【舰载机空袭】穿透防线（{check.total} vs DC {check.dc}），造成 {damageDealt} 点伤害；敌方残存火力反击 -{damageTaken} HP。{extraText}'
+            : '{actor.name}（{formation}）发动【炮击】命中（{check.total} vs DC {check.dc}），造成 {damageDealt} 点伤害；敌方反击造成 -{damageTaken} HP。{extraText}';
         }
       } else {
-        outcomeTag = '炮击偏失';
+        outcomeTag = isAirstrike ? '空袭被拦截' : '炮击偏失';
         damageTaken = runEnemyCounter(0.95);
-        localTemplate =
-          '{actor.name}【炮击】弹着偏移（{check.total} vs DC {check.dc}），遭敌方反击损失 {damageTaken} HP。{extraText}';
+        localTemplate = isAirstrike
+          ? '{actor.name}的【舰载机空袭】遭遇密集防空火网（{check.total} vs DC {check.dc}），未能有效命中，遭反击损失 {damageTaken} HP。{extraText}'
+          : '{actor.name}【炮击】弹着偏移（{check.total} vs DC {check.dc}），遭敌方反击损失 {damageTaken} HP。{extraText}';
       }
     } else if (commandId === 'torpedo') {
       const baseTorp = Math.round(fleet.totals?.torpedo / Math.max(1, fleet.aliveCount) || fleet.checkRatings.torpedo);
@@ -561,13 +618,15 @@ export class TacticalCombatEngine {
       const ok = checkResult.outcome === 'crit-success' || checkResult.outcome === 'success';
       isCrit = checkResult.outcome === 'crit-success';
       if (ok) {
+        const ddProf = getShipClassProfile('DD').combat;
         const weakMult = enemy.weakness === 'torpedo' ? 1.35 : 1.0;
-        const critMult = isCrit ? 1.85 : 1.0;
+        const critMult = isCrit ? (hasDD ? ddProf.torpedoCritMult : 1.85) : 1.0;
         const lockDmgMult = session.lockOnBonus > 0 ? seaMods.dmgMult || 1.0 : 1.0;
+        const armorFactor = hasDD ? 0.35 * (1 - ddProf.torpedoArmorPen) : 0.35;
         const counterBonus = computeCounterThreatBonus();
         const mainDmg = Math.max(
           16,
-          Math.round((fleet.effective.torpedo * 0.34 + effTorp * 0.28 - enemy.armor * 0.35) * weakMult * critMult * lockDmgMult) +
+          Math.round((fleet.effective.torpedo * 0.34 + effTorp * 0.28 - enemy.armor * armorFactor) * weakMult * critMult * lockDmgMult) +
             counterBonus
         );
         enemy.hp = Math.max(0, enemy.hp - mainDmg);
@@ -575,6 +634,7 @@ export class TacticalCombatEngine {
         damageDealt = mainDmg + followUpDmg;
 
         this._emit('combat:hit', { command: 'torpedo', damage: damageDealt, crit: isCrit });
+        if (hasDD) chips.push({ text: '驱逐鱼雷高破甲/高暴击', negative: false });
         chips.push({ text: `雷击爆发 -${mainDmg}`, negative: false });
         outcomeTag = isCrit ? `雷击暴击 -${damageDealt}` : `雷击重创 -${damageDealt}`;
 
@@ -624,6 +684,7 @@ export class TacticalCombatEngine {
 
     // 3. Render dual-track tactical report via PromptPipeline
     const extraText = extraEvents.length > 0 ? `（${extraEvents.join('；')}）` : '';
+    const displayCmdLabel = isAirstrike ? '舰载机空袭' : cmdDef.label;
     const rendered = await this._narrative.run({
       template: localTemplate,
       variables: {
@@ -643,13 +704,17 @@ export class TacticalCombatEngine {
         lockOnBonus: session.lockOnBonus,
         extraText,
       },
-      polishInstruction: `请以简洁紧凑的海战战术战报口吻润色第 ${session.turn} 回合「${fleet.formationName}」的【${cmdDef.label}】交战结果，严格保留所有伤害、僚机协同与检定数字：`,
+      polishInstruction: `请以简洁紧凑的海战战术战报口吻润色第 ${session.turn} 回合「${fleet.formationName}」的【${displayCmdLabel}】交战结果，严格保留所有伤害、僚机协同与检定数字：`,
     });
 
     const turnEntry = {
       turn: session.turn,
       commandId,
-      commandLabel: cmdDef.label,
+      commandLabel: displayCmdLabel,
+      visualStyle,
+      actorId: flagship.id,
+      actorName: flagship.name,
+      actorClass: resolveShipClass(flagship.shipType),
       outcomeTag,
       text: rendered.text,
       source: rendered.source,
@@ -657,6 +722,11 @@ export class TacticalCombatEngine {
       damageDealt,
       damageTaken,
       isCrit,
+      scannedNow,
+      guardedBy: guardedByName,
+      followUpBy: followUpByName,
+      enemyHpAfter: enemy.hp,
+      enemyMaxHp: enemy.maxHp,
       extraEvents,
       check: {
         statLabel: checkResult.statLabel,
@@ -678,6 +748,7 @@ export class TacticalCombatEngine {
       sessionId: session.id,
       turn: turnEntry.turn,
       commandId,
+      visualStyle,
       status: session.status,
       damageDealt,
       damageTaken,

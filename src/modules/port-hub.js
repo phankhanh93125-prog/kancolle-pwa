@@ -24,11 +24,12 @@ import {
   CUSTOM_BUFF_TYPES,
   SHIP_TYPE_PRESETS,
 } from '../core/port-buildings.js';
-import { CORE_STAT_DEFS } from '../core/stat-rules.js';
+import { CORE_STAT_DEFS, getShipClassSvg, resolveShipClass } from '../core/stat-rules.js';
 import { NARRATIVE_MODES } from '../core/prompt-pipeline.js';
 import { LOG_CATEGORIES } from '../core/log-system.js';
 import {
   getActiveCharacterId,
+  openCharacterCardById,
   persistCharacterRoster,
 } from './character-console.js';
 
@@ -70,6 +71,28 @@ function getFlagship() {
   if (list.length === 0) return null;
   const activeId = getActiveCharacterId(rootStorage);
   return list.find((c) => c.id === activeId) || list[0];
+}
+
+async function resolveShipAvatarUrl(char) {
+  if (!char || !portState.context?.assets) return '';
+  const assetId = char.meta?.avatarAssetId || null;
+  const cacheKey = `ship::${char.id}::${assetId || 'none'}`;
+  if (portState.avatarCache.has(cacheKey)) {
+    return portState.avatarCache.get(cacheKey);
+  }
+  const resolved = await portState.context.assets.getAssetUrl(assetId, {
+    fallbackSeed: char.id,
+    fallbackLabel: char.name.slice(0, 6),
+  });
+  portState.avatarCache.set(cacheKey, resolved.url);
+  return resolved.url;
+}
+
+function jumpToCharacterCard(characterId, activeSheet = null) {
+  if (activeSheet && typeof activeSheet.close === 'function') {
+    activeSheet.close();
+  }
+  openCharacterCardById(characterId, portState.context || {});
 }
 
 function computeFleetServicePlan(chars) {
@@ -542,15 +565,23 @@ function openOathSheet(secretary) {
 // ============================================================
 
 function openDormitorySheet() {
-  const { buildings, entities, rootStorage, resources, uiKit } = portState.context;
+  const { buildings, entities, statRules, formation, expeditions, interaction, rootStorage, uiKit } = portState.context;
   const wrap = document.createElement('div');
   wrap.className = 'module-stack';
 
-  const renderDorm = () => {
+  let sheetHandle = null;
+
+  const renderDorm = async () => {
     const dorm = buildings.getDormitoryState();
     const roster = getCharacters();
     const resSet = new Set(dorm.residents);
-    const available = roster.filter((c) => !resSet.has(c.id));
+
+    const avatarMap = new Map();
+    await Promise.all(
+      roster.map(async (c) => {
+        avatarMap.set(c.id, await resolveShipAvatarUrl(c));
+      })
+    );
 
     wrap.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
@@ -560,65 +591,112 @@ function openDormitorySheet() {
 
       <div class="lab-btn-grid">
         <button type="button" id="btn-dorm-feed" class="btn-primary uikit-touch-target" ${dorm.residents.length === 0 ? 'disabled' : ''}>
-          投喂补给（全员士气+14/好感+2）
+          投喂补给（士气+14/好感+2）
         </button>
         <button type="button" id="btn-dorm-expand" class="btn-secondary uikit-touch-target" ${dorm.canExpand ? '' : 'disabled'}>
           ${dorm.canExpand ? `扩建床位 +1（钢${dorm.expandCost.steel}/铝${dorm.expandCost.bauxite}/银${dorm.expandCost.silver}）` : '已达最大床位'}
         </button>
       </div>
 
-      <span class="form-label">当前入住舰娘（${dorm.residentDetails.length}）</span>
+      <span class="form-label">当前入住床位（${dorm.residentDetails.length}/${dorm.capacity} · 点头像直达角色卡）</span>
       <div class="lab-stack-sm" id="dorm-resident-list">
         ${
           dorm.residentDetails.length === 0
-            ? '<p class="muted-text">宿舍目前空置，请从下方分配舰娘入住。</p>'
+            ? '<p class="muted-text">宿舍目前空置，可从下方全员花名册分配舰娘入住。</p>'
             : dorm.residentDetails
-                .map(
-                  (r) => `
-            <div class="lab-slot-card" data-dorm-resident="${escapeHtml(r.id)}">
-              <div class="lab-slot-head">
-                <strong>${escapeHtml(r.name)}</strong>
-                <span class="status-badge badge-ok">士气 ${r.morale} · 好感 ${r.affinity}</span>
+                .map((r) => {
+                  const ent = entities.get(r.id);
+                  const prog = ent ? statRules.ensureShipProgression(ent) : { level: 1 };
+                  const avUrl = avatarMap.get(r.id) || '';
+                  return `
+            <div class="lab-slot-card dorm-roster-row" data-dorm-resident="${escapeHtml(r.id)}">
+              <div class="dorm-row-main">
+                <button type="button" class="avatar-jump-btn" data-jump-char-card="${escapeHtml(r.id)}" title="点击查看「${escapeHtml(r.name)}」精修角色卡">
+                  <img class="dorm-mini-avatar" src="${avUrl}" alt="${escapeHtml(r.name)}">
+                </button>
+                <div class="dorm-row-info">
+                  <div class="dorm-row-title">
+                    <span class="ship-class-ico">${getShipClassSvg(resolveShipClass(r.shipType), { size: 18 })}</span>
+                    <strong>${escapeHtml(r.name)}</strong>
+                    <span class="status-badge ship-lv-badge">Lv.${prog.level}</span>
+                  </div>
+                  <div class="cc-badge-row">
+                    <span class="status-badge badge-ok">宿舍休整中</span>
+                    <span class="status-badge badge-muted">士气 ${r.morale} · 好感 ${r.affinity}</span>
+                  </div>
+                </div>
               </div>
               <button type="button" class="btn-secondary uikit-touch-target" data-dorm-remove="${escapeHtml(r.id)}">移出宿舍</button>
             </div>
-          `
-                )
+          `;
+                })
                 .join('')
         }
       </div>
 
       <div class="lab-divider"></div>
-      <span class="form-label">可分配入住舰娘</span>
-      <div class="lab-stack-sm" id="dorm-candidate-list">
-        ${
-          available.length === 0
-            ? '<p class="muted-text">所有舰娘均已入住。</p>'
-            : available
-                .map(
-                  (c) => `
-            <div class="lab-slot-card">
-              <div class="lab-slot-head">
-                <strong>${escapeHtml(c.name)}</strong>
-                <span class="status-badge badge-muted">${escapeHtml(c.meta?.shipType || '驱逐舰')} · 士气 ${Math.round(c.stats.morale ?? 60)}</span>
-              </div>
-              <button type="button" class="btn-secondary uikit-touch-target" data-dorm-assign="${escapeHtml(c.id)}" ${dorm.residents.length >= dorm.capacity ? 'disabled' : ''}>
-                + 分配入住
+      <div class="section-header-row" style="margin-bottom:0;">
+        <span class="form-label">港区全员花名册（共 ${roster.length} 舰 · 点击头像直达精修角色卡）</span>
+      </div>
+      <div class="lab-stack-sm" id="dorm-full-roster">
+        ${roster
+          .map((c) => {
+            const inDorm = resSet.has(c.id);
+            const prog = statRules.ensureShipProgression(c);
+            const avUrl = avatarMap.get(c.id) || '';
+            const status = buildings.getCharacterGlobalStatus(c.id, {
+              formation,
+              expeditions,
+              interaction,
+            });
+            return `
+          <div class="lab-slot-card dorm-roster-row" data-dorm-roster-char="${escapeHtml(c.id)}">
+            <div class="dorm-row-main">
+              <button type="button" class="avatar-jump-btn" data-jump-char-card="${escapeHtml(c.id)}" title="点击查看「${escapeHtml(c.name)}」精修角色卡">
+                <img class="dorm-mini-avatar" src="${avUrl}" alt="${escapeHtml(c.name)}">
               </button>
+              <div class="dorm-row-info">
+                <div class="dorm-row-title">
+                  <span class="ship-class-ico">${getShipClassSvg(resolveShipClass(c.meta?.shipType), { size: 18 })}</span>
+                  <strong>${escapeHtml(c.name)}</strong>
+                  <span class="status-badge ship-lv-badge">Lv.${prog.level}</span>
+                </div>
+                <div class="cc-badge-row">
+                  <span class="status-badge badge-muted">${escapeHtml(c.meta?.shipType || '驱逐舰')}</span>
+                  ${status.badges
+                    .map(
+                      (b) =>
+                        `<span class="status-badge badge-${escapeHtml(b.tone)}" data-roster-status="${escapeHtml(b.id)}">${escapeHtml(b.label)}</span>`
+                    )
+                    .join('')}
+                  ${status.isSecretary ? '<span class="status-badge badge-ok">★ 秘书舰</span>' : ''}
+                </div>
+              </div>
             </div>
-          `
-                )
-                .join('')
-        }
+            ${
+              inDorm
+                ? `<button type="button" class="btn-secondary uikit-touch-target" data-dorm-remove="${escapeHtml(c.id)}">移出宿舍</button>`
+                : `<button type="button" class="btn-primary uikit-touch-target" data-dorm-assign="${escapeHtml(c.id)}" ${dorm.residents.length >= dorm.capacity ? 'disabled' : ''}>+ 入住宿舍</button>`
+            }
+          </div>
+        `;
+          })
+          .join('')}
       </div>
     `;
+
+    wrap.querySelectorAll('[data-jump-char-card]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        jumpToCharacterCard(btn.getAttribute('data-jump-char-card'), sheetHandle);
+      });
+    });
 
     wrap.querySelector('#btn-dorm-feed').addEventListener('click', async () => {
       try {
         const res = await buildings.feedDormitory();
         await persistCharacterRoster({ storage: rootStorage, entities });
         uiKit.showToast(`投喂完成：${res.count} 名入住舰娘士气 +${res.moraleGain}、好感 +${res.affGain}`, 'ok');
-        renderDorm();
+        await renderDorm();
         await renderPortHub();
       } catch (err) {
         uiKit.showToast(err instanceof Error ? err.message : '投喂失败', 'warn');
@@ -629,7 +707,7 @@ function openDormitorySheet() {
       try {
         const next = await buildings.expandDormitory();
         uiKit.showToast(`宿舍已扩建至 ${next.capacity} 床位`, 'ok');
-        renderDorm();
+        await renderDorm();
         await renderPortHub();
       } catch (err) {
         uiKit.showToast(err instanceof Error ? err.message : '扩建失败', 'warn');
@@ -641,7 +719,7 @@ function openDormitorySheet() {
         try {
           await buildings.assignDormResident(btn.getAttribute('data-dorm-assign'));
           uiKit.showToast('已分配入住港区宿舍', 'ok');
-          renderDorm();
+          await renderDorm();
           await renderPortHub();
         } catch (err) {
           uiKit.showToast(err instanceof Error ? err.message : '分配失败', 'warn');
@@ -653,7 +731,7 @@ function openDormitorySheet() {
       btn.addEventListener('click', async () => {
         await buildings.removeDormResident(btn.getAttribute('data-dorm-remove'));
         uiKit.showToast('已移出宿舍', 'info');
-        renderDorm();
+        await renderDorm();
         await renderPortHub();
       });
     });
@@ -661,9 +739,9 @@ function openDormitorySheet() {
 
   renderDorm();
 
-  uiKit.openBottomSheet({
-    title: '港区宿舍（Dormitory）',
-    subtitle: '入住舰娘随离线时间自动恢复士气与微量好感度',
+  sheetHandle = uiKit.openBottomSheet({
+    title: '港区宿舍与全员花名册',
+    subtitle: '展示仓库全部舰娘全局状态，点击任意头像直达精修角色卡',
     content: wrap,
     actions: [{ id: 'close', label: '完成', tone: 'secondary' }],
   });
@@ -1094,13 +1172,23 @@ function openFormationSheet() {
   const wrap = document.createElement('div');
   wrap.className = 'module-stack';
 
-  const renderInner = () => {
+  let sheetHandle = null;
+
+  const renderInner = async () => {
     const fleetState = formation.getState();
     const fleetSummary = fleetState.summary;
     const formationsList = formation.listFormations();
     const roster = getCharacters();
     const inFleetSet = new Set(fleetState.memberIds);
     const idleCandidates = roster.filter((c) => !inFleetSet.has(c.id));
+    const staggered = fleetSummary.staggeredStepCost || { fuel: 0, ammo: 0, breakdown: [] };
+
+    const avatarMap = new Map();
+    await Promise.all(
+      roster.map(async (c) => {
+        avatarMap.set(c.id, await resolveShipAvatarUrl(c));
+      })
+    );
 
     wrap.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
@@ -1123,6 +1211,8 @@ function openFormationSheet() {
       <p class="muted-text" style="font-size:12px;">${escapeHtml(fleetState.formation.desc)}</p>
 
       <div class="port-gear-summary">
+        <span class="ns-chip">阶梯单步 油${staggered.fuel}/弹${staggered.ammo}</span>
+        <span class="ns-chip">视野 ${fleetSummary.visionRange ?? 2}格</span>
         <span class="ns-chip">火 ${fleetSummary.effective.firepower}</span>
         <span class="ns-chip">雷 ${fleetSummary.effective.torpedo}</span>
         <span class="ns-chip">甲 ${fleetSummary.effective.armor}</span>
@@ -1134,12 +1224,25 @@ function openFormationSheet() {
 
       <div class="lab-stack-sm">
         ${fleetSummary.members
-          .map(
-            (m, idx) => `
-          <div class="lab-slot-card">
-            <div class="lab-slot-head">
-              <strong>${idx === 0 ? '★ 旗舰' : `僚机 #${idx}`} · ${escapeHtml(m.name)}</strong>
-              <span class="status-badge badge-muted">${escapeHtml(m.shipType)} · HP ${m.hp}/${m.maxHp}</span>
+          .map((m, idx) => {
+            const avUrl = avatarMap.get(m.id) || '';
+            const tierLabel = idx < 3 ? '100%' : idx < 6 ? '75%' : '55%';
+            return `
+          <div class="lab-slot-card dorm-roster-row">
+            <div class="dorm-row-main">
+              <button type="button" class="avatar-jump-btn" data-jump-char-card="${escapeHtml(m.id)}" title="点击查看「${escapeHtml(m.name)}」精修角色卡">
+                <img class="dorm-mini-avatar" src="${avUrl}" alt="${escapeHtml(m.name)}">
+              </button>
+              <div class="dorm-row-info">
+                <div class="dorm-row-title">
+                  <span class="ship-class-ico">${getShipClassSvg(m.classCode || resolveShipClass(m.shipType), { size: 18 })}</span>
+                  <strong>${idx === 0 ? '★ 旗舰' : `僚机 #${idx}`} · ${escapeHtml(m.name)}</strong>
+                </div>
+                <div class="cc-badge-row">
+                  <span class="status-badge badge-muted">${escapeHtml(m.shipType)} · HP ${m.hp}/${m.maxHp}</span>
+                  <span class="status-badge badge-ok">阶梯 ${tierLabel}</span>
+                </div>
+              </div>
             </div>
             <div class="lab-btn-row">
               ${
@@ -1150,8 +1253,8 @@ function openFormationSheet() {
               <button type="button" class="btn-danger uikit-touch-target" data-fleet-remove="${escapeHtml(m.id)}">移出编队</button>
             </div>
           </div>
-        `
-          )
+        `;
+          })
           .join('')}
       </div>
 
@@ -1159,19 +1262,28 @@ function openFormationSheet() {
         idleCandidates.length > 0
           ? `
         <div class="lab-divider"></div>
-        <span class="form-label">待命舰娘</span>
+        <span class="form-label">待命舰娘（点击头像直达角色卡）</span>
         <div class="lab-stack-sm">
           ${idleCandidates
             .map((c) => {
               const check = formation.canAddMember(c.id);
               const disp = expeditions.isCharacterDispatched(c.id);
+              const avUrl = avatarMap.get(c.id) || '';
               return `
-              <div class="lab-slot-card">
-                <div class="lab-slot-head">
-                  <strong>${escapeHtml(c.name)}</strong>
-                  <span class="status-badge ${disp ? 'badge-warn' : check.ok ? 'badge-ok' : 'badge-muted'}">
-                    ${disp ? '远征中' : check.ok ? '可入队' : '暂不可用'}
-                  </span>
+              <div class="lab-slot-card dorm-roster-row">
+                <div class="dorm-row-main">
+                  <button type="button" class="avatar-jump-btn" data-jump-char-card="${escapeHtml(c.id)}" title="点击查看「${escapeHtml(c.name)}」精修角色卡">
+                    <img class="dorm-mini-avatar" src="${avUrl}" alt="${escapeHtml(c.name)}">
+                  </button>
+                  <div class="dorm-row-info">
+                    <div class="dorm-row-title">
+                      <span class="ship-class-ico">${getShipClassSvg(resolveShipClass(c.meta?.shipType), { size: 18 })}</span>
+                      <strong>${escapeHtml(c.name)}</strong>
+                    </div>
+                    <span class="status-badge ${disp ? 'badge-warn' : check.ok ? 'badge-ok' : 'badge-muted'}">
+                      ${disp ? '远征中' : check.ok ? '可入队' : '暂不可用'}
+                    </span>
+                  </div>
                 </div>
                 <button type="button" class="btn-secondary uikit-touch-target" data-fleet-add="${escapeHtml(c.id)}" ${check.ok ? '' : 'disabled'}>
                   ${check.ok ? '+ 编入出征舰队' : escapeHtml(check.reason.slice(0, 26))}
@@ -1186,15 +1298,21 @@ function openFormationSheet() {
       }
     `;
 
+    wrap.querySelectorAll('[data-jump-char-card]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        jumpToCharacterCard(btn.getAttribute('data-jump-char-card'), sheetHandle);
+      });
+    });
+
     wrap.querySelector('#btn-sheet-autofill').addEventListener('click', async () => {
       await formation.autoFillFleet();
-      renderInner();
+      await renderInner();
       await renderPortHub();
     });
     wrap.querySelectorAll('[data-select-formation]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         await formation.setFormation(btn.getAttribute('data-select-formation'));
-        renderInner();
+        await renderInner();
         await renderPortHub();
       });
     });
@@ -1203,14 +1321,14 @@ function openFormationSheet() {
         const id = btn.getAttribute('data-fleet-promote');
         await formation.setFlagship(id);
         await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: id });
-        renderInner();
+        await renderInner();
         await renderPortHub();
       });
     });
     wrap.querySelectorAll('[data-fleet-remove]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         await formation.removeMember(btn.getAttribute('data-fleet-remove'));
-        renderInner();
+        await renderInner();
         await renderPortHub();
       });
     });
@@ -1218,7 +1336,7 @@ function openFormationSheet() {
       btn.addEventListener('click', async () => {
         try {
           await formation.addMember(btn.getAttribute('data-fleet-add'));
-          renderInner();
+          await renderInner();
           await renderPortHub();
         } catch (err) {
           uiKit.showToast(err instanceof Error ? err.message : '无法入队', 'warn');
@@ -1229,9 +1347,9 @@ function openFormationSheet() {
 
   renderInner();
 
-  uiKit.openBottomSheet({
+  sheetHandle = uiKit.openBottomSheet({
     title: '出征舰队编成（3~12 人动态上限）',
-    subtitle: '编队上限受指挥官「统率」属性控制，仅允许适航且未在远征中的舰娘入队',
+    subtitle: '1~3舰100% / 4~6舰75% / 7~12舰55% 阶梯消耗 · 点击头像直达角色卡',
     content: wrap,
     actions: [{ id: 'close', label: '完成', tone: 'secondary' }],
   });
@@ -1536,9 +1654,12 @@ async function renderPortHub() {
       </div>
 
       <div class="cc-hero-row">
-        <img class="cc-avatar" id="port-sec-avatar" src="${secAvatarUrl}" alt="${escapeHtml(secretary.name)}">
+        <button type="button" class="avatar-jump-btn" id="btn-port-sec-jump-card" data-jump-char-card="${escapeHtml(secretary.id)}" title="点击头像直达精修角色卡">
+          <img class="cc-avatar" id="port-sec-avatar" src="${secAvatarUrl}" alt="${escapeHtml(secretary.name)}">
+        </button>
         <div class="cc-hero-info">
           <div class="cc-hero-name-row">
+            <span class="ship-class-ico">${getShipClassSvg(resolveShipClass(secretary.meta?.shipType), { size: 20 })}</span>
             <h3 class="cc-hero-name" id="port-sec-name">${isOathed ? '★ ' : ''}${escapeHtml(secretary.name)}</h3>
             <span class="status-badge ship-lv-badge" id="port-sec-level-badge">Lv.${secProg.level}</span>
             <span class="status-badge ${seaworthyInfo.seaworthy ? 'badge-ok' : 'badge-danger'}" id="port-seaworthy-badge">
@@ -1597,6 +1718,10 @@ async function renderPortHub() {
         tone: (secretary.stats.morale ?? 70) < 30 ? 'danger' : 'accent',
       }).element
     );
+
+    secCard.querySelector('#btn-port-sec-jump-card').addEventListener('click', () => {
+      jumpToCharacterCard(secretary.id);
+    });
 
     secCard.querySelector('#btn-sec-mode-toggle').addEventListener('click', () => {
       const next = isAiMode ? NARRATIVE_MODES.LOCAL : NARRATIVE_MODES.AI_POLISH;
