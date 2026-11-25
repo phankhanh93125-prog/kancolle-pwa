@@ -57,6 +57,82 @@ export const OPTIONAL_OUTFIT_SLOT = Object.freeze({
   allowedCategories: [ITEM_CATEGORIES.OUTFIT],
 });
 
+export const WAREHOUSE_GROUPS = Object.freeze({
+  ALL: 'all',
+  CORE: 'core',
+  WEAPON: 'weapon',
+  TACTICAL: 'tactical',
+  OUTFIT_CONSUMABLE: 'outfit_consumable',
+});
+
+export const WAREHOUSE_GROUP_DEFS = Object.freeze([
+  { id: WAREHOUSE_GROUPS.ALL, label: '全部', shortLabel: '全部' },
+  { id: WAREHOUSE_GROUPS.CORE, label: '核心三件套', shortLabel: '核心' },
+  { id: WAREHOUSE_GROUPS.WEAPON, label: '主战武器', shortLabel: '武器' },
+  { id: WAREHOUSE_GROUPS.TACTICAL, label: '战术辅助', shortLabel: '辅助' },
+  { id: WAREHOUSE_GROUPS.OUTFIT_CONSUMABLE, label: '服装与道具', shortLabel: '服/道具' },
+]);
+
+/**
+ * Classify any item into one of the 4 compact warehouse tabs:
+ *   - core              : 引擎 / 装甲 / 核心
+ *   - weapon            : 主炮 / 鱼雷 / 舰载机
+ *   - tactical          : 雷达 / 声呐 / 防空 / 电探 / 火控观瞄
+ *   - outfit_consumable : 服装 / 消耗品
+ */
+export function classifyItemWarehouseGroup(item) {
+  if (!item) return WAREHOUSE_GROUPS.TACTICAL;
+  if (
+    item.category === ITEM_CATEGORIES.ENGINE ||
+    item.category === ITEM_CATEGORIES.ARMOR ||
+    item.category === ITEM_CATEGORIES.CORE
+  ) {
+    return WAREHOUSE_GROUPS.CORE;
+  }
+  if (item.category === ITEM_CATEGORIES.OUTFIT || item.category === ITEM_CATEGORIES.CONSUMABLE) {
+    return WAREHOUSE_GROUPS.OUTFIT_CONSUMABLE;
+  }
+  if (item.subGroup === 'weapon') return WAREHOUSE_GROUPS.WEAPON;
+  if (item.subGroup === 'tactical') return WAREHOUSE_GROUPS.TACTICAL;
+
+  const text = `${item.name || ''} ${(item.tags || []).join(' ')} ${item.description || ''}`;
+  if (/(主炮|重炮|副炮|高平两用炮|鱼雷|氧雷|舰载|轰炸机|攻击机|战斗机|主战武器)/.test(text)) {
+    return WAREHOUSE_GROUPS.WEAPON;
+  }
+  if (/(雷达|电探|声呐|声纳|防空|观瞄|测距|战术辅助|夜战|侦察)/.test(text)) {
+    return WAREHOUSE_GROUPS.TACTICAL;
+  }
+  const hasOffense = (item.bonuses || []).some((b) => b.stat === 'firepower' || b.stat === 'torpedo');
+  return hasOffense ? WAREHOUSE_GROUPS.WEAPON : WAREHOUSE_GROUPS.TACTICAL;
+}
+
+/**
+ * Pure geometric SVG icon for compact equipment warehouse rows.
+ */
+export function getItemIconSvg(item, { size = 20 } = {}) {
+  const s = Number(size) || 20;
+  const grp = classifyItemWarehouseGroup(item);
+  if (item?.category === ITEM_CATEGORIES.ENGINE) {
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="7" stroke="#38bdf8" stroke-width="2"/><path d="M12 5V12L17 15" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/></svg>`;
+  }
+  if (item?.category === ITEM_CATEGORIES.ARMOR) {
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3L19 6V12C19 16.5 15.8 19.8 12 21C8.2 19.8 5 16.5 5 12V6L12 3Z" stroke="#60a5fa" stroke-width="2" fill="rgba(96,165,250,0.16)"/></svg>`;
+  }
+  if (item?.category === ITEM_CATEGORIES.CORE) {
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polygon points="12,3 20,12 12,21 4,12" stroke="#c084fc" stroke-width="2" fill="rgba(192,132,252,0.18)"/><circle cx="12" cy="12" r="2.8" fill="#c084fc"/></svg>`;
+  }
+  if (grp === WAREHOUSE_GROUPS.WEAPON) {
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 18L17 5M14 5H19V10M7 15L10 18" stroke="#f97316" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  if (grp === WAREHOUSE_GROUPS.TACTICAL) {
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="#10b981" stroke-width="1.8" stroke-dasharray="3 2"/><circle cx="12" cy="12" r="3" stroke="#34d399" stroke-width="1.8"/><path d="M12 12L17.5 6.5" stroke="#34d399" stroke-width="2" stroke-linecap="round"/></svg>`;
+  }
+  if (item?.category === ITEM_CATEGORIES.OUTFIT) {
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 4L12 7L16 4L20 8L17 11V20H7V11L4 8L8 4Z" stroke="#f472b6" stroke-width="1.8" fill="rgba(244,114,182,0.16)" stroke-linejoin="round"/></svg>`;
+  }
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="3" stroke="#fbbf24" stroke-width="1.8" fill="rgba(251,191,36,0.15)"/><path d="M12 9V15M9 12H15" stroke="#fbbf24" stroke-width="2" stroke-linecap="round"/></svg>`;
+}
+
 export const STARTER_ITEMS = [
   {
     id: 'item_core_engine_01',
@@ -64,7 +140,7 @@ export const STARTER_ITEMS = [
     category: ITEM_CATEGORIES.ENGINE,
     tags: ['核心必装', '动力'],
     description: '制式舰用推进引擎，提供稳定的机动性与反潜航速支持。',
-    quantity: 4,
+    quantity: 8,
     level: 0,
     bonuses: [
       { stat: 'evasion', layer: 'baseAdd', value: 12 },
@@ -77,7 +153,7 @@ export const STARTER_ITEMS = [
     category: ITEM_CATEGORIES.ARMOR,
     tags: ['核心必装', '防护'],
     description: '均衡型舰体装甲结构，提升装甲防护、耐久上限与防空结构强度。',
-    quantity: 4,
+    quantity: 8,
     level: 0,
     bonuses: [
       { stat: 'armor', layer: 'baseAdd', value: 10 },
@@ -91,7 +167,7 @@ export const STARTER_ITEMS = [
     category: ITEM_CATEGORIES.CORE,
     tags: ['核心必装', '中枢'],
     description: '舰载作战控制核心，强化火力、雷击、侦查与检定基准精度。',
-    quantity: 4,
+    quantity: 8,
     level: 0,
     bonuses: [
       { stat: 'firepower', layer: 'baseAdd', value: 8 },
@@ -102,29 +178,31 @@ export const STARTER_ITEMS = [
   },
   {
     id: 'item_ext_01',
-    name: '双联装高平两用炮模块',
+    name: '高爆双联主炮',
     category: ITEM_CATEGORIES.EXTENSION,
-    tags: ['通用扩展', '火控防空'],
-    description: '可装入任意自定义槽位的扩展武装，兼顾火力、防空与自定义「射程延伸」词条。',
+    subGroup: 'weapon',
+    tags: ['主战武器', '主炮'],
+    description: '高初速双联装主炮模块，兼顾主力炮击火力、防空与射程延伸。',
     quantity: 3,
     level: 0,
     bonuses: [
-      { stat: 'firepower', layer: 'baseAdd', value: 12 },
-      { stat: 'aa', layer: 'baseAdd', value: 10 },
+      { stat: 'firepower', layer: 'baseAdd', value: 14 },
+      { stat: 'aa', layer: 'baseAdd', value: 8 },
       { stat: '射程延伸', layer: 'baseAdd', value: 2 },
     ],
   },
   {
     id: 'item_ext_02',
-    name: '主动声呐与夜战观瞄模块',
+    name: '主动声呐阵列',
     category: ITEM_CATEGORIES.EXTENSION,
-    tags: ['通用扩展', '反潜侦查'],
-    description: '可装入任意自定义槽位的特种观瞄模块，提升侦查、反潜并附带「夜战修正」扩展属性。',
+    subGroup: 'tactical',
+    tags: ['战术辅助', '声呐', '反潜'],
+    description: '高灵敏度水下声呐与夜战观瞄模块，大幅强化反潜、侦查与夜战修正。',
     quantity: 3,
     level: 0,
     bonuses: [
       { stat: 'recon', layer: 'baseAdd', value: 10 },
-      { stat: 'asw', layer: 'baseAdd', value: 12 },
+      { stat: 'asw', layer: 'baseAdd', value: 14 },
       { stat: '夜战修正', layer: 'baseAdd', value: 8 },
       { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
     ],
@@ -135,7 +213,7 @@ export const STARTER_ITEMS = [
     category: ITEM_CATEGORIES.OUTFIT,
     tags: ['服装', '日常'],
     description: '剪裁轻便的港区执勤常服，提供机动与侦查小幅加成。',
-    quantity: 3,
+    quantity: 4,
     level: 0,
     bonuses: [
       { stat: 'evasion', layer: 'baseAdd', value: 6 },
@@ -148,7 +226,7 @@ export const STARTER_ITEMS = [
     category: ITEM_CATEGORIES.CONSUMABLE,
     tags: ['消耗品', '恢复'],
     description: '现场紧急损管物资，使用后恢复 25 点耐久与 10 点士气。',
-    quantity: 5,
+    quantity: 6,
     level: 0,
     bonuses: [
       { stat: 'hp', layer: 'baseAdd', value: 25 },
@@ -161,11 +239,164 @@ export const STARTER_ITEMS = [
     category: ITEM_CATEGORIES.CONSUMABLE,
     tags: ['消耗品', '补给'],
     description: '便携式高能配给，使用后恢复 30 点行动点 AP 与 15 点士气。',
-    quantity: 5,
+    quantity: 6,
     level: 0,
     bonuses: [
       { stat: 'ap', layer: 'baseAdd', value: 30 },
       { stat: 'morale', layer: 'baseAdd', value: 15 },
+    ],
+  },
+];
+
+/**
+ * Full 16-Piece Starter Content Pack Equipment Catalog (covering Core 3-piece,
+ * Main Weapons, Tactical Support, and Outfits).
+ * Auto-seeded on fresh saves and merge-importable without overwriting existing saves.
+ */
+export const STARTER_PACK_EQUIPMENT_16 = [
+  ...STARTER_ITEMS.filter((i) => i.category !== ITEM_CATEGORIES.CONSUMABLE),
+  {
+    id: 'item_pack_engine_turbo',
+    name: '涡轮增压引擎',
+    category: ITEM_CATEGORIES.ENGINE,
+    tags: ['核心必装', '高机动'],
+    description: '高出力增压轮机，为驱逐/轻巡提供爆发机动与迂回优势。',
+    quantity: 2,
+    level: 0,
+    bonuses: [
+      { stat: 'evasion', layer: 'baseAdd', value: 18 },
+      { stat: 'torpedo', layer: 'baseAdd', value: 6 },
+    ],
+  },
+  {
+    id: 'item_pack_armor_sloped',
+    name: '倾角装甲板',
+    category: ITEM_CATEGORIES.ARMOR,
+    tags: ['核心必装', '重甲防护'],
+    description: '大倾角复合跳弹装甲，为战列与重巡显著抬升装甲与耐久上限。',
+    quantity: 2,
+    level: 0,
+    bonuses: [
+      { stat: 'armor', layer: 'baseAdd', value: 18 },
+      { stat: 'maxHp', layer: 'baseAdd', value: 16 },
+    ],
+  },
+  {
+    id: 'item_pack_core_tactical',
+    name: '精密战术火控核心',
+    category: ITEM_CATEGORIES.CORE,
+    tags: ['核心必装', '精密火控'],
+    description: '多目标弹道解算中枢，提升火力、侦查并提供 +2 检定精度修正。',
+    quantity: 2,
+    level: 0,
+    bonuses: [
+      { stat: 'firepower', layer: 'baseAdd', value: 12 },
+      { stat: 'recon', layer: 'baseAdd', value: 12 },
+      { stat: 'checkBonus', layer: 'flatFinal', value: 2 },
+    ],
+  },
+  {
+    id: 'item_pack_wpn_oxygen_torp',
+    name: '九三式氧雷',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'weapon',
+    tags: ['主战武器', '鱼雷'],
+    description: '高航速无航迹重型酸素鱼雷，极大幅度强化雷击爆发与破甲倍率。',
+    quantity: 2,
+    level: 0,
+    bonuses: [
+      { stat: 'torpedo', layer: 'baseAdd', value: 20 },
+      { stat: 'evasion', layer: 'baseAdd', value: 4 },
+      { stat: '雷击穿透', layer: 'baseAdd', value: 10 },
+    ],
+  },
+  {
+    id: 'item_pack_wpn_triple_gun',
+    name: '超重三联装主炮',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'weapon',
+    tags: ['主战武器', '主炮', '重炮'],
+    description: '主力舰级超重穿甲三联主炮，正面轰击伤害惊人。',
+    quantity: 2,
+    level: 0,
+    bonuses: [
+      { stat: 'firepower', layer: 'baseAdd', value: 22 },
+      { stat: 'armor', layer: 'baseAdd', value: 4 },
+      { stat: '穿甲修正', layer: 'baseAdd', value: 12 },
+    ],
+  },
+  {
+    id: 'item_pack_wpn_dive_bomber',
+    name: '舰载俯冲轰炸机中队',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'weapon',
+    tags: ['主战武器', '舰载机', '航母'],
+    description: '精锐舰载俯冲轰炸中队，大幅提升航母空袭火力与侦查视野。',
+    quantity: 2,
+    level: 0,
+    bonuses: [
+      { stat: 'firepower', layer: 'baseAdd', value: 16 },
+      { stat: 'recon', layer: 'baseAdd', value: 14 },
+      { stat: '制空值', layer: 'baseAdd', value: 18 },
+    ],
+  },
+  {
+    id: 'item_pack_wpn_torp_bomber',
+    name: '舰载鱼雷攻击机中队',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'weapon',
+    tags: ['主战武器', '舰载机', '鱼雷'],
+    description: '低空贴海突防鱼雷机编队，同时增强雷击、反潜与空袭压制。',
+    quantity: 2,
+    level: 0,
+    bonuses: [
+      { stat: 'torpedo', layer: 'baseAdd', value: 14 },
+      { stat: 'asw', layer: 'baseAdd', value: 10 },
+      { stat: 'recon', layer: 'baseAdd', value: 8 },
+    ],
+  },
+  {
+    id: 'item_pack_tac_aa_radar',
+    name: '对空电探',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'tactical',
+    tags: ['战术辅助', '雷达', '防空'],
+    description: '广域相控对空电探，大幅提升舰队防空拦截网与雷达侦查。',
+    quantity: 2,
+    level: 0,
+    bonuses: [
+      { stat: 'aa', layer: 'baseAdd', value: 18 },
+      { stat: 'recon', layer: 'baseAdd', value: 12 },
+      { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
+    ],
+  },
+  {
+    id: 'item_pack_tac_optical_radar',
+    name: '光学测距与观瞄雷达',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'tactical',
+    tags: ['战术辅助', '雷达', '火控'],
+    description: '全天候火控测距观瞄仪，提升扫描命中与全队火力命中修正。',
+    quantity: 2,
+    level: 0,
+    bonuses: [
+      { stat: 'recon', layer: 'baseAdd', value: 14 },
+      { stat: 'firepower', layer: 'baseAdd', value: 8 },
+      { stat: 'checkBonus', layer: 'flatFinal', value: 2 },
+    ],
+  },
+  {
+    id: 'item_pack_outfit_banquet',
+    name: '港区礼装宴会服',
+    category: ITEM_CATEGORIES.OUTFIT,
+    tags: ['服装', '礼装'],
+    description: '优雅精致的港区庆典礼服，穿戴后提升侦查、机动与日常互动风采。',
+    quantity: 2,
+    level: 0,
+    bonuses: [
+      { stat: 'recon', layer: 'baseAdd', value: 10 },
+      { stat: 'evasion', layer: 'baseAdd', value: 8 },
+      { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
     ],
   },
 ];
@@ -406,15 +637,57 @@ export class InventorySystem {
   // Global Warehouse Items CRUD & Enhancement
   // ------------------------------------------------------------
 
-  listItems({ category = null, tag = null, enhanceableOnly = false } = {}) {
+  listItems({
+    category = null,
+    warehouseGroup = null,
+    equipStatus = null, // 'all' | 'idle' | 'equipped'
+    tag = null,
+    enhanceableOnly = false,
+  } = {}) {
     const out = [];
     for (const item of this._items.values()) {
       if (category && item.category !== category) continue;
+      if (warehouseGroup && warehouseGroup !== WAREHOUSE_GROUPS.ALL) {
+        if (classifyItemWarehouseGroup(item) !== warehouseGroup) continue;
+      }
       if (tag && !(item.tags || []).includes(tag)) continue;
       if (enhanceableOnly && item.category === ITEM_CATEGORIES.CONSUMABLE) continue;
+      if (equipStatus === 'equipped' || equipStatus === 'idle') {
+        const worn = this.getWearersOfItem(item.id).length > 0;
+        if (equipStatus === 'equipped' && !worn) continue;
+        if (equipStatus === 'idle' && worn) continue;
+      }
       out.push(deepClone(item));
     }
-    return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    return out.sort((a, b) => (b.level || 0) - (a.level || 0) || (b.updatedAt || 0) - (a.updatedAt || 0));
+  }
+
+  getIdleUnenhancedItems() {
+    const list = [];
+    for (const item of this._items.values()) {
+      if (item.category === ITEM_CATEGORIES.CONSUMABLE) continue;
+      if ((Number(item.level) || 0) > 0) continue;
+      if (this.getWearersOfItem(item.id).length > 0) continue;
+      list.push(deepClone(item));
+    }
+    return list;
+  }
+
+  async cleanupIdleUnenhancedItems() {
+    const targets = this.getIdleUnenhancedItems();
+    if (targets.length === 0) return { removedCount: 0, removedNames: [] };
+    for (const t of targets) {
+      this._items.delete(t.id);
+    }
+    await this.persist();
+    this._emit('inventory:cleaned', {
+      removedCount: targets.length,
+      removedNames: targets.map((t) => t.name),
+    });
+    return {
+      removedCount: targets.length,
+      removedNames: targets.map((t) => t.name),
+    };
   }
 
   getItem(itemId) {
@@ -450,6 +723,7 @@ export class InventorySystem {
       id,
       name,
       category,
+      ...(def.subGroup ? { subGroup: String(def.subGroup) } : {}),
       tags: Array.isArray(def.tags)
         ? def.tags.map((t) => String(t).trim()).filter(Boolean)
         : String(def.tags || '')

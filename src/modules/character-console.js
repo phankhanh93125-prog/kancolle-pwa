@@ -23,6 +23,10 @@ import {
 import {
   ITEM_CATEGORIES,
   ITEM_CATEGORY_LABELS,
+  WAREHOUSE_GROUPS,
+  WAREHOUSE_GROUP_DEFS,
+  classifyItemWarehouseGroup,
+  getItemIconSvg,
 } from '../core/inventory-system.js';
 import {
   CORE_CURRENCY_IDS,
@@ -224,7 +228,14 @@ async function equipStarterCorePartsIfPresent(inventory, charId, includeOutfit =
 /**
  * Hydrate persisted naval shipgirl roster from IndexedDB into EntitySystem on app boot.
  */
-export async function hydrateCharacterRoster({ storage, entities, inventory, statRules, commander = null }) {
+export async function hydrateCharacterRoster({
+  storage,
+  entities,
+  inventory,
+  statRules,
+  commander = null,
+  personalityPool = null,
+}) {
   const scope = storage.namespace(CHAR_STORAGE_NS);
   const saved = await scope.getLarge(ROSTER_KEY, null);
   const now = Date.now();
@@ -235,6 +246,9 @@ export async function hydrateCharacterRoster({ storage, entities, inventory, sta
         const reg = entities.register({ ...ch, kind: 'character' });
         if (statRules && typeof statRules.ensureShipProgression === 'function') {
           statRules.ensureShipProgression(reg);
+        }
+        if (personalityPool && typeof personalityPool.ensurePersonalityOnEntity === 'function') {
+          personalityPool.ensurePersonalityOnEntity(reg);
         }
       }
     }
@@ -263,6 +277,9 @@ export async function hydrateCharacterRoster({ storage, entities, inventory, sta
     const reg = entities.register(tpl);
     if (statRules && typeof statRules.ensureShipProgression === 'function') {
       statRules.ensureShipProgression(reg);
+    }
+    if (personalityPool && typeof personalityPool.ensurePersonalityOnEntity === 'function') {
+      personalityPool.ensurePersonalityOnEntity(reg);
     }
   }
   await equipStarterCorePartsIfPresent(inventory, 'char_template_01', true);
@@ -372,11 +389,126 @@ let consoleState = {
   activeCharacterId: null,
   activeTab: 'overview',
   itemCategoryFilter: 'all',
+  warehouseGroup: WAREHOUSE_GROUPS.ALL,
+  warehouseEquipStatus: 'all',
+  expandedWarehouseItemId: null,
   logCategoryFilter: 'all',
   tabsCtrl: null,
   avatarUrlCache: new Map(),
   unsubs: [],
 };
+
+function openPersonalityPoolSheet() {
+  const { personalityPool, uiKit } = consoleState.context || {};
+  if (!personalityPool) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'module-stack';
+  let activePoolTab = 'primary';
+
+  const renderPool = () => {
+    const primaryList = personalityPool.listPrimary();
+    const secondaryList = personalityPool.listSecondary();
+    const isPri = activePoolTab === 'primary';
+    const rows = isPri ? primaryList : secondaryList;
+
+    wrap.innerHTML = `
+      <div class="lab-btn-grid">
+        <button type="button" class="${isPri ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" data-pp-tab="primary">
+          主性格池 (${primaryList.length})
+        </button>
+        <button type="button" class="${!isPri ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" data-pp-tab="secondary">
+          副特质/口癖池 (${secondaryList.length})
+        </button>
+      </div>
+
+      <div class="surface-card lab-stack-sm" style="padding:10px;">
+        <strong style="font-size:13px;">+ 新增自定义${isPri ? '主性格' : '副特质/口癖'}词条</strong>
+        <div class="lab-kv-grid">
+          <input id="pp-new-name" class="form-input" type="text" placeholder="${isPri ? '性格名（如：病娇/豪爽）' : '特质名（如：路痴/摄影控）'}">
+          <input id="pp-new-extra" class="form-input" type="text" placeholder="${isPri ? '语气前缀（如：哈哈，）' : '专属口癖短句'}">
+        </div>
+        <input id="pp-new-summary" class="form-input" type="text" placeholder="性格简介描述（可选）">
+        <button type="button" id="btn-pp-add" class="btn-primary uikit-touch-target">添加到${isPri ? '主性格池' : '副特质池'}</button>
+      </div>
+
+      <div class="lab-stack-sm" id="pp-entries-list">
+        ${rows
+          .map(
+            (r) => `
+          <div class="lab-slot-card">
+            <div class="lab-slot-head">
+              <strong>${escapeHtml(r.name)}</strong>
+              <span class="status-badge ${r.builtIn ? 'badge-muted' : 'badge-ok'}">${r.builtIn ? '内置' : '自定义'}</span>
+            </div>
+            <p class="muted-text" style="font-size:11.5px; margin:0;">${escapeHtml(r.summary || '')}</p>
+            ${
+              isPri
+                ? `<span class="cc-stat-sub">语气：${escapeHtml(r.speechPrefix || '—')} … ${escapeHtml(r.speechSuffix || '—')}</span>`
+                : `<span class="cc-stat-sub">口癖：「${escapeHtml(r.catchphrase || '')}」</span>`
+            }
+            ${
+              !r.builtIn
+                ? `<button type="button" class="btn-danger uikit-touch-target" data-pp-del="${escapeHtml(r.id)}" style="margin-top:4px;">删除词条</button>`
+                : ''
+            }
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+    `;
+
+    wrap.querySelectorAll('[data-pp-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        activePoolTab = btn.getAttribute('data-pp-tab');
+        renderPool();
+      });
+    });
+
+    wrap.querySelector('#btn-pp-add').addEventListener('click', async () => {
+      const name = wrap.querySelector('#pp-new-name').value.trim();
+      const extra = wrap.querySelector('#pp-new-extra').value.trim();
+      const summary = wrap.querySelector('#pp-new-summary').value.trim();
+      if (!name) {
+        uiKit.showToast('请输入词条名称', 'warn');
+        return;
+      }
+      try {
+        if (isPri) {
+          await personalityPool.addPrimary({ name, speechPrefix: extra, summary });
+        } else {
+          await personalityPool.addSecondary({ name, catchphrase: extra || `总是忍不住「${name}」呢。`, summary });
+        }
+        uiKit.showToast(`已新增${isPri ? '主性格' : '副特质'}「${name}」`, 'ok');
+        renderPool();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '添加失败', 'warn');
+      }
+    });
+
+    wrap.querySelectorAll('[data-pp-del]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-pp-del');
+        try {
+          if (isPri) await personalityPool.deletePrimary(id);
+          else await personalityPool.deleteSecondary(id);
+          uiKit.showToast('已删除自定义性格词条', 'info');
+          renderPool();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '删除失败', 'warn');
+        }
+      });
+    });
+  };
+
+  renderPool();
+  uiKit.openBottomSheet({
+    title: '本地性格词库管理（主性格 × 副特质）',
+    subtitle: '船坞建造或点击「随机性格」将从此词库自动组合抽取，实现同舰不同性格',
+    content: wrap,
+    actions: [{ id: 'close', label: '完成', tone: 'secondary' }],
+  });
+}
 
 function getCharacters() {
   return consoleState.context?.entities?.list({ kind: 'character' }) || [];
@@ -558,7 +690,7 @@ function openSlotEquipPickerSheet(char, slot) {
 }
 
 function openCharacterEditorSheet(existingChar = null) {
-  const { entities, inventory, assets, uiKit, logs, bus, statRules, commander } = consoleState.context;
+  const { entities, inventory, assets, uiKit, logs, bus, statRules, commander, personalityPool } = consoleState.context;
   const isEdit = Boolean(existingChar);
   const rulesCfg = statRules.getConfig();
   const initialAffBonus = commander ? commander.getInitialAffinityBonus() : 0;
@@ -566,6 +698,11 @@ function openCharacterEditorSheet(existingChar = null) {
     ? statRules.ensureShipProgression(existingChar)
     : { level: 1, exp: 0, maxExp: statRules.getShipMaxExp(1) };
   let originalLevel = initialProg.level;
+  const initialCombo = existingChar
+    ? existingChar.meta?.personalityCombo || (personalityPool ? personalityPool.ensurePersonalityOnEntity(existingChar) : null)
+    : personalityPool
+    ? personalityPool.rollCombination()
+    : null;
 
   const draft = existingChar
     ? {
@@ -573,8 +710,9 @@ function openCharacterEditorSheet(existingChar = null) {
         shipType: existingChar.meta?.shipType || '驱逐舰',
         roleTag: existingChar.meta?.roleTag || '',
         avatarAssetId: existingChar.meta?.avatarAssetId || null,
-        personality: existingChar.meta?.personality || '',
-        speechHabit: existingChar.meta?.speechHabit || '',
+        personalityCombo: initialCombo,
+        personality: existingChar.meta?.personality || initialCombo?.description || '',
+        speechHabit: existingChar.meta?.speechHabit || initialCombo?.speechHabit || '',
         stats: {
           ...existingChar.stats,
           level: initialProg.level,
@@ -585,10 +723,11 @@ function openCharacterEditorSheet(existingChar = null) {
     : {
         name: '',
         shipType: '驱逐舰',
-        roleTag: '新编舰船',
+        roleTag: initialCombo ? `新编舰船 · ${initialCombo.comboLabel}` : '新编舰船',
         avatarAssetId: null,
-        personality: '',
-        speechHabit: '',
+        personalityCombo: initialCombo,
+        personality: initialCombo?.description || '',
+        speechHabit: initialCombo?.speechHabit || '',
         stats: {
           maxHp: 90,
           hp: 90,
@@ -859,6 +998,7 @@ function openCharacterEditorSheet(existingChar = null) {
               shipType: draft.shipType,
               roleTag: draft.roleTag || draft.shipType,
               avatarAssetId: draft.avatarAssetId,
+              personalityCombo: draft.personalityCombo || null,
               personality: draft.personality,
               speechHabit: draft.speechHabit,
             },
@@ -1807,131 +1947,220 @@ function renderOverviewTab(host, char) {
 }
 
 function renderEquipmentTab(host, char) {
-  const { inventory, uiKit } = consoleState.context;
+  const { inventory, logs, uiKit } = consoleState.context;
 
   // Card 1: Full Slot Manager (Core 3 + Outfit + Freeform Custom)
   host.appendChild(createSlotsSection(char, { compact: false }));
 
-  // Card 2: Global Item Warehouse
+  // Card 2: Compact Categorized Global Item Warehouse
+  const allItems = inventory.listItems();
   const items = inventory.listItems({
-    category: consoleState.itemCategoryFilter === 'all' ? null : consoleState.itemCategoryFilter,
+    warehouseGroup: consoleState.warehouseGroup,
+    equipStatus: consoleState.warehouseEquipStatus,
   });
+  const idleCleanable = inventory.getIdleUnenhancedItems();
+
+  const groupCounts = { [WAREHOUSE_GROUPS.ALL]: allItems.length };
+  for (const g of WAREHOUSE_GROUP_DEFS) {
+    if (g.id === WAREHOUSE_GROUPS.ALL) continue;
+    groupCounts[g.id] = allItems.filter((it) => classifyItemWarehouseGroup(it) === g.id).length;
+  }
 
   const warehouseCard = document.createElement('section');
   warehouseCard.className = 'surface-card lab-stack-sm';
+  warehouseCard.id = 'cc-warehouse-card';
   warehouseCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">全局仓库（${items.length}）</h2>
-      <button type="button" id="btn-cc-new-item" class="btn-primary uikit-touch-target" style="padding:6px 12px;font-size:12.5px;">+ 新建装备/部件</button>
+      <h2 class="section-title">分类装备仓库（${items.length}/${allItems.length}）</h2>
+      <button type="button" id="btn-cc-new-item" class="btn-primary uikit-touch-target" style="padding:6px 12px;font-size:12.5px;">+ 新建装备</button>
     </div>
-    <div class="chip-row" id="cc-item-filters">
-      ${[
-        { id: 'all', label: '全部' },
-        { id: ITEM_CATEGORIES.ENGINE, label: '引擎' },
-        { id: ITEM_CATEGORIES.ARMOR, label: '装甲' },
-        { id: ITEM_CATEGORIES.CORE, label: '核心' },
-        { id: ITEM_CATEGORIES.EXTENSION, label: '通用扩展' },
-        { id: ITEM_CATEGORIES.OUTFIT, label: '服装' },
-        { id: ITEM_CATEGORIES.CONSUMABLE, label: '消耗品' },
-      ]
-        .map(
-          (f) => `
-        <button type="button" class="preset-chip" data-item-filter="${f.id}"
-          style="${consoleState.itemCategoryFilter === f.id ? 'border-color:var(--accent);color:var(--text-primary);background:var(--accent-soft);' : ''}">
-          ${escapeHtml(f.label)}
+
+    <div class="wh-filter-strip" id="cc-item-filters">
+      ${WAREHOUSE_GROUP_DEFS.map(
+        (g) => `
+        <button type="button" class="wh-pill-btn ${consoleState.warehouseGroup === g.id ? 'is-active' : ''}" data-cc-wh-group="${g.id}">
+          ${escapeHtml(g.label)} (${groupCounts[g.id] || 0})
         </button>
       `
-        )
-        .join('')}
+      ).join('')}
     </div>
-    <div class="lab-stack-sm" id="cc-warehouse-list"></div>
+
+    <div class="wh-status-toolbar">
+      <div class="wh-status-pills">
+        ${[
+          { id: 'all', label: '全部状态' },
+          { id: 'idle', label: '闲置中' },
+          { id: 'equipped', label: '已装备' },
+        ]
+          .map(
+            (st) => `
+          <button type="button" class="wh-pill-btn is-sm ${consoleState.warehouseEquipStatus === st.id ? 'is-active' : ''}" data-cc-wh-status="${st.id}">
+            ${escapeHtml(st.label)}
+          </button>
+        `
+          )
+          .join('')}
+      </div>
+      <button type="button" id="btn-cc-batch-clean" class="btn-danger uikit-touch-target wh-clean-btn" ${idleCleanable.length === 0 ? 'disabled' : ''}>
+        清理闲置+0 (${idleCleanable.length})
+      </button>
+    </div>
+
+    <div class="wh-compact-list" id="cc-warehouse-list"></div>
   `;
 
   warehouseCard.querySelector('#btn-cc-new-item').addEventListener('click', () => openItemEditorSheet(null));
-  warehouseCard.querySelectorAll('[data-item-filter]').forEach((btn) => {
+  warehouseCard.querySelectorAll('[data-cc-wh-group]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      consoleState.itemCategoryFilter = btn.getAttribute('data-item-filter');
+      consoleState.warehouseGroup = btn.getAttribute('data-cc-wh-group');
+      renderConsole();
+    });
+  });
+  warehouseCard.querySelectorAll('[data-cc-wh-status]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      consoleState.warehouseEquipStatus = btn.getAttribute('data-cc-wh-status');
       renderConsole();
     });
   });
 
+  warehouseCard.querySelector('#btn-cc-batch-clean').addEventListener('click', async () => {
+    const cleanTargets = inventory.getIdleUnenhancedItems();
+    if (cleanTargets.length === 0) return;
+    const ok = await uiKit.confirmDialog({
+      title: `批量清理闲置未强化装备（${cleanTargets.length} 件）`,
+      message: '将批量清理所有未装备且强化等级为 +0 的装备（消耗品与已装备/已强化装备不受影响），确定继续吗？',
+      confirmLabel: `确认清理 ${cleanTargets.length} 件`,
+      tone: 'danger',
+    });
+    if (!ok) return;
+    const res = await inventory.cleanupIdleUnenhancedItems();
+    logs.add({
+      category: LOG_CATEGORIES.EQUIPMENT,
+      title: `批量清理闲置未强化装备（${res.removedCount} 件）`,
+      detail: res.removedNames.join('、'),
+    });
+    uiKit.showToast(`已清理 ${res.removedCount} 件闲置未强化装备`, 'ok');
+    await renderConsole();
+  });
+
   const listEl = warehouseCard.querySelector('#cc-warehouse-list');
   if (items.length === 0) {
-    listEl.innerHTML = '<p class="muted-text">当前分类暂无物品，可新建物品或前往「物资与工坊台」获取。</p>';
+    listEl.innerHTML = '<p class="muted-text">当前分类与筛选条件下暂无物品。</p>';
   } else {
     for (const item of items) {
       const equippedSlotId = inventory.getEquippedSlotOfItem(char.id, item.id);
       const isEquipped = Boolean(equippedSlotId);
       const isConsumable = item.category === ITEM_CATEGORIES.CONSUMABLE;
       const equippedSlotObj = equippedSlotId ? inventory.getCharacterSlot(char.id, equippedSlotId) : null;
+      const wearers = inventory.getWearersOfItem(item.id);
+      const isExpanded = consoleState.expandedWarehouseItemId === item.id;
+      const lv = Number(item.level) || 0;
 
       const card = document.createElement('div');
-      card.className = `cc-item-card ${isEquipped ? 'is-equipped' : ''}`;
+      card.className = `wh-compact-card ${isExpanded ? 'is-expanded' : ''} ${wearers.length ? 'is-equipped' : ''}`;
       card.dataset.itemId = item.id;
       card.innerHTML = `
-        <div class="cc-item-head">
-          <div style="min-width:0;">
-            <strong>${escapeHtml(formatItemTitle(item))}</strong>
-            <div class="cc-badge-row" style="margin-top:4px;">
-              <span class="status-badge badge-muted">${escapeHtml(ITEM_CATEGORY_LABELS[item.category] || item.category)}</span>
-              ${isConsumable ? `<span class="status-badge badge-warn">库存 ×${item.quantity}</span>` : ''}
-              ${isEquipped ? `<span class="status-badge badge-ok">已装：${escapeHtml(equippedSlotObj?.label || equippedSlotId)}</span>` : ''}
+        <button type="button" class="wh-compact-header" data-cc-wh-toggle="${escapeHtml(item.id)}" aria-expanded="${isExpanded ? 'true' : 'false'}">
+          <span class="wh-item-ico">${getItemIconSvg(item, { size: 20 })}</span>
+          <div class="wh-compact-main">
+            <div class="wh-compact-title-row">
+              <strong class="wh-item-name">${escapeHtml(item.name)}</strong>
+              ${lv > 0 ? `<span class="wh-lv-pill">+${lv}</span>` : ''}
+              ${isConsumable ? `<span class="wh-qty-pill">×${item.quantity}</span>` : ''}
+            </div>
+            <div class="wh-compact-stat-row">
+              ${(item.bonuses || [])
+                .slice(0, 3)
+                .map((b) => `<span class="wh-stat-mini">${escapeHtml(formatBonusChip(b))}</span>`)
+                .join('')}
             </div>
           </div>
-        </div>
-        ${item.description ? `<p class="muted-text" style="font-size:12.5px;">${escapeHtml(item.description)}</p>` : ''}
-        <div class="ns-chip-list">
-          ${
-            (item.bonuses || []).length > 0
-              ? item.bonuses.map((b) => `<span class="ns-chip">${escapeHtml(formatBonusChip(b))}</span>`).join('')
-              : '<span class="muted-text" style="font-size:11.5px;">无属性词条</span>'
-          }
-        </div>
-        <div class="cc-item-actions">
-          <button type="button" class="${isEquipped ? 'btn-secondary' : 'btn-primary'}" data-act="primary" ${isConsumable && item.quantity <= 0 ? 'disabled' : ''}>
-            ${isConsumable ? '使用消耗品' : isEquipped ? '卸下部件' : '一键装入'}
-          </button>
-          <button type="button" class="btn-secondary" data-act="edit">调词条</button>
-          <button type="button" class="btn-danger" data-act="delete">删除</button>
-        </div>
+          <div class="wh-compact-right">
+            <span class="status-badge ${wearers.length ? 'badge-ok' : 'badge-muted'} wh-wearer-badge">
+              ${wearers.length ? escapeHtml(wearers[0].name.slice(0, 6)) : '闲置'}
+            </span>
+            <span class="wh-chevron" aria-hidden="true">${isExpanded ? '▴' : '▾'}</span>
+          </div>
+        </button>
+
+        ${
+          isExpanded
+            ? `
+          <div class="wh-compact-detail">
+            <div class="cc-badge-row">
+              <span class="status-badge badge-muted">${escapeHtml(ITEM_CATEGORY_LABELS[item.category] || item.category)}</span>
+              ${isEquipped ? `<span class="status-badge badge-ok">当前已装：${escapeHtml(equippedSlotObj?.label || equippedSlotId)}</span>` : ''}
+            </div>
+            ${item.description ? `<p class="muted-text" style="font-size:12px; margin:0;">${escapeHtml(item.description)}</p>` : ''}
+            <div class="ns-chip-list">
+              ${
+                (item.bonuses || []).length > 0
+                  ? item.bonuses.map((b) => `<span class="ns-chip">${escapeHtml(formatBonusChip(b))}</span>`).join('')
+                  : '<span class="muted-text" style="font-size:11.5px;">无属性词条</span>'
+              }
+            </div>
+            <div class="cc-item-actions">
+              <button type="button" class="${isEquipped ? 'btn-secondary' : 'btn-primary'} uikit-touch-target" data-act="primary" ${isConsumable && item.quantity <= 0 ? 'disabled' : ''}>
+                ${isConsumable ? '使用消耗品' : isEquipped ? '卸下部件' : '一键装入'}
+              </button>
+              <button type="button" class="btn-secondary uikit-touch-target" data-act="edit">调词条</button>
+              <button type="button" class="btn-danger uikit-touch-target" data-act="delete">删除</button>
+            </div>
+          </div>
+        `
+            : ''
+        }
       `;
 
-      card.querySelector('[data-act="primary"]').addEventListener('click', async () => {
-        try {
-          if (isConsumable) {
-            await inventory.useConsumable(char.id, item.id);
-            await saveRosterNow();
-            uiKit.showToast(`已对 ${char.name} 使用「${item.name}」`, 'ok');
-          } else if (isEquipped) {
-            await inventory.unequipSlot(char.id, equippedSlotId);
-            await saveRosterNow();
-            uiKit.showToast(`已卸下「${item.name}」`, 'ok');
-          } else {
-            const res = await inventory.equipItem(char.id, null, item.id);
-            await saveRosterNow();
-            uiKit.showToast(`已为 ${char.name} 装入「${item.name}」（${res.slotLabel}）`, 'ok');
+      card.querySelector('[data-cc-wh-toggle]').addEventListener('click', () => {
+        consoleState.expandedWarehouseItemId = isExpanded ? null : item.id;
+        renderConsole();
+      });
+
+      const primaryBtn = card.querySelector('[data-act="primary"]');
+      if (primaryBtn) {
+        primaryBtn.addEventListener('click', async () => {
+          try {
+            if (isConsumable) {
+              await inventory.useConsumable(char.id, item.id);
+              await saveRosterNow();
+              uiKit.showToast(`已对 ${char.name} 使用「${item.name}」`, 'ok');
+            } else if (isEquipped) {
+              await inventory.unequipSlot(char.id, equippedSlotId);
+              await saveRosterNow();
+              uiKit.showToast(`已卸下「${item.name}」`, 'ok');
+            } else {
+              const res = await inventory.equipItem(char.id, null, item.id);
+              await saveRosterNow();
+              uiKit.showToast(`已为 ${char.name} 装入「${item.name}」（${res.slotLabel}）`, 'ok');
+            }
+            await renderConsole();
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '操作失败', 'error');
           }
-          await renderConsole();
-        } catch (err) {
-          uiKit.showToast(err instanceof Error ? err.message : '操作失败', 'error');
-        }
-      });
-
-      card.querySelector('[data-act="edit"]').addEventListener('click', () => openItemEditorSheet(item));
-
-      card.querySelector('[data-act="delete"]').addEventListener('click', async () => {
-        const ok = await uiKit.confirmDialog({
-          title: `删除物品「${item.name}」`,
-          message: '确认从仓库永久删除该物品吗？若角色正在穿戴，将自动卸下并重算属性。',
-          confirmLabel: '确认删除',
-          tone: 'danger',
         });
-        if (!ok) return;
-        await inventory.deleteItem(item.id);
-        await saveRosterNow();
-        uiKit.showToast(`已删除物品：${item.name}`, 'ok');
-        await renderConsole();
-      });
+      }
+
+      const editBtn = card.querySelector('[data-act="edit"]');
+      if (editBtn) editBtn.addEventListener('click', () => openItemEditorSheet(item));
+
+      const delBtn = card.querySelector('[data-act="delete"]');
+      if (delBtn) {
+        delBtn.addEventListener('click', async () => {
+          const ok = await uiKit.confirmDialog({
+            title: `删除物品「${item.name}」`,
+            message: '确认从仓库永久删除该物品吗？若角色正在穿戴，将自动卸下并重算属性。',
+            confirmLabel: '确认删除',
+            tone: 'danger',
+          });
+          if (!ok) return;
+          await inventory.deleteItem(item.id);
+          await saveRosterNow();
+          consoleState.expandedWarehouseItemId = null;
+          uiKit.showToast(`已删除物品：${item.name}`, 'ok');
+          await renderConsole();
+        });
+      }
 
       listEl.appendChild(card);
     }
@@ -2121,6 +2350,7 @@ async function renderConsole() {
     buildings,
     formation,
     interaction,
+    personalityPool,
     logs,
     uiKit,
   } = consoleState.context;
@@ -2130,6 +2360,7 @@ async function renderConsole() {
 
   const avatarUrl = await resolveAvatarUrl(char);
   const prog = statRules.ensureShipProgression(char);
+  const combo = personalityPool ? personalityPool.ensurePersonalityOnEntity(char) : char.meta?.personalityCombo || null;
   const effStats = entities.getEffectiveStats(char.id, { round: 'round' });
   const eqBonuses = inventory.getCharacterEquipmentBonuses(char.id);
   const overallScore = statRules.computeOverallScore(effStats, eqBonuses.checkBonus);
@@ -2194,7 +2425,7 @@ async function renderConsole() {
   rosterStrip.appendChild(addCharBtn);
   root.appendChild(rosterStrip);
 
-  // 2. Refined Top Core Character Card (Avatar + Class SVG + Global Status + Inline Quick Actions)
+  // 2. Refined Top Core Character Card (Avatar + Class SVG + Personality Combo + Global Status + Inline Quick Actions)
   const heroCard = document.createElement('section');
   heroCard.className = 'surface-card lab-stack-sm';
   heroCard.id = 'cc-hero-card';
@@ -2210,6 +2441,11 @@ async function renderConsole() {
         </div>
         <div class="cc-badge-row" id="cc-global-status-badges">
           <span class="status-badge badge-ok" id="cc-ship-type-badge">${escapeHtml(char.meta?.shipType || classProfile.fullName)}</span>
+          ${
+            combo
+              ? `<span class="status-badge badge-warn" id="cc-personality-combo-badge">性格：${escapeHtml(combo.comboLabel)}</span>`
+              : ''
+          }
           <span class="status-badge ${seaworthyInfo.seaworthy ? 'badge-ok' : 'badge-danger'}" id="cc-seaworthy-badge">
             ${seaworthyInfo.seaworthy ? '适航' : '未适航'}
           </span>
@@ -2241,7 +2477,7 @@ async function renderConsole() {
 
     <div id="cc-dynamic-bars" class="lab-stack-sm"></div>
 
-    <!-- Streamlined Inline Quick-Action Bar (Dorm / Secretary / Feed / Edit) -->
+    <!-- Streamlined Inline Quick-Action Bar (Dorm / Secretary / Feed / Edit / Personality) -->
     <div class="lab-btn-grid" id="cc-inline-actions">
       <button type="button" id="btn-cc-toggle-dorm" class="${globalStatus.inDorm ? 'btn-secondary' : 'btn-primary'} uikit-touch-target">
         ${globalStatus.inDorm ? '移出宿舍' : '入住宿舍'}
@@ -2254,6 +2490,12 @@ async function renderConsole() {
       </button>
       <button type="button" id="btn-cc-edit-char" class="btn-secondary uikit-touch-target">
         调级 / 改白值
+      </button>
+      <button type="button" id="btn-cc-reroll-personality" class="btn-secondary uikit-touch-target">
+        重新随机性格
+      </button>
+      <button type="button" id="btn-cc-manage-personality-pool" class="btn-secondary uikit-touch-target">
+        管理性格词库
       </button>
     </div>
 
@@ -2301,6 +2543,27 @@ async function renderConsole() {
   );
 
   // Inline Quick Action Handlers
+  heroCard.querySelector('#btn-cc-reroll-personality').addEventListener('click', async () => {
+    if (!personalityPool) return;
+    const nextCombo = personalityPool.assignRandomPersonality(entities, char.id, { avoidCurrent: true });
+    await saveRosterNow();
+    if (logs) {
+      logs.add({
+        category: LOG_CATEGORIES.CHARACTER,
+        actorId: char.id,
+        actorName: char.name,
+        title: `[${char.name}] 随机刷新性格组合`,
+        detail: `新性格：【${nextCombo.comboLabel}】${nextCombo.speechHabit}`,
+      });
+    }
+    uiKit.showToast(`「${char.name}」新性格：【${nextCombo.comboLabel}】`, 'ok');
+    await renderConsole();
+  });
+
+  heroCard.querySelector('#btn-cc-manage-personality-pool').addEventListener('click', () => {
+    openPersonalityPoolSheet();
+  });
+
   heroCard.querySelector('#btn-cc-toggle-dorm').addEventListener('click', async () => {
     if (!buildings) return;
     try {
@@ -2472,6 +2735,9 @@ export default {
       context.bus.on('inventory:slot-added', () => renderConsole()),
       context.bus.on('inventory:slot-removed', () => renderConsole()),
       context.bus.on('inventory:enhanced', () => renderConsole()),
+      context.bus.on('inventory:cleaned', () => renderConsole()),
+      context.bus.on('personality:rolled', () => renderConsole()),
+      context.bus.on('content:mod-imported', () => renderConsole()),
       context.bus.on('commander:updated', () => renderConsole()),
       context.bus.on('buildings:updated', () => renderConsole()),
       context.bus.on('formation:changed', () => renderConsole()),

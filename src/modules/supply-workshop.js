@@ -15,8 +15,12 @@ import {
   ITEM_CATEGORIES,
   ITEM_CATEGORY_LABELS,
   MAX_ENHANCE_LEVEL,
+  WAREHOUSE_GROUPS,
+  WAREHOUSE_GROUP_DEFS,
+  classifyItemWarehouseGroup,
   computeEnhancedBonuses,
   getEnhanceCost,
+  getItemIconSvg,
 } from '../core/inventory-system.js';
 import { createResourceOverviewBar } from '../core/resource-manager.js';
 import { LOG_CATEGORIES } from '../core/log-system.js';
@@ -257,7 +261,10 @@ function formatBonusSummary(bonuses = []) {
 let workshopState = {
   container: null,
   context: null,
-  activeTab: 'shop',
+  activeTab: 'warehouse', // 'warehouse' | 'shop' | 'gacha'
+  warehouseGroup: WAREHOUSE_GROUPS.ALL,
+  equipStatus: 'all', // 'all' | 'idle' | 'equipped'
+  expandedItemId: null,
   targetCharId: null,
   poolConfig: deepClone(DEFAULT_SUPPLY_POOL),
   lastDrops: [],
@@ -634,76 +641,282 @@ function renderGachaTab(host) {
 }
 
 // ============================================================
-// Tab 3: Equipment & Outfit Enhancement
+// Tab 3 (Default): Compact Categorized Equipment Warehouse & Enhancement
 // ============================================================
 
-function renderEnhanceTab(host) {
-  const { inventory, resources, entities, rootStorage, uiKit } = workshopState.context;
-  const items = inventory.listItems({ enhanceableOnly: true });
+function formatCompactStatTags(bonuses = [], maxCount = 3) {
+  return (bonuses || [])
+    .slice(0, maxCount)
+    .map((b) => {
+      const lbl = STAT_LABELS[b.stat] || b.stat;
+      if (b.layer === 'percentAdd' || b.layer === 'percentMult') {
+        const pct = Math.round((Number(b.value) || 0) * 100);
+        return `${lbl}${pct >= 0 ? `+${pct}%` : `${pct}%`}`;
+      }
+      return `${lbl}${formatSigned(b.value)}`;
+    });
+}
+
+function renderWarehouseEnhanceTab(host) {
+  const { inventory, resources, entities, commander, rootStorage, logs, uiKit } = workshopState.context;
+  const targetChar = getTargetCharacter();
+  const allItems = inventory.listItems();
+  const items = inventory.listItems({
+    warehouseGroup: workshopState.warehouseGroup,
+    equipStatus: workshopState.equipStatus,
+  });
+  const idleCleanable = inventory.getIdleUnenhancedItems();
+
+  // Compute counts per warehouse group for clear overview
+  const groupCounts = { [WAREHOUSE_GROUPS.ALL]: allItems.length };
+  for (const g of WAREHOUSE_GROUP_DEFS) {
+    if (g.id === WAREHOUSE_GROUPS.ALL) continue;
+    groupCounts[g.id] = allItems.filter((it) => classifyItemWarehouseGroup(it) === g.id).length;
+  }
 
   const card = document.createElement('section');
   card.className = 'surface-card lab-stack-sm';
+  card.id = 'sw-warehouse-card';
   card.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">装备与服装强化台（${items.length} 件可强化）</h2>
+      <h2 class="section-title">紧凑分类装备仓库（${items.length}/${allItems.length}）</h2>
+      <span class="status-badge badge-muted">点击条目展开操作</span>
     </div>
-    <p class="muted-text">消耗钢材、铝材与银条对核心部件、扩展装备或服装进行强化，自动按公式提升附带词条并实时刷新穿戴角色面板。</p>
-    <div class="lab-stack-sm" id="sw-enhance-list"></div>
+
+    <!-- Category Tabs -->
+    <div class="wh-filter-strip" id="sw-wh-group-tabs" role="tablist" aria-label="装备分类">
+      ${WAREHOUSE_GROUP_DEFS.map(
+        (g) => `
+        <button type="button" class="wh-pill-btn ${workshopState.warehouseGroup === g.id ? 'is-active' : ''}" data-wh-group="${g.id}">
+          ${escapeHtml(g.label)} (${groupCounts[g.id] || 0})
+        </button>
+      `
+      ).join('')}
+    </div>
+
+    <!-- Status Filter + Batch Cleanup -->
+    <div class="wh-status-toolbar">
+      <div class="wh-status-pills" id="sw-wh-status-filters">
+        ${[
+          { id: 'all', label: '全部状态' },
+          { id: 'idle', label: '闲置中' },
+          { id: 'equipped', label: '已装备' },
+        ]
+          .map(
+            (st) => `
+          <button type="button" class="wh-pill-btn is-sm ${workshopState.equipStatus === st.id ? 'is-active' : ''}" data-wh-status="${st.id}">
+            ${escapeHtml(st.label)}
+          </button>
+        `
+          )
+          .join('')}
+      </div>
+      <button type="button" id="btn-sw-batch-clean" class="btn-danger uikit-touch-target wh-clean-btn" ${idleCleanable.length === 0 ? 'disabled' : ''}>
+        清理闲置+0 (${idleCleanable.length})
+      </button>
+    </div>
+
+    <div class="wh-compact-list" id="sw-enhance-list"></div>
   `;
 
-  const maintDisc = wsState.context?.commander ? wsState.context.commander.getEnhanceCostDiscount() : 0;
+  card.querySelectorAll('[data-wh-group]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      workshopState.warehouseGroup = btn.getAttribute('data-wh-group');
+      renderWorkshop();
+    });
+  });
+
+  card.querySelectorAll('[data-wh-status]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      workshopState.equipStatus = btn.getAttribute('data-wh-status');
+      renderWorkshop();
+    });
+  });
+
+  card.querySelector('#btn-sw-batch-clean').addEventListener('click', async () => {
+    const cleanTargets = inventory.getIdleUnenhancedItems();
+    if (cleanTargets.length === 0) {
+      uiKit.showToast('当前没有可清理的闲置未强化装备', 'info');
+      return;
+    }
+    const confirmed = await uiKit.confirmDialog({
+      title: `批量清理闲置未强化装备（${cleanTargets.length} 件）`,
+      message: `将清理所有当前未被任何舰娘装备且强化等级为 +0 的装备（消耗品与已装备/已强化装备不受影响）：${cleanTargets
+        .slice(0, 6)
+        .map((i) => i.name)
+        .join('、')}${cleanTargets.length > 6 ? ' 等' : ''}。确认执行吗？`,
+      confirmLabel: `确认清理 ${cleanTargets.length} 件`,
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    const res = await inventory.cleanupIdleUnenhancedItems();
+    logs.add({
+      category: LOG_CATEGORIES.EQUIPMENT,
+      title: `仓库批量清理闲置未强化装备（${res.removedCount} 件）`,
+      detail: res.removedNames.join('、'),
+    });
+    uiKit.showToast(`已清理 ${res.removedCount} 件闲置未强化装备`, 'ok');
+    renderWorkshop();
+  });
+
+  const maintDisc = commander ? commander.getEnhanceCostDiscount() : 0;
   const listEl = card.querySelector('#sw-enhance-list');
   if (items.length === 0) {
-    listEl.innerHTML = '<p class="muted-text">仓库暂无可强化物品。</p>';
+    listEl.innerHTML = '<p class="muted-text" style="padding:8px 0;">当前分类与筛选条件下暂无物品。</p>';
   } else {
     for (const item of items) {
       const lv = Number(item.level) || 0;
-      const isMax = lv >= MAX_ENHANCE_LEVEL;
-      const cost = getEnhanceCost(item, { discount: maintDisc });
-      const afford = resources.canAfford(cost);
+      const isConsumable = item.category === ITEM_CATEGORIES.CONSUMABLE;
+      const isMax = isConsumable || lv >= MAX_ENHANCE_LEVEL;
+      const cost = isConsumable ? null : getEnhanceCost(item, { discount: maintDisc });
+      const afford = cost ? resources.canAfford(cost) : { ok: false };
       const nextBonuses = isMax ? [] : computeEnhancedBonuses(item.baseBonuses || item.bonuses, lv + 1);
       const wearers = inventory.getWearersOfItem(item.id);
+      const isExpanded = workshopState.expandedItemId === item.id;
+      const statTags = formatCompactStatTags(item.bonuses, 3);
+      const equippedSlotOnTarget = targetChar ? inventory.getEquippedSlotOfItem(targetChar.id, item.id) : null;
 
       const row = document.createElement('div');
-      row.className = 'sw-shop-card';
+      row.className = `wh-compact-card ${isExpanded ? 'is-expanded' : ''} ${wearers.length ? 'is-equipped' : ''}`;
       row.dataset.enhanceItemId = item.id;
+      row.dataset.whGroup = classifyItemWarehouseGroup(item);
+
       row.innerHTML = `
-        <div class="lab-slot-head">
-          <strong>${escapeHtml(item.name)} <span style="color:var(--accent-hover);">+${lv}</span></strong>
-          <span class="status-badge ${wearers.length ? 'badge-ok' : 'badge-muted'}">
-            ${wearers.length ? `已装备：${escapeHtml(wearers.map((w) => w.name).join('、'))}` : escapeHtml(ITEM_CATEGORY_LABELS[item.category] || item.category)}
-          </span>
-        </div>
-        <div class="cc-stat-sub">当前词条：${escapeHtml(formatBonusSummary(item.bonuses) || '无')}</div>
+        <button type="button" class="wh-compact-header" data-wh-toggle="${escapeHtml(item.id)}" aria-expanded="${isExpanded ? 'true' : 'false'}">
+          <span class="wh-item-ico">${getItemIconSvg(item, { size: 20 })}</span>
+          <div class="wh-compact-main">
+            <div class="wh-compact-title-row">
+              <strong class="wh-item-name">${escapeHtml(item.name)}</strong>
+              ${lv > 0 ? `<span class="wh-lv-pill">+${lv}</span>` : ''}
+              ${isConsumable ? `<span class="wh-qty-pill">×${item.quantity}</span>` : ''}
+            </div>
+            <div class="wh-compact-stat-row">
+              ${statTags.map((t) => `<span class="wh-stat-mini">${escapeHtml(t)}</span>`).join('')}
+            </div>
+          </div>
+          <div class="wh-compact-right">
+            <span class="status-badge ${wearers.length ? 'badge-ok' : 'badge-muted'} wh-wearer-badge">
+              ${wearers.length ? escapeHtml(wearers[0].name.slice(0, 6)) + (wearers.length > 1 ? `+${wearers.length - 1}` : '') : '闲置'}
+            </span>
+            <span class="wh-chevron" aria-hidden="true">${isExpanded ? '▴' : '▾'}</span>
+          </div>
+        </button>
+
         ${
-          !isMax
-            ? `<div class="cc-stat-sub" style="color:var(--accent-hover);">强化至 +${lv + 1}：${escapeHtml(formatBonusSummary(nextBonuses))}</div>`
-            : '<div class="cc-stat-sub" style="color:var(--warn);">已达最高强化等级</div>'
+          isExpanded
+            ? `
+          <div class="wh-compact-detail">
+            <div class="cc-badge-row">
+              <span class="status-badge badge-muted">${escapeHtml(ITEM_CATEGORY_LABELS[item.category] || item.category)}</span>
+              ${wearers.length > 0 ? `<span class="status-badge badge-ok">已装备：${escapeHtml(wearers.map((w) => w.name).join('、'))}</span>` : '<span class="status-badge badge-muted">当前闲置</span>'}
+            </div>
+            ${item.description ? `<p class="muted-text" style="font-size:12px; margin:0;">${escapeHtml(item.description)}</p>` : ''}
+            <div class="cc-stat-sub">完整词条：${escapeHtml(formatBonusSummary(item.bonuses) || '无')}</div>
+            ${
+              !isConsumable && !isMax
+                ? `<div class="cc-stat-sub" style="color:var(--accent-hover);">强化至 +${lv + 1}：${escapeHtml(formatBonusSummary(nextBonuses))}（消耗：钢${cost.steel} / 铝${cost.bauxite} / 银${cost.silver}）</div>`
+                : !isConsumable
+                ? '<div class="cc-stat-sub" style="color:var(--warn);">已达最高强化等级</div>'
+                : ''
+            }
+            <div class="lab-btn-grid">
+              ${
+                !isConsumable
+                  ? `<button type="button" class="btn-primary uikit-touch-target" data-do-enhance ${isMax || !afford.ok ? 'disabled' : ''}>
+                      ${isMax ? '已满级' : afford.ok ? `强化 +${lv + 1}` : '资源不足'}
+                    </button>`
+                  : `<button type="button" class="btn-primary uikit-touch-target" data-do-use ${!targetChar || item.quantity <= 0 ? 'disabled' : ''}>
+                      对「${escapeHtml(targetChar?.name?.slice(0, 5) || '目标')}」使用
+                    </button>`
+              }
+              ${
+                !isConsumable && targetChar
+                  ? `<button type="button" class="btn-secondary uikit-touch-target" data-do-equip>
+                      ${equippedSlotOnTarget ? '从目标卸下' : `装给 ${escapeHtml(targetChar.name.slice(0, 5))}`}
+                    </button>`
+                  : ''
+              }
+              <button type="button" class="btn-danger uikit-touch-target" data-do-delete>删除装备</button>
+            </div>
+          </div>
+        `
+            : ''
         }
-        <div class="lab-slot-head">
-          <span class="muted-text" style="font-size:11.5px;">
-            ${isMax ? '满级' : `消耗：钢材 ${cost.steel} · 铝材 ${cost.bauxite} · 银条 ${cost.silver}`}
-          </span>
-          <button type="button" class="btn-primary uikit-touch-target" data-do-enhance style="padding:6px 14px;" ${isMax || !afford.ok ? 'disabled' : ''}>
-            ${isMax ? '已满级' : afford.ok ? `强化 +${lv + 1}` : '资源不足'}
-          </button>
-        </div>
       `;
 
-      row.querySelector('[data-do-enhance]').addEventListener('click', async () => {
-        const spend = await resources.spendBatch(cost, { reason: `强化「${item.name}」至 +${lv + 1}` });
-        if (!spend.ok) {
-          uiKit.showToast(spend.reason, 'warn');
-          return;
-        }
-        const res = await inventory.enhanceItem(item.id);
-        await persistCharacterRoster({ storage: rootStorage, entities });
-        uiKit.showToast(
-          `强化成功：「${res.item.name}」升至 +${res.nextLevel}${res.affectedCharacters.length ? '（已同步刷新角色面板）' : ''}`,
-          'ok'
-        );
+      row.querySelector('[data-wh-toggle]').addEventListener('click', () => {
+        workshopState.expandedItemId = isExpanded ? null : item.id;
         renderWorkshop();
       });
+
+      const enhBtn = row.querySelector('[data-do-enhance]');
+      if (enhBtn) {
+        enhBtn.addEventListener('click', async () => {
+          const spend = await resources.spendBatch(cost, { reason: `强化「${item.name}」至 +${lv + 1}` });
+          if (!spend.ok) {
+            uiKit.showToast(spend.reason, 'warn');
+            return;
+          }
+          const res = await inventory.enhanceItem(item.id);
+          await persistCharacterRoster({ storage: rootStorage, entities });
+          uiKit.showToast(
+            `强化成功：「${res.item.name}」升至 +${res.nextLevel}${res.affectedCharacters.length ? '（已同步刷新角色面板）' : ''}`,
+            'ok'
+          );
+          renderWorkshop();
+        });
+      }
+
+      const useBtn = row.querySelector('[data-do-use]');
+      if (useBtn && targetChar) {
+        useBtn.addEventListener('click', async () => {
+          try {
+            await inventory.useConsumable(targetChar.id, item.id);
+            await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: targetChar.id });
+            uiKit.showToast(`已对「${targetChar.name}」使用「${item.name}」`, 'ok');
+            renderWorkshop();
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '使用失败', 'error');
+          }
+        });
+      }
+
+      const eqBtn = row.querySelector('[data-do-equip]');
+      if (eqBtn && targetChar) {
+        eqBtn.addEventListener('click', async () => {
+          try {
+            if (equippedSlotOnTarget) {
+              await inventory.unequipSlot(targetChar.id, equippedSlotOnTarget);
+              uiKit.showToast(`已从「${targetChar.name}」卸下「${item.name}」`, 'info');
+            } else {
+              const res = await inventory.equipItem(targetChar.id, null, item.id);
+              uiKit.showToast(`已为「${targetChar.name}」装入「${item.name}」（${res.slotLabel}）`, 'ok');
+            }
+            await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: targetChar.id });
+            renderWorkshop();
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '穿戴失败', 'warn');
+          }
+        });
+      }
+
+      const delBtn = row.querySelector('[data-do-delete]');
+      if (delBtn) {
+        delBtn.addEventListener('click', async () => {
+          const ok = await uiKit.confirmDialog({
+            title: `删除物品「${item.name}」`,
+            message: '确认从仓库永久删除该装备吗？',
+            confirmLabel: '确认删除',
+            tone: 'danger',
+          });
+          if (!ok) return;
+          await inventory.deleteItem(item.id);
+          await persistCharacterRoster({ storage: rootStorage, entities });
+          workshopState.expandedItemId = null;
+          uiKit.showToast(`已删除「${item.name}」`, 'ok');
+          renderWorkshop();
+        });
+      }
 
       listEl.appendChild(row);
     }
@@ -734,8 +947,8 @@ function renderWorkshop() {
   topCard.className = 'surface-card lab-stack-sm';
   topCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">补给目标角色（使用消耗品生效对象）</h2>
-      <button type="button" id="btn-sw-back-char" class="btn-ghost-sm">返回角色台</button>
+      <h2 class="section-title">目标舰娘（穿戴与消耗品生效对象）</h2>
+      <button type="button" id="btn-sw-back-char" class="btn-secondary uikit-touch-target" style="padding:0 12px;">返回角色台</button>
     </div>
     <div class="cc-roster-strip" id="sw-char-strip"></div>
   `;
@@ -749,7 +962,7 @@ function renderWorkshop() {
     chip.type = 'button';
     chip.className = `cc-roster-chip ${targetChar && c.id === targetChar.id ? 'is-active' : ''}`;
     chip.dataset.swChar = c.id;
-    chip.textContent = `${c.name} (HP ${Math.round(c.stats.hp ?? 0)} / AP ${Math.round(c.stats.ap ?? 0)})`;
+    chip.textContent = `${c.name} (HP ${Math.round(c.stats.hp ?? 0)})`;
     chip.addEventListener('click', () => {
       workshopState.targetCharId = c.id;
       renderWorkshop();
@@ -758,14 +971,14 @@ function renderWorkshop() {
   }
   root.appendChild(topCard);
 
-  // 3. 3 Segmented Tabs
+  // 3. 3 Segmented Tabs (Compact Warehouse & Enhance / Shop / Supply Pool)
   workshopState.tabsCtrl = uiKit.createTabs({
     items: [
+      { id: 'warehouse', label: '装备仓库与强化' },
       { id: 'shop', label: '商店与消耗品' },
       { id: 'gacha', label: '随机补给池' },
-      { id: 'enhance', label: '装备强化' },
     ],
-    activeId: workshopState.activeTab,
+    activeId: workshopState.activeTab === 'enhance' ? 'warehouse' : workshopState.activeTab,
     onChange: (next) => {
       workshopState.activeTab = next;
       renderWorkshop();
@@ -784,8 +997,8 @@ function renderWorkshop() {
     renderShopTab(body);
   } else if (workshopState.activeTab === 'gacha') {
     renderGachaTab(body);
-  } else if (workshopState.activeTab === 'enhance') {
-    renderEnhanceTab(body);
+  } else {
+    renderWarehouseEnhanceTab(body);
   }
   root.appendChild(body);
 
@@ -799,13 +1012,13 @@ function renderWorkshop() {
 export default {
   id: 'supply-workshop',
   name: '物资与工坊台',
-  description: '银条/金条补给商店、消耗品使用、可自定义概率权重的随机补给池，以及消耗钢铝银条的装备强化台。',
+  description: '紧凑型分类装备仓库（核心/武器/辅助/服道具、闲置清理与强化）、补给商店与可自定义随机补给池。',
 
   mount(container, context) {
     workshopState.container = container;
     workshopState.context = context;
 
-    context.ui.setPlaceholder('工坊台：可输入关键词筛选或记录采购备忘...');
+    context.ui.setPlaceholder('工坊台：可输入采购或整理备忘记录到行动日志...');
     context.ui.setInputHandler((text) => {
       context.logs.add({
         category: LOG_CATEGORIES.RESOURCE,
@@ -816,6 +1029,14 @@ export default {
     });
 
     context.ui.setQuickActions([
+      {
+        id: 'sw-q-warehouse',
+        label: '分类装备仓库',
+        onClick: () => {
+          workshopState.activeTab = 'warehouse';
+          renderWorkshop();
+        },
+      },
       {
         id: 'sw-q-shop',
         label: '商店与消耗品',
@@ -832,19 +1053,14 @@ export default {
           renderWorkshop();
         },
       },
-      {
-        id: 'sw-q-enhance',
-        label: '装备强化',
-        onClick: () => {
-          workshopState.activeTab = 'enhance';
-          renderWorkshop();
-        },
-      },
     ]);
 
     workshopState.unsubs = [
       context.bus.on('resource:changed', () => renderWorkshop()),
       context.bus.on('inventory:enhanced', () => renderWorkshop()),
+      context.bus.on('inventory:cleaned', () => renderWorkshop()),
+      context.bus.on('inventory:item-created', () => renderWorkshop()),
+      context.bus.on('content:mod-imported', () => renderWorkshop()),
       context.bus.on('storage:changed', (detail) => {
         if (detail?.action === 'resetAll' || detail?.action === 'import') {
           renderWorkshop();

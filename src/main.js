@@ -29,6 +29,8 @@ import { InteractionSystem } from './core/interaction-system.js';
 import { ContentManager } from './core/content-manager.js';
 import { StoryPackEngine } from './core/story-pack-engine.js';
 import { ThemeManager } from './core/theme-manager.js';
+import { PersonalityPool } from './core/personality-pool.js';
+import { DialogueEngine } from './core/dialogue-engine.js';
 import { createUIKit, showToast } from './core/ui-kit.js';
 import { REGISTERED_MODULES } from './modules/index.js';
 import { hydrateCharacterRoster, persistCharacterRoster } from './modules/character-console.js';
@@ -74,6 +76,8 @@ const commander = new CommanderSystem({ storage, bus });
 const inventory = new InventorySystem({ storage, entities, commander, bus });
 const resources = new ResourceManager({ storage, bus });
 const logs = new LogSystem({ storage, bus });
+const personalityPool = new PersonalityPool({ storage, bus });
+const dialogueEngine = new DialogueEngine({ personalityPool, entities, logs });
 const fxStage = new FxStage({ bus, storage });
 const routeGenerator = new RouteGenerator({ storage, bus });
 const formation = new FormationSystem({ storage, entities, inventory, commander, bus });
@@ -96,6 +100,8 @@ const buildings = new PortBuildingsSystem({
   inventory,
   resources,
   commander,
+  personalityPool,
+  dialogueEngine,
   logs,
   bus,
 });
@@ -108,6 +114,7 @@ const interaction = new InteractionSystem({
   statRules,
   commander,
   narrative,
+  dialogueEngine,
   logs,
   bus,
 });
@@ -144,6 +151,7 @@ const combat = new TacticalCombatEngine({
   statRules,
   resources,
   narrative,
+  dialogueEngine,
   commander,
   formation,
   bus,
@@ -278,6 +286,8 @@ const moduleManager = new ModuleManager({
     inventory,
     resources,
     logs,
+    personalityPool,
+    dialogueEngine,
     fxStage,
     routeGenerator,
     combat,
@@ -804,6 +814,7 @@ function captureFullWorldSnapshot() {
     interaction: interaction.serialize(),
     contentManager: contentManager.serialize(),
     storyPacks: storyPacks.serialize(),
+    personalityPool: personalityPool.serialize(),
     theme: theme.serialize(),
     entities: entities.serialize(),
     inventory: inventory.serialize(),
@@ -833,9 +844,13 @@ function buildSaveSummary(trigger = 'manual') {
 async function restoreFullWorldSnapshot(rawData) {
   const { data, migrated } = migrateSavePayload(rawData);
   if (data.statRules) statRules.updateConfig(data.statRules);
+  if (data.personalityPool) personalityPool.deserialize(data.personalityPool, { persist: true });
   if (data.commander) commander.deserialize(data.commander, { persist: true });
   if (data.entities) {
     entities.deserialize(data.entities);
+    for (const ch of entities.list({ kind: 'character' })) {
+      personalityPool.ensurePersonalityOnEntity(ch);
+    }
     await persistCharacterRoster({ storage, entities });
   }
   if (data.inventory) inventory.deserialize(data.inventory, { persist: true });
@@ -1344,9 +1359,16 @@ els.btnData.addEventListener('click', openDataSheet);
 // ------------------------------------------------------------
 async function bootApplication() {
   try {
-    await commander.init();
+    await Promise.all([commander.init(), personalityPool.init()]);
     await Promise.all([inventory.init(), resources.init(), logs.init()]);
-    await hydrateCharacterRoster({ storage, entities, inventory, statRules, commander });
+    const rosterRes = await hydrateCharacterRoster({
+      storage,
+      entities,
+      inventory,
+      statRules,
+      commander,
+      personalityPool,
+    });
     await Promise.all([
       expeditions.init(),
       buildings.init(),
@@ -1354,6 +1376,19 @@ async function bootApplication() {
       contentManager.init(),
       storyPacks.init(),
     ]);
+
+    // On brand-new fresh saves, automatically load the full 8-ship / 16-gear / tiered-enemy / story-pack starter bundle.
+    // Existing saves remain untouched and can non-destructively merge via Compendium Studio's one-tap button.
+    if (rosterRes?.seeded) {
+      await contentManager.mergeStarterContentBundle({
+        personalityPool,
+        storyPacks,
+        statRules,
+        persistRosterFn: () => persistCharacterRoster({ storage, entities }),
+        silent: true,
+      });
+    }
+
     await formation.init();
     await Promise.all([
       hydrateActionConsole({ storage, rules }),
@@ -1366,12 +1401,13 @@ async function bootApplication() {
   logs.attachBusListeners();
   fxStage.attachBusListeners();
 
-  // Auto-persist character roster whenever any shipgirl gains EXP or levels up (combat / sortie / expedition / debug)
+  // Auto-persist character roster whenever any shipgirl gains EXP, levels up, or rerolls personality
   const syncRosterOnProgression = () => {
     persistCharacterRoster({ storage, entities }).catch(() => {});
   };
   bus.on('character:exp-gained', syncRosterOnProgression);
   bus.on('character:leveled-up', syncRosterOnProgression);
+  bus.on('personality:rolled', syncRosterOnProgression);
 
   // Trigger Auto-Save snapshot whenever core engines, story packs, flags, theme, or resources mutate
   saves.bindAutoSaveEvents(
@@ -1390,12 +1426,15 @@ async function bootApplication() {
       'story:flag-changed',
       'story:packs-changed',
       'story:choice-resolved',
+      'personality:pool-updated',
+      'personality:rolled',
       'theme:changed',
       'theme:layout-changed',
       'inventory:equipped',
       'inventory:unequipped',
       'inventory:consumed',
       'inventory:enhanced',
+      'inventory:cleaned',
       'inventory:slot-added',
       'inventory:slot-renamed',
       'inventory:slot-removed',
@@ -1454,6 +1493,8 @@ window.__APP_BASE__ = {
   inventory,
   resources,
   logs,
+  personalityPool,
+  dialogueEngine,
   fxStage,
   routeGenerator,
   combat,

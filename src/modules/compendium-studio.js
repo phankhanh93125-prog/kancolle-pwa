@@ -38,7 +38,7 @@ let csState = {
   context: null,
   mainTab: 'compendium', // 'compendium' | 'story' | 'studio'
   compSubTab: 'shipgirls', // 'shipgirls' | 'equipment' | 'enemies' | 'routes'
-  activePackId: 'pack_sea_investigation',
+  activePackId: 'pack_abyssal_ruins_4ch',
   activeNodeId: null,
   lastStoryOutcome: null,
   lastRenderedNodeKey: null,
@@ -1300,6 +1300,45 @@ function renderCompendiumStudio() {
     if (modules.has('port-hub')) modules.mount('port-hub');
   });
   root.appendChild(navCard);
+
+  // Prominent Non-Destructive Starter Content Pack Merge Card (Protects Existing Saves)
+  const bundleCard = document.createElement('section');
+  bundleCard.className = 'surface-card lab-stack-sm starter-bundle-card';
+  bundleCard.id = 'cs-starter-bundle-card';
+  bundleCard.innerHTML = `
+    <div class="section-header-row" style="margin-bottom:0;">
+      <strong style="font-size:14px;">开局标准示范内容大礼包（无损合并）</strong>
+      <span class="status-badge badge-ok">不覆盖旧存档</span>
+    </div>
+    <p class="muted-text" style="font-size:12px; margin:0;">
+      含覆盖 DD/CL/CA/BB/CV 全五舰种的 <strong>8 名独立性格舰娘</strong>、<strong>16 件核心/武器/辅助/服装装备</strong>、低/中/高危分级敌舰、<strong>16 项港区生活日常包</strong>与<strong>四章节深海遗迹主线包</strong>。仅补齐缺失条目，绝不覆盖您已有数据。
+    </p>
+    <button type="button" id="btn-cs-merge-starter-pack" class="btn-primary port-cta-btn">
+      一键合并导入示范内容大礼包
+    </button>
+  `;
+  bundleCard.querySelector('#btn-cs-merge-starter-pack').addEventListener('click', async () => {
+    const { contentManager, personalityPool, storyPacks, statRules, rootStorage, entities, uiKit } = csState.context;
+    try {
+      const res = await contentManager.mergeStarterContentBundle({
+        personalityPool,
+        storyPacks,
+        statRules,
+        persistRosterFn: () => persistCharacterRoster({ storage: rootStorage, entities }),
+      });
+      const total = res.addedShips + res.addedItems + res.addedEnemies + res.addedPacks;
+      uiKit.showToast(
+        total > 0
+          ? `合并完成：新增 ${res.addedShips} 名舰娘、${res.addedItems} 件装备、${res.addedEnemies} 支敌舰、${res.addedPacks} 套剧情包！`
+          : '全套示范内容大礼包已完整收录，无需重复导入（旧数据已无损保留）',
+        'ok'
+      );
+      renderCompendiumStudio();
+    } catch (err) {
+      uiKit.showToast(err instanceof Error ? err.message : '合并导入失败', 'error');
+    }
+  });
+  root.appendChild(bundleCard);
 
   if (csState.mainTab === 'compendium') {
     renderCompendiumTab(root);

@@ -19,7 +19,7 @@ export const SAVE_ZONES = Object.freeze({
 
 export const DEFAULT_SLOT_COUNT = 5;
 export const VAULT_PRIMARY_SLOTS = 3;
-export const SAVE_SCHEMA_VERSION = 2;
+export const SAVE_SCHEMA_VERSION = 3;
 
 function deepClone(value) {
   if (typeof structuredClone === 'function') {
@@ -34,7 +34,7 @@ function deepClone(value) {
 
 /**
  * Lossless save payload migration: preserves every existing character, item, resource,
- * building, or custom field while safely backfilling any fields introduced in v2+.
+ * building, or custom field while safely backfilling any fields introduced in v2/v3+.
  */
 export function migrateSavePayload(rawData = {}) {
   const data = rawData && typeof rawData === 'object' ? deepClone(rawData) : {};
@@ -69,7 +69,7 @@ export function migrateSavePayload(rawData = {}) {
     migrated = true;
   }
 
-  // Losslessly backfill Shipgirl level/exp/maxExp on all character entities
+  // Losslessly backfill Shipgirl level/exp/maxExp on all character entities without overwriting user data
   const entityList = Array.isArray(data.entities?.entities) ? data.entities.entities : [];
   for (const ent of entityList) {
     if (!ent || ent.kind !== 'character') continue;

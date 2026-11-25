@@ -125,6 +125,7 @@ export class InteractionSystem {
     statRules,
     commander,
     narrative,
+    dialogueEngine = null,
     logs = null,
     contentManager = null,
     bus = null,
@@ -137,6 +138,7 @@ export class InteractionSystem {
     this._statRules = statRules;
     this._commander = commander;
     this._narrative = narrative;
+    this._dialogueEngine = dialogueEngine;
     this._logs = logs;
     this._contentManager = contentManager;
     this._bus = bus;
@@ -151,6 +153,10 @@ export class InteractionSystem {
 
   setContentManager(cm) {
     this._contentManager = cm;
+  }
+
+  setDialogueEngine(de) {
+    this._dialogueEngine = de;
   }
 
   _emit(event, payload) {
@@ -322,15 +328,40 @@ export class InteractionSystem {
           .filter((d) => d.stage === 'any' || d.stage === vars.stageKey)
           .map((d) => d.text)
       : [];
-    const builtInPool = OFFLINE_TALK_TEMPLATES[vars.stageKey] || OFFLINE_TALK_TEMPLATES.familiar;
-    const combinedPool = customPool.length > 0 && Math.random() < 0.45 ? customPool : builtInPool;
-    const baseTemplate = customTopic
-      ? `面对指挥官提及的「${customTopic}」，身着{outfit}的{actor.name}认真回应道：「{speechHabit}」（当前好感阶段：{stageLabel} · {toneLabel}）`
-      : pickRandom(combinedPool);
+
+    let baseTemplate = '';
+    let contextMeta = null;
+    if (customPool.length > 0 && !customTopic && Math.random() < 0.3) {
+      baseTemplate = pickRandom(customPool);
+    } else if (this._dialogueEngine) {
+      const composed = this._dialogueEngine.composeSecretaryTalk({
+        actor,
+        commanderName: vars.commander.name,
+        outfitName: vars.outfit,
+        affStageId: vars.stageKey,
+        isOathed: this.isOathed(actor.id),
+        oathTitle: vars.oathTitle,
+        customTopic,
+      });
+      baseTemplate = composed.text;
+      contextMeta = this._dialogueEngine.buildAiContextMeta({
+        actor,
+        commander: this._commander,
+        outfitName: vars.outfit,
+        affStageLabel: vars.stageLabel,
+        sceneType: 'secretary-talk',
+      });
+    } else {
+      const builtInPool = OFFLINE_TALK_TEMPLATES[vars.stageKey] || OFFLINE_TALK_TEMPLATES.familiar;
+      baseTemplate = customTopic
+        ? `面对指挥官提及的「${customTopic}」，身着{outfit}的{actor.name}认真回应道：「{speechHabit}」（当前好感阶段：{stageLabel} · {toneLabel}）`
+        : pickRandom(builtInPool);
+    }
 
     const rendered = await this._narrative.run({
       template: baseTemplate,
       variables: vars,
+      contextMeta,
       polishInstruction: `请以舰娘「${actor.name}」（舰种：${vars.actor.shipType}，性格：${vars.actor.personality}，穿着：${vars.outfit}，好感阶段：${vars.stageLabel}）的口吻，回应指挥官「${vars.commander.name}」的日常交谈${customTopic ? `（话题：${customTopic}）` : ''}，保持简短生动：`,
     });
 
@@ -400,15 +431,37 @@ export class InteractionSystem {
     const afterMorale = this._entities.adjustStat(actor.id, 'morale', moraleDelta, { min: 0, max: 100 });
 
     const vars = this._buildDialogueVariables(actor);
+    let giftTemplate =
+      '收到{commander.name}赠送的「{giftName}」后，穿着{outfit}的{actor.name}露出了灿烂的笑容：「非常喜欢这份心意！{speechHabit}」（好感 +{affDelta}，士气 +{moraleDelta}）';
+    let contextMeta = null;
+    if (this._dialogueEngine) {
+      const composed = this._dialogueEngine.composeGiftFeedback({
+        actor,
+        commanderName: vars.commander.name,
+        giftName: gift.name,
+        outfitName: vars.outfit,
+        affStageId: vars.stageKey,
+        isOathed: this.isOathed(actor.id),
+      });
+      giftTemplate = `${composed.text}（好感 +{affDelta}，士气 +{moraleDelta}）`;
+      contextMeta = this._dialogueEngine.buildAiContextMeta({
+        actor,
+        commander: this._commander,
+        outfitName: vars.outfit,
+        affStageLabel: vars.stageLabel,
+        sceneType: 'secretary-gift',
+      });
+    }
+
     const rendered = await this._narrative.run({
-      template:
-        '收到{commander.name}赠送的「{giftName}」后，穿着{outfit}的{actor.name}露出了灿烂的笑容：「非常喜欢这份心意！{speechHabit}」（好感 +{affDelta}，士气 +{moraleDelta}）',
+      template: giftTemplate,
       variables: {
         ...vars,
         giftName: gift.name,
         affDelta,
         moraleDelta,
       },
+      contextMeta,
       polishInstruction: `请以「${actor.name}」的口吻简短表达收到礼物「${gift.name}」的喜悦：`,
     });
 

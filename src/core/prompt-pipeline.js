@@ -236,6 +236,18 @@ export class PromptPipeline {
     try {
       let promptText = '';
       let sysPrompt = request.systemPrompt;
+      const ctxMeta = request.contextMeta && typeof request.contextMeta === 'object' ? request.contextMeta : null;
+      const personaBlock = ctxMeta
+        ? [
+            `[角色档案] 舰娘「${ctxMeta.actorName || ''}」（${ctxMeta.shipType || ''}）`,
+            `[性格组合] ${ctxMeta.personalityCombo || '常规'}${ctxMeta.personalityDesc ? ` · ${ctxMeta.personalityDesc}` : ''}`,
+            ctxMeta.speechHabit ? `[口癖参考] ${ctxMeta.speechHabit}` : '',
+            `[穿着与状态] 服装：${ctxMeta.outfitName || '常服'} · 战损状态：${ctxMeta.damageState || '完好'} · 好感阶段：${ctxMeta.affinityStage || '熟悉'}`,
+            ctxMeta.recentPortActivity ? `[近期港区动态] ${ctxMeta.recentPortActivity}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n')
+        : '';
 
       if (mode === NARRATIVE_MODES.AI_POLISH) {
         const objectiveJson = request.ruleResult
@@ -251,7 +263,9 @@ export class PromptPipeline {
           : '{}';
         sysPrompt =
           sysPrompt ||
-          '你是通用的叙事润色助手。请严格保留给定客观结果中的全部数值与事实，不要篡改或虚构数值变化，仅在语言表达上进行简洁流畅的润色扩展。';
+          `你是海战港区游戏的叙事润色助手。请严格保留给定客观结果中的全部数值与事实，不要篡改或虚构数值变化；充分贴合角色的随机性格组合、穿着服装、战损状态与近期港区动态进行生动润色。${
+            personaBlock ? `\n${personaBlock}` : ''
+          }`;
         promptText = [
           request.polishInstruction || '请基于以下客观规则结果进行简洁润色：',
           `[本地客观结果] ${localText}`,
@@ -261,7 +275,9 @@ export class PromptPipeline {
         // AI_FREE
         sysPrompt =
           sysPrompt ||
-          '你是通用交互式系统的自由文本响应助手，请基于给定上下文给出清晰、简洁的回复。';
+          `你是海战港区游戏的角色扮演对话助手，请严格依据角色性格组合、好感阶段、战损状态与近期港区动态给出自然、生动且简洁的回应。${
+            personaBlock ? `\n${personaBlock}` : ''
+          }`;
         promptText = request.userInput
           ? `${request.userInput}\n\n[上下文参考] ${localText}`
           : localText;

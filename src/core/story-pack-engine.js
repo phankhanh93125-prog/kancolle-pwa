@@ -276,6 +276,355 @@ export const BUILTIN_STORY_PACKS = [
       },
     ],
   },
+  {
+    id: 'pack_port_life_15',
+    name: '港区生活日常包（16 项随机事件）',
+    version: '1.0.0',
+    category: PACK_CATEGORIES.PORT_DAILY,
+    description: '收录食堂咖喱大赛、午后茶歇、船坞夜谈、海风晨练、防波堤观星、装备校准等 16 项港区生活事件，支持连续推进与随机抽选。',
+    enabled: true,
+    builtIn: true,
+    entryNodeId: 'pl_evt_01',
+    nodes: [
+      {
+        id: 'pl_evt_01',
+        title: '港区食堂 · 周五海风咖喱大赛',
+        body: '港区食堂飘来浓郁的香料气息，{actor.name}正围着围裙邀请{commander.name}担任今日特制海员咖喱的首席评委。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl01_a', label: '认真试吃并给出专业点评', conditions: [], check: null, effects: { flags: { port_life_curry: true, port_life_events: 1 }, resources: { fuel: 30, silver: 35 }, affinity: 5, morale: 10, commanderExp: 14 }, resultText: '你的点评赢得全场掌声，{actor.name}开心地端上秘制甜点！', nextNodeId: 'pl_evt_02' },
+          { id: 'c_pl01_b', label: '亲自下厨露一手拿手好菜', conditions: [], check: { statKey: 'recon', dc: 11 }, effects: { flags: { port_life_curry: true }, resources: { silver: 55 }, affinity: 7, morale: 14, commanderExp: 18 }, failEffects: { affinity: 3, morale: 6 }, resultText: '香气瞬间征服了整个食堂，连挑食的舰娘都连盛两大碗！', failText: '火候稍猛了点，但大家还是笑着把咖喱吃了个精光。', nextNodeId: 'pl_evt_02' },
+        ],
+      },
+      {
+        id: 'pl_evt_02',
+        title: '防波堤上的橘猫巡逻队',
+        body: '清晨码头巡查时，几只常驻港区的橘猫排着队蹭着{actor.name}的鞋边，看起来像是来讨早饭的。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl02_a', label: '分发小鱼干并合影留念', conditions: [], check: null, effects: { flags: { port_cat_friend: true }, resources: { silver: 25 }, affinity: 5, morale: 12, commanderLuck: 1 }, resultText: '橘猫们满足地打起呼噜，港区的氛围愈发治愈（指挥官运气 +1）。', nextNodeId: 'pl_evt_03' },
+          { id: 'c_pl02_b', label: '任命大橘为港区荣誉巡逻队长', conditions: [], check: null, effects: { flags: { port_cat_captain: true }, affinity: 6, morale: 10, commanderExp: 12 }, resultText: '{actor.name}忍俊不禁地为大橘戴上了迷你纸质水手帽！', nextNodeId: 'pl_evt_03' },
+        ],
+      },
+      {
+        id: 'pl_evt_03',
+        title: '晨雾中的炮术校准演练',
+        body: '海面微风轻拂，{actor.name}主动申请利用早操时间校准新装火控参数与主炮仰角。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl03_a', label: '亲自测算风偏并指导齐射（火力 DC 12）', conditions: [], check: { statKey: 'firepower', dc: 12 }, effects: { flags: { port_drill_ace: true }, resources: { ammo: 45, steel: 35 }, affinity: 5, morale: 8, commanderExp: 20 }, failEffects: { resources: { ammo: 20 }, affinity: 2, commanderExp: 10 }, resultText: '靶标正中红心！全舰队对火控协同更有信心了。', failText: '海雾影响了目视测距，但仍收集到宝贵的校准数据。', nextNodeId: 'pl_evt_04' },
+        ],
+      },
+      {
+        id: 'pl_evt_04',
+        title: '雨天资料室的旧海图整理',
+        body: '突如其来的阵雨让室外操演暂停，{actor.name}与{commander.name}在资料室翻出了几卷泛黄的旧航道记录。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl04_a', label: '细致修复海图并录入港区数据库', conditions: [], check: null, effects: { flags: { port_old_chart: true }, resources: { bauxite: 40, silver: 40 }, affinity: 4, morale: 6, commanderExp: 16 }, resultText: '从旧海图中发现了隐蔽补给点的坐标记录！', nextNodeId: 'pl_evt_05' },
+        ],
+      },
+      {
+        id: 'pl_evt_05',
+        title: '黄昏船坞的机油与晚风',
+        body: '刚完成保养的舰装在夕阳下泛着金属光泽，{actor.name}正细心擦拭着甲板护栏。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl05_a', label: '递上冰镇柠檬水并帮忙收整工具', conditions: [], check: null, effects: { resources: { steel: 45 }, affinity: 6, morale: 10, commanderExp: 14 }, resultText: '{actor.name}接过冷饮露出安心笑容，保养进度提前完成！', nextNodeId: 'pl_evt_06' },
+        ],
+      },
+      {
+        id: 'pl_evt_06',
+        title: '港口灯塔的夜空观星会',
+        body: '万里无云的夏夜，银河横跨港湾上空，{actor.name}在灯塔露台铺开了观星毯。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl06_a', label: '辨认航海星座并聊起未来航程', conditions: [], check: null, effects: { flags: { port_stargaze: true }, affinity: 7, morale: 14, commanderExp: 15 }, resultText: '璀璨星光下，两人的羁绊又加深了一分。', nextNodeId: 'pl_evt_07' },
+        ],
+      },
+      {
+        id: 'pl_evt_07',
+        title: '后勤仓库的意外漂流补给箱',
+        body: '潮水将几只密封完好的海上补给箱推上了栈桥浅滩，{actor.name}第一时间赶来汇报。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl07_a', label: '安全开箱清点并归入港区储备', conditions: [], check: null, effects: { resources: { fuel: 50, ammo: 50, steel: 40, bauxite: 30 }, affinity: 3, commanderExp: 15 }, resultText: '箱内竟装满了保存完好的四项战略资源！', nextNodeId: 'pl_evt_08' },
+        ],
+      },
+      {
+        id: 'pl_evt_08',
+        title: '夏日港湾轻音乐晚会',
+        body: '宿舍公共厅临时搭起了小型舞台，舰娘们自发组织起港区轻音乐放松晚会。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl08_a', label: '为演出鼓掌并赞助茶点经费', conditions: [], check: null, effects: { resources: { silver: 35 }, affinity: 6, morale: 16, commanderExp: 15 }, resultText: '欢快的旋律回荡港湾，全体舰娘士气大涨！', nextNodeId: 'pl_evt_09' },
+        ],
+      },
+      {
+        id: 'pl_evt_09',
+        title: '反潜声呐的港湾试音',
+        body: '平静的内港水下传来奇怪回声，{actor.name}好奇地打开声呐进行排查。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl09_a', label: '仔细辨别频谱（反潜 DC 11）', conditions: [], check: { statKey: 'asw', dc: 11 }, effects: { resources: { bauxite: 45, silver: 40 }, affinity: 5, commanderExp: 18 }, failEffects: { morale: 6, commanderExp: 10 }, resultText: '原来是一群路过的海豚家族！声呐校准数据也顺利存档。', failText: '回声很快消失在远海，只留下一串欢快的气泡声。', nextNodeId: 'pl_evt_10' },
+        ],
+      },
+      {
+        id: 'pl_evt_10',
+        title: '港区商店街的新装试穿',
+        body: '裁缝工坊送来了最新季度的港区常服与礼装样衣，{actor.name}略带期待地征求你的意见。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl10_a', label: '真诚夸赞最适合她的配色方案', conditions: [], check: null, effects: { flags: { port_fashion_talk: true }, affinity: 7, morale: 12, commanderExp: 14 }, resultText: '{actor.name}眼角弯成月牙，似乎对下一次换装充满期待！', nextNodeId: 'pl_evt_11' },
+        ],
+      },
+      {
+        id: 'pl_evt_11',
+        title: '突发热带气旋防风加固',
+        body: '气象台发出短时强风预警，需要迅速固定港口系泊缆绳与露天资材。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl11_a', label: '率队高速完成防风部署（机动 DC 12）', conditions: [], check: { statKey: 'evasion', dc: 12 }, effects: { resources: { steel: 60, fuel: 40 }, affinity: 5, morale: 10, commanderExp: 20 }, failEffects: { resources: { steel: 20 }, commanderExp: 10 }, resultText: '暴风袭来前港口已固若金汤，零损失平安度过！', failText: '虽然淋了点雨，但关键资材全部保住了。', nextNodeId: 'pl_evt_12' },
+        ],
+      },
+      {
+        id: 'pl_evt_12',
+        title: '午夜指挥室的暖心夜宵',
+        body: '深夜仍在整理航线简报时，{actor.name}悄悄端来一碗热气腾腾的乌冬面。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl12_a', label: '放下笔和她一起趁热享用', conditions: [], check: null, effects: { flags: { port_midnight_noodle: true }, affinity: 8, morale: 12, commanderExp: 15 }, resultText: '温暖的汤香驱散了疲惫，深夜的指挥室格外温馨。', nextNodeId: 'pl_evt_13' },
+        ],
+      },
+      {
+        id: 'pl_evt_13',
+        title: '海岸线体能竞速晨跑',
+        body: '朝阳跃出海面，{actor.name}邀请你沿着海岸公路来一场轻快的晨跑热身。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl13_a', label: '全力跟上她的步伐完成拉练', conditions: [], check: null, effects: { resources: { fuel: 35 }, affinity: 5, morale: 12, commanderExp: 16 }, resultText: '海风拂面、汗水畅快，今天的精神状态达到巅峰！', nextNodeId: 'pl_evt_14' },
+        ],
+      },
+      {
+        id: 'pl_evt_14',
+        title: '灯笼节前夜的港区装饰',
+        body: '港湾栈桥挂起了一排排暖色信号灯笼，{actor.name}正踮脚调整最显眼的那一盏。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl14_a', label: '帮她稳住梯子并点亮总开关', conditions: [], check: null, effects: { flags: { port_lantern_night: true }, resources: { silver: 65 }, affinity: 7, morale: 15, commanderExp: 18 }, resultText: '整片港湾瞬间灯火璀璨，倒映在波光粼粼的海面上！', nextNodeId: 'pl_evt_15' },
+        ],
+      },
+      {
+        id: 'pl_evt_15',
+        title: '模拟沙盘推演与战法交流',
+        body: '战术教室里摆开了多舰种协同沙盘，驱逐、轻巡、重巡、战列与航母的配合思路碰撞出新火花。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl15_a', label: '总结五舰种协同战法笔记', conditions: [], check: null, effects: { resources: { ammo: 45, bauxite: 45 }, affinity: 5, morale: 10, commanderExp: 22 }, resultText: '新的大编队战术手册编纂完成，指挥官经验大幅增长！', nextNodeId: 'pl_evt_16' },
+        ],
+      },
+      {
+        id: 'pl_evt_16',
+        title: '黎明栈桥的出征约定',
+        body: '第一缕晨光照亮了停泊在码头的舰队剪影，{actor.name}向{commander.name}伸出手，约定共同迈向下一段航程。',
+        conditions: [],
+        choices: [
+          { id: 'c_pl16_a', label: '握紧她的手，迎向崭新的一天（完成日常巡礼）', conditions: [], check: null, effects: { flags: { port_life_cycle_done: true }, resources: { fuel: 60, ammo: 60, silver: 120, gold: 1 }, affinity: 10, morale: 18, commanderExp: 30, commanderLuck: 1 }, resultText: '★ 港区生活日常巡礼达成！全队士气焕发，收获金条 +1 与指挥官运气 +1！', nextNodeId: null },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'pack_abyssal_ruins_4ch',
+    name: '深海遗迹调查剧情包（四章主线）',
+    version: '1.0.0',
+    category: PACK_CATEGORIES.MAIN_CHAPTER,
+    description: '四章节连贯深海遗迹调查主线：异常深海脉动 → 迷雾沉船带 → 遗迹海门破译 → 终章中枢抉择，含完整 Flag 进度锁与双结局分支。',
+    enabled: true,
+    builtIn: true,
+    entryNodeId: 'ruins_ch1_signal',
+    nodes: [
+      {
+        id: 'ruins_ch1_signal',
+        title: '第一章 · 异常深海脉动信号',
+        body: '凌晨三点，港区深海监听阵捕捉到来自外海断层的规律声波。{commander.name}携{actor.name}分析频谱，确认那是一座沉没已久的古代海事遗迹发出的唤醒脉冲。',
+        conditions: [],
+        choices: [
+          {
+            id: 'c_r1_analyze',
+            label: '使用舰载电探与声呐联合解码（侦查 DC 12）',
+            conditions: [],
+            check: { statKey: 'recon', dc: 12 },
+            effects: {
+              flags: { ruins_ch1_done: true, ruins_clues: 2, ruins_stage: 'ch2' },
+              resources: { bauxite: 60, silver: 80 },
+              affinity: 5,
+              commanderExp: 25,
+            },
+            failEffects: {
+              flags: { ruins_ch1_done: true, ruins_clues: 1, ruins_stage: 'ch2' },
+              resources: { silver: 40 },
+              affinity: 2,
+              commanderExp: 15,
+            },
+            resultText: '解码成功！获取精准航路密钥（ruins_clues=2），已解锁第二章「迷雾沉船带」。',
+            failText: '强电磁干扰阻断了部分波段，但仍锁定了迷雾沉船带方向，已解锁第二章。',
+            nextNodeId: 'ruins_ch2_fog_fleet',
+          },
+          {
+            id: 'c_r1_scout',
+            label: '派遣高速前哨直接实地抵近采样',
+            conditions: [],
+            check: null,
+            effects: {
+              flags: { ruins_ch1_done: true, ruins_clues: 1, ruins_stage: 'ch2' },
+              resources: { fuel: -15, steel: 55, silver: 65 },
+              affinity: 4,
+              commanderExp: 22,
+            },
+            resultText: '前哨舰带回深海漂浮信标残片，正式解锁第二章「迷雾沉船带」（Flag: ruins_ch1_done=true）。',
+            nextNodeId: 'ruins_ch2_fog_fleet',
+          },
+        ],
+      },
+      {
+        id: 'ruins_ch2_fog_fleet',
+        title: '第二章 · 迷雾沉船带与护卫侦察',
+        body: '舰队驶入能见度不足百米的浓雾航道。水下声呐显示沉船群间潜伏着自动警戒浮雷与旧时代护卫残骸，一枚刻有遗迹纹章的黑匣子正闪烁微光。',
+        conditions: [{ type: 'flag', key: 'ruins_ch1_done', op: 'eq', value: true }],
+        choices: [
+          {
+            id: 'c_r2_asw',
+            label: '反潜班静默排雷并完整回收黑匣子（反潜 DC 13）',
+            conditions: [],
+            check: { statKey: 'asw', dc: 13 },
+            effects: {
+              flags: { ruins_ch2_done: true, ruins_key_found: true, ruins_stage: 'ch3' },
+              resources: { steel: 95, bauxite: 75, silver: 110 },
+              affinity: 6,
+              morale: 8,
+              commanderExp: 35,
+            },
+            failEffects: {
+              flags: { ruins_ch2_done: true, ruins_key_found: false, ruins_stage: 'ch3' },
+              resources: { steel: 45, silver: 55 },
+              morale: -4,
+              commanderExp: 20,
+            },
+            resultText: '完美排雷！成功夺回「遗迹海门密匙」（ruins_key_found=true），解锁第三章！',
+            failText: '虽触发一枚警戒浮雷，但编队依托装甲硬抗下来并突破雾区，解锁第三章。',
+            nextNodeId: 'ruins_ch3_gate',
+          },
+          {
+            id: 'c_r2_evade',
+            label: '高速蛇形机动绕过雷区切入外环（机动 DC 12）',
+            conditions: [],
+            check: { statKey: 'evasion', dc: 12 },
+            effects: {
+              flags: { ruins_ch2_done: true, ruins_key_found: true, ruins_stage: 'ch3' },
+              resources: { fuel: 40, silver: 95 },
+              affinity: 5,
+              morale: 10,
+              commanderExp: 32,
+            },
+            failEffects: {
+              flags: { ruins_ch2_done: true, ruins_key_found: false, ruins_stage: 'ch3' },
+              resources: { silver: 45 },
+              commanderExp: 18,
+            },
+            resultText: '编队划出漂亮航迹无伤穿出雾区，顺手勾回沉船秘钥，解锁第三章！',
+            failText: '擦着雷阵边缘惊险脱出，顺利推进至第三章海门前。',
+            nextNodeId: 'ruins_ch3_gate',
+          },
+        ],
+      },
+      {
+        id: 'ruins_ch3_gate',
+        title: '第三章 · 遗迹海门破译与防线突破',
+        body: '巍峨的深海石拱海门矗立在波涛中央，外围自动炮台与拦截无人机同时启动。{actor.name}请示采取智取破译还是火力强攻。',
+        conditions: [{ type: 'flag', key: 'ruins_ch2_done', op: 'eq', value: true }],
+        choices: [
+          {
+            id: 'c_r3_key_open',
+            label: '插入第二章回收的黑匣子密匙静默开门（需 ruins_key_found）',
+            conditions: [{ type: 'flag', key: 'ruins_key_found', op: 'eq', value: true }],
+            check: null,
+            effects: {
+              flags: { ruins_ch3_done: true, ruins_breach_style: 'stealth', ruins_stage: 'ch4' },
+              resources: { bauxite: 110, steel: 90, silver: 140 },
+              affinity: 7,
+              morale: 12,
+              commanderExp: 45,
+            },
+            resultText: '海门自动解除警戒并发出欢迎蓝光！无损开启通往终章中枢的航道！',
+            nextNodeId: 'ruins_ch4_sanctum',
+          },
+          {
+            id: 'c_r3_fire_breach',
+            label: '全编队集中火力摧毁外围炮台强行破门（火力 DC 14）',
+            conditions: [],
+            check: { statKey: 'firepower', dc: 14 },
+            effects: {
+              flags: { ruins_ch3_done: true, ruins_breach_style: 'assault', ruins_stage: 'ch4' },
+              resources: { ammo: -25, steel: 130, silver: 135 },
+              affinity: 5,
+              morale: 8,
+              commanderExp: 42,
+            },
+            failEffects: {
+              flags: { ruins_ch3_done: true, ruins_breach_style: 'assault', ruins_stage: 'ch4' },
+              resources: { ammo: -25, steel: 60 },
+              morale: -5,
+              commanderExp: 25,
+            },
+            resultText: '震天齐射轰碎外围防线，海门屏障应声瓦解，直指终章遗迹中枢！',
+            failText: '经历一番激烈交火后总算压制了炮台，打开通往终章的缺口。',
+            nextNodeId: 'ruins_ch4_sanctum',
+          },
+        ],
+      },
+      {
+        id: 'ruins_ch4_sanctum',
+        title: '终章 · 深海遗迹中枢的最终抉择',
+        body: '中枢圣殿漂浮着一座仍在运转的深海导航核心，周围封存着大量旧时代精炼钢铝、战略燃料与古代星图。{actor.name}静静望向{commander.name}，等待你的最终决断。',
+        conditions: [{ type: 'flag', key: 'ruins_ch3_done', op: 'eq', value: true }],
+        choices: [
+          {
+            id: 'c_r4_salvage_all',
+            label: '结局 A：全面拆解回收全部战略储备与金库',
+            conditions: [],
+            check: null,
+            effects: {
+              flags: { ruins_cleared: true, ruins_ending: 'salvage_all', ruins_stage: 'completed' },
+              resources: { fuel: 180, ammo: 160, steel: 220, bauxite: 180, silver: 360, gold: 4 },
+              affinity: 8,
+              morale: 15,
+              commanderExp: 70,
+              commanderLuck: 2,
+            },
+            resultText: '★ 终章结局 A「满载凯旋」达成！港区入账巨量四项资材与金条 +4，指挥官运气 +2！',
+            nextNodeId: null,
+          },
+          {
+            id: 'c_r4_preserve_beacon',
+            label: '结局 B：保留深海导航中枢运转并与港区雷达网共振',
+            conditions: [],
+            check: null,
+            effects: {
+              flags: { ruins_cleared: true, ruins_ending: 'preserve_beacon', ruins_radar_resonance: true, ruins_stage: 'completed' },
+              resources: { bauxite: 200, silver: 260, gold: 5 },
+              affinity: 12,
+              morale: 20,
+              commanderExp: 85,
+              commanderLuck: 3,
+            },
+            resultText: '★ 终章结局 B「星海共鸣」达成！深海遗迹成为港区的永恒灯塔，金条 +5、全舰羁绊升华、指挥官运气 +3！',
+            nextNodeId: null,
+          },
+        ],
+      },
+    ],
+  },
 ];
 
 function deepClone(v) {
@@ -349,6 +698,26 @@ export class StoryPackEngine {
 
   async persist() {
     await this._scope.setLarge(STATE_KEY, this.serialize());
+  }
+
+  /**
+   * Non-destructively merge any missing built-in starter story/event packs
+   * (such as 16-event Port Life Daily Pack & 4-Chapter Abyssal Ruins Pack) without overwriting existing data.
+   */
+  async ensureStarterStoryPacks() {
+    const existingIds = new Set(this._packs.map((p) => p.id));
+    let added = 0;
+    for (const tpl of BUILTIN_STORY_PACKS) {
+      if (!existingIds.has(tpl.id)) {
+        this._packs.push(deepClone(tpl));
+        added += 1;
+      }
+    }
+    if (added > 0) {
+      await this.persist();
+      this._emit('story:packs-changed', { action: 'merge-starter', added });
+    }
+    return { added };
   }
 
   // ------------------------------------------------------------

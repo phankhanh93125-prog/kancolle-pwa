@@ -56,15 +56,17 @@
 | 属性 | 来源文件 | 说明 |
 | --- | --- | --- |
 | `context.theme` | `src/core/theme-manager.js` | 4 套 UI 主题换肤、色板/圆角/纹理/打字机速度微调与港区卡片布局配置 |
+| `context.personalityPool` | `src/core/personality-pool.js` | 本地主性格池（12+）与副特质/口癖池（12+）随机组合引擎、同舰不同性格防重复抽取与手机端词库 CRUD |
+| `context.dialogueEngine` | `src/core/dialogue-engine.js` | 性格驱动动态台词与战报引擎（结合主性格×副特质、好感、服装与战损状态生成交谈/赠礼/休整/维修/战术台词，并向 AI 润色/自由模式注入人设上下文） |
 | `context.storyPacks` | `src/core/story-pack-engine.js` | 热插拔本地事件包/多章节剧情包管理、全局 Flags 进度锁校验与双轨节点演绎 |
 | `context.commander` | `src/core/commander-system.js` | 指挥官角色卡、经验升级、六维属性（统率/战术/魅力/亲和/调度/整备）与 0 初值独立运气 |
 | `context.formation` | `src/core/formation-system.js` | 3~12 人动态编队上限管理、适航/远征校验、5 种可自定义阵型与全队八维聚合 |
 | `context.expeditions` | `src/core/expedition-system.js` | 港区远征派遣、离线时间戳倒计时、调度加成结算与奖励领取 |
 | `context.buildings` | `src/core/port-buildings.js` | 港区宿舍、船坞维修/建造队列、自定义建筑建造器与全局被动增益 |
 | `context.interaction` | `src/core/interaction-system.js` | 秘书舰指定、日常交谈/赠礼/日常事件与满好感誓约仪式（双轨台词） |
-| `context.contentManager` | `src/core/content-manager.js` | 全要素图鉴统计、自定义敌舰/台词/礼物 CRUD 与世界内容 JSON 模组导出/导入 |
+| `context.contentManager` | `src/core/content-manager.js` | 全要素图鉴统计、示范内容大礼包无损合并、自定义敌舰/台词/礼物 CRUD 与世界内容 JSON 模组导出/导入 |
 | `context.statRules` | `src/core/stat-rules.js` | 海战八维与检定规则、舰种预设、好感度阶段映射、士气修正与 `performCheck` |
-| `context.inventory` | `src/core/inventory-system.js` | 三核心槽+自由自定义槽位、动态扩展属性拆解（`getCharacterStatBreakdown`）与装备强化 |
+| `context.inventory` | `src/core/inventory-system.js` | 三核心槽+自由自定义槽位、紧凑分类装备仓储（核心/武器/辅助/服道具 + 闲置+0 批量清理）、动态扩展属性拆解与装备强化 |
 | `context.resources` | `src/core/resource-manager.js` | 六项资源与双货币管理、余额校验与批量扣除 |
 | `context.logs` | `src/core/log-system.js` | 行动日志自动采集、分类筛选与纯文本摘要导出（`exportTextSummary`） |
 | `context.fxStage` | `src/core/fx-stage.js` | 解耦动效、打字机、震动与合成音效舞台（`playEffect` / `typewrite` / `playSfx` / `setSoundEnabled`） |
@@ -72,13 +74,13 @@
 | `context.combat` | `src/core/tactical-combat.js` | 全队多回合四指令战术交战引擎（`scan` / `evade` / `shelling` / `torpedo` + 僚机援护与补刀） |
 | `context.storage` | `src/core/storage.js` | 当前模块隔离存储（同步 `get/set` 走 localStorage，异步 `getLarge/setLarge` 走 IndexedDB） |
 | `context.rootStorage` | `src/core/storage.js` | 全局混合存储管理器（`getHybridStats` / `exportHybridBackup` / `importHybridBackup`） |
-| `context.saves` | `src/core/save-manager.js` | 4 分区多槽位存档管理器（全局设置 / 自动存档监听 / 独立手动槽位 / 无损迁移 v2 / JSON 导出导入） |
+| `context.saves` | `src/core/save-manager.js` | 4 分区多槽位存档管理器（全局设置 / 自动存档监听 / 独立手动槽位 / 无损迁移 v3 / JSON 导出导入） |
 | `context.calc` | `src/core/calc-engine.js` | 零 `eval` 公式计算器、`roll`、`chanceCheck`、`weightedPick`、`clamp`、`stackStat` |
 | `context.entities` | `src/core/entity-system.js` | 通用实体与属性修饰器注册表、倒计时任务与离线时间差结算器（`settleOfflineTime`） |
 | `context.rules` | `src/core/rule-engine.js` | 纯本地 JSON 事件节点条件校验、加权池抽取、分支选择与状态变更执行器 |
 | `context.stateMachine` | `src/core/state-machine.js` | 通用阶段状态机（`addState` / `addTransition` / `transition` / `getAllowedTransitions`） |
 | `context.turnStepper` | `src/core/state-machine.js` | 通用回合/周期步进器（`advance` 自动广播 `turn:advanced` 与 `cycle:completed`） |
-| `context.narrative` | `src/core/prompt-pipeline.js` | 双轨叙事路由器（`local` / `ai-polish` / `ai-free`），内置模板插值与无 Key/断网自动降级 |
+| `context.narrative` | `src/core/prompt-pipeline.js` | 双轨叙事路由器（`local` / `ai-polish` / `ai-free`），内置模板插值、人设上下文注入与无 Key/断网自动降级 |
 | `context.assets` | `src/core/asset-manager.js` | 手机相册选图、离屏 Canvas WebP 压缩入 IndexedDB、几何 SVG 占位图生成 |
 | `context.uiKit` | `src/core/ui-kit.js` | 单手友好组件库（`openBottomSheet` / `confirmDialog` / `showToast` / `createProgressBar` / `createTabs` / `createCollapsibleCard`） |
 | `context.api` | `src/core/api.js` | 多模型统一网关（`chat` / `testConnection` / `getConfig` / `isMockMode`） |
@@ -97,7 +99,7 @@
 
 ---
 
-## 专项系统规范（v12 更新）
+## 专项系统规范（v12~v13 更新）
 
 ### 1. 五舰种差异化成长、战斗定位与大编队阶梯消耗
 - **舰种成长与定位（`src/core/stat-rules.js` & `src/core/tactical-combat.js`）：**
@@ -116,4 +118,16 @@
 ### 3. 宿舍全员花名册与点头像直达精修角色卡
 - **全局状态汇总（`src/core/port-buildings.js`）**：宿舍面板除床位外，底部展示仓库**全部舰娘花名册**与全局状态徽章（`宿舍休整中`、`出征编队中`、`远征派遣中`、`船坞维修中`、`待命`）。
 - **零中转直达角色卡（`openCharacterCardById`）**：点击宿舍、港区秘书舰舞台或舰队编成中的任意舰娘头像，自动关闭弹窗并直接进入其完整精修角色卡；顶部内置行内快捷条（`入住宿舍/移出宿舍`、`设为秘书舰`、`投喂补给恢复`、`调级/改白值`）。
+
+### 4. 本地性格池与同舰不同性格组合引擎（v13）
+- **双池随机组合（`src/core/personality-pool.js`）**：内置 12 种主性格 × 12 种副特质/口癖（144 种基础组合），并支持在角色卡「管理性格词库」弹窗中自由增删改持久化存入 IndexedDB。
+- **同舰不同性格**：船坞建造新舰娘或新建角色时自动抽取不与前一只同名舰重复的 `主性格 × 副特质` 组合；角色卡顶部提供「**重新随机性格**」按钮一键重随。
+
+### 5. 紧凑型分类装备仓储系统（v13）
+- **分类筛选与单行折叠卡片（`src/core/inventory-system.js`、`src/modules/supply-workshop.js`、`src/modules/character-console.js`）**：顶部提供「全部 / 核心三件套 / 主战武器 / 战术辅助 / 服装与道具」五类标签与「全部状态 / 闲置中 / 已装备」筛选；每件装备默认以紧凑单行折叠卡片展示图标、名称、`+Lv`、精简数值与穿戴者徽章，点击展开强化/换装/调词条/删除面板，并支持「**清理闲置+0**」一键批量清理。
+
+### 6. 性格驱动动态台词引擎与示范内容大礼包（v13）
+- **动态台词与 AI 上下文注入（`src/core/dialogue-engine.js` & `src/core/prompt-pipeline.js`）**：秘书舰交谈/赠礼、宿舍休整、船坞维修及出征战斗指令均结合当前 `主性格 × 副特质`、好感、服装与战损状态（完好/中破/大破）生成鲜活台词；外部 AI 模式下自动在 System Prompt 注入完整人设、服装与战损上下文。
+- **开箱示范内容大礼包与老存档保护（`src/core/content-manager.js` & `src/core/story-pack-engine.js`）**：包含 5 大舰种 8 名特色舰娘、16 件核心/主战/辅助/服装装备、低中高三档敌舰编队、16 事件港区生活日常包与 4 章节《深海遗迹调查》分支剧情包。全新存档自动加载完整大礼包；已有老存档保持原有记录不被覆盖，可在「图鉴与内容台」点击「**一键合并导入示范内容大礼包**」无损增量补全。
+
 

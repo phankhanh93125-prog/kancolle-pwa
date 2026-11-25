@@ -70,12 +70,23 @@ export class TacticalCombatEngine {
    *   bus?: import('./event-bus.js').EventBus | null
    * }} deps
    */
-  constructor({ entities, inventory, statRules, resources, narrative, commander = null, formation = null, bus = null }) {
+  constructor({
+    entities,
+    inventory,
+    statRules,
+    resources,
+    narrative,
+    dialogueEngine = null,
+    commander = null,
+    formation = null,
+    bus = null,
+  }) {
     this._entities = entities;
     this._inventory = inventory;
     this._statRules = statRules;
     this._resources = resources;
     this._narrative = narrative;
+    this._dialogueEngine = dialogueEngine;
     this._commander = commander;
     this._formation = formation;
     this._bus = bus;
@@ -682,11 +693,39 @@ export class TacticalCombatEngine {
       }
     }
 
-    // 3. Render dual-track tactical report via PromptPipeline
+    // 3. Render dual-track tactical report via PromptPipeline + Personality DialogueEngine
     const extraText = extraEvents.length > 0 ? `（${extraEvents.join('；')}）` : '';
     const displayCmdLabel = isAirstrike ? '舰载机空袭' : cmdDef.label;
+    const flagshipEntity = this._entities.get(flagship.id);
+    let speechPrefix = '';
+    let contextMeta = null;
+    if (this._dialogueEngine && flagshipEntity) {
+      const cmdProfile = this._commander?.getProfile ? this._commander.getProfile() : null;
+      const combatVoice = this._dialogueEngine.composeCombatLine({
+        actor: flagshipEntity,
+        commanderName: cmdProfile?.name || '指挥官',
+        commandId,
+        visualStyle,
+        damageDealt,
+        damageTaken,
+        isCrit,
+        victory: session.status === 'victory',
+      });
+      if (combatVoice?.speech) {
+        speechPrefix = `${combatVoice.speech} `;
+      }
+      const eqMap = this._inventory?.getCharacterEquipment ? this._inventory.getCharacterEquipment(flagshipEntity.id) : {};
+      contextMeta = this._dialogueEngine.buildAiContextMeta({
+        actor: flagshipEntity,
+        commander: this._commander,
+        outfitName: eqMap.outfit?.name || '战斗执勤服',
+        affStageLabel: '出征协同',
+        sceneType: `combat-${visualStyle}`,
+      });
+    }
+
     const rendered = await this._narrative.run({
-      template: localTemplate,
+      template: `${speechPrefix}${localTemplate}`,
       variables: {
         actor: { name: fleetLabel, hp: flagship.hp, maxHp: flagship.maxHp },
         formation: fleet.formationName,
@@ -704,7 +743,8 @@ export class TacticalCombatEngine {
         lockOnBonus: session.lockOnBonus,
         extraText,
       },
-      polishInstruction: `请以简洁紧凑的海战战术战报口吻润色第 ${session.turn} 回合「${fleet.formationName}」的【${displayCmdLabel}】交战结果，严格保留所有伤害、僚机协同与检定数字：`,
+      contextMeta,
+      polishInstruction: `请以简洁紧凑的海战战术战报口吻润色第 ${session.turn} 回合「${fleet.formationName}」的【${displayCmdLabel}】交战结果，严格保留所有伤害、僚机协同与检定数字并保留旗舰性格台词风格：`,
     });
 
     const turnEntry = {

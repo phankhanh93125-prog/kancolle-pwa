@@ -85,13 +85,25 @@ export class PortBuildingsSystem {
    *   bus?: import('./event-bus.js').EventBus | null
    * }} deps
    */
-  constructor({ storage, entities, inventory, resources, commander, logs = null, bus = null }) {
+  constructor({
+    storage,
+    entities,
+    inventory,
+    resources,
+    commander,
+    personalityPool = null,
+    dialogueEngine = null,
+    logs = null,
+    bus = null,
+  }) {
     this._storage = storage;
     this._scope = storage.namespace(STORAGE_NS);
     this._entities = entities;
     this._inventory = inventory;
     this._resources = resources;
     this._commander = commander;
+    this._personalityPool = personalityPool;
+    this._dialogueEngine = dialogueEngine;
     this._logs = logs;
     this._bus = bus;
 
@@ -302,18 +314,19 @@ export class PortBuildingsSystem {
     dorm.residents.push(cid);
     dorm.lastSettledAt = Date.now();
     await this.persist();
+    const restLine = this._dialogueEngine ? this._dialogueEngine.composeDormRestLine(actor) : '';
     if (this._logs) {
       this._logs.add({
         category: LOG_CATEGORIES.SYSTEM,
         actorId: cid,
         actorName: actor.name,
         title: `[${actor.name}] 入住港区宿舍`,
-        detail: `当前宿舍入住 ${dorm.residents.length}/${dorm.capacity}，离线将自动恢复士气与好感`,
+        detail: `${restLine ? `${restLine} | ` : ''}当前宿舍入住 ${dorm.residents.length}/${dorm.capacity}，离线将自动恢复士气与好感`,
       });
     }
-    this._emit('buildings:dorm-changed', { action: 'assign', characterId: cid });
+    this._emit('buildings:dorm-changed', { action: 'assign', characterId: cid, restLine });
     this._emit('buildings:updated', { reason: 'dorm-assign' });
-    return this.getDormitoryState();
+    return { ...this.getDormitoryState(), restLine };
   }
 
   async removeDormResident(characterId) {
@@ -492,19 +505,21 @@ export class PortBuildingsSystem {
     this._syncDockTasksToEntitySystem();
     await this.persist();
 
+    const dockActor = this._entities?.get(cid);
+    const repairLine = this._dialogueEngine && dockActor ? this._dialogueEngine.composeDockRepairLine(dockActor, { isComplete: false }) : '';
     if (this._logs) {
       this._logs.add({
         category: LOG_CATEGORIES.STAT,
         actorId: cid,
         actorName: plan.characterName,
         title: `[${plan.characterName}] 进入船坞${plan.isMaintenanceOnly ? '预防性船体保养' : '入渠维修'}`,
-        detail: `预计耗时 ${plan.durationText} | 消耗：钢材 ${plan.cost.steel} / 铝材 ${plan.cost.bauxite}`,
+        detail: `${repairLine ? `${repairLine} | ` : ''}预计耗时 ${plan.durationText} | 消耗：钢材 ${plan.cost.steel} / 铝材 ${plan.cost.bauxite}`,
       });
     }
 
-    this._emit('buildings:dock-started', { job: deepClone(job) });
+    this._emit('buildings:dock-started', { job: deepClone(job), repairLine });
     this._emit('buildings:updated', { reason: 'dock-start' });
-    return deepClone(job);
+    return { ...deepClone(job), repairLine };
   }
 
   async completeDockRepair(characterId, { now = Date.now(), fastRepair = false, silent = false } = {}) {
@@ -546,19 +561,20 @@ export class PortBuildingsSystem {
     this._entities?.removeTask(`dock_task_${cid}`);
     await this.persist();
 
+    const completeLine = this._dialogueEngine && actor ? this._dialogueEngine.composeDockRepairLine(actor, { isComplete: true }) : '';
     if (!silent && this._logs) {
       this._logs.add({
         category: LOG_CATEGORIES.STAT,
         actorId: cid,
         actorName: job.characterName,
         title: `[${job.characterName}] 船坞${fastRepair ? '快速修复' : '维修'}完成出渠`,
-        detail: `耐久已恢复满值${fastMethod ? `（快速修复消耗：${fastMethod}）` : ''}`,
+        detail: `${completeLine ? `${completeLine} | ` : ''}耐久已恢复满值${fastMethod ? `（快速修复消耗：${fastMethod}）` : ''}`,
       });
     }
 
-    this._emit('buildings:dock-completed', { characterId: cid, fastRepair, fastMethod });
+    this._emit('buildings:dock-completed', { characterId: cid, fastRepair, fastMethod, completeLine });
     this._emit('buildings:updated', { reason: 'dock-complete' });
-    return { characterId: cid, characterName: job.characterName, fastMethod };
+    return { characterId: cid, characterName: job.characterName, fastMethod, completeLine };
   }
 
   async expandDockyard() {
@@ -592,11 +608,18 @@ export class PortBuildingsSystem {
     const initialAffBonus = this._commander ? this._commander.getInitialAffinityBonus() : 0;
     const charId = `char_dock_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`;
 
+    // Same ship, different personality: avoid repeating the last same-name ship's combo key
+    const existingSameName = this._entities
+      .list({ kind: 'character' })
+      .filter((c) => c.name === cleanName && c.meta?.personalityCombo?.key);
+    const avoidKey = existingSameName.length > 0 ? existingSameName[existingSameName.length - 1].meta.personalityCombo.key : null;
+    const rolledCombo = this._personalityPool ? this._personalityPool.rollCombination({ avoidKey }) : null;
+
     const entity = this._entities.register({
       id: charId,
       kind: 'character',
       name: cleanName,
-      tags: [cleanType, '船坞建造'],
+      tags: [cleanType, '船坞建造', ...(rolledCombo ? [rolledCombo.primaryName, rolledCombo.secondaryName] : [])],
       stats: {
         ...tpl,
         hp: tpl.maxHp,
@@ -604,6 +627,9 @@ export class PortBuildingsSystem {
         ap: 100,
         maxAp: 100,
         affinity: clamp(20 + initialAffBonus, 0, 100),
+        level: 1,
+        exp: 0,
+        maxExp: 100,
       },
       statBounds: {
         hp: { min: 0, max: 500 },
@@ -613,10 +639,13 @@ export class PortBuildingsSystem {
       },
       meta: {
         shipType: cleanType,
-        roleTag: `${cleanType} · 船坞新锐`,
+        roleTag: rolledCombo ? `${cleanType} · ${rolledCombo.comboLabel}` : `${cleanType} · 船坞新锐`,
         avatarAssetId: null,
-        personality: '刚从港区船坞下水的新锐舰娘，干劲十足，期待与指挥官共同出击。',
-        speechHabit: `「${cleanName}，正式向指挥官报到！」`,
+        personalityCombo: rolledCombo,
+        personality:
+          rolledCombo?.description ||
+          '刚从港区船坞下水的新锐舰娘，干劲十足，期待与指挥官共同出击。',
+        speechHabit: rolledCombo?.speechHabit || `「${cleanName}，正式向指挥官报到！」`,
       },
     });
 

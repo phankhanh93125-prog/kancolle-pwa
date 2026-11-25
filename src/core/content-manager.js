@@ -18,7 +18,7 @@
 
 import { clamp } from './calc-engine.js';
 import { NODE_TYPES } from './route-generator.js';
-import { ITEM_CATEGORY_LABELS } from './inventory-system.js';
+import { ITEM_CATEGORY_LABELS, STARTER_PACK_EQUIPMENT_16 } from './inventory-system.js';
 import { LOG_CATEGORIES } from './log-system.js';
 
 const STORAGE_NS = 'core-content-studio';
@@ -31,6 +31,7 @@ export const BUILTIN_ENEMY_ARCHIVE = Object.freeze([
     id: 'enemy_builtin_patrol',
     name: '前哨巡逻编队',
     tier: NODE_TYPES.ENCOUNTER,
+    riskLevel: '低危海域',
     hp: 58,
     armor: 4,
     attackPower: 11,
@@ -46,6 +47,7 @@ export const BUILTIN_ENEMY_ARCHIVE = Object.freeze([
     id: 'enemy_builtin_sub_wolfpack',
     name: '潜航伏击狼群',
     tier: NODE_TYPES.ENCOUNTER,
+    riskLevel: '低危海域',
     hp: 62,
     armor: 3,
     attackPower: 12,
@@ -58,9 +60,26 @@ export const BUILTIN_ENEMY_ARCHIVE = Object.freeze([
     builtIn: true,
   },
   {
+    id: 'enemy_builtin_heavy_cruiser_div',
+    name: '重巡破交封锁支队',
+    tier: NODE_TYPES.ELITE,
+    riskLevel: '中危海域',
+    hp: 108,
+    armor: 9,
+    attackPower: 17,
+    airThreat: 6,
+    subThreat: 0,
+    threatLabel: '重甲水面火力编队',
+    weakness: 'torpedo',
+    weaknessLabel: '鱼雷弱点',
+    drops: ['钢材 95~130', '燃油 70~95', '银条 190~240'],
+    builtIn: true,
+  },
+  {
     id: 'enemy_builtin_air_raider',
     name: '轻航突袭中队',
     tier: NODE_TYPES.ELITE,
+    riskLevel: '中危海域',
     hp: 96,
     armor: 7,
     attackPower: 16,
@@ -73,9 +92,26 @@ export const BUILTIN_ENEMY_ARCHIVE = Object.freeze([
     builtIn: true,
   },
   {
+    id: 'enemy_builtin_abyssal_dreadnought',
+    name: '深海战列强袭群',
+    tier: NODE_TYPES.BOSS,
+    riskLevel: '高危海域',
+    hp: 185,
+    armor: 15,
+    attackPower: 24,
+    airThreat: 14,
+    subThreat: 10,
+    threatLabel: '超重甲炮击主力',
+    weakness: 'torpedo',
+    weaknessLabel: '鱼雷弱点',
+    drops: ['钢材 160~240', '铝材 95~145', '银条 310~430', '金条 3~7'],
+    builtIn: true,
+  },
+  {
     id: 'enemy_builtin_boss_flagship',
     name: '海域主力旗舰群',
     tier: NODE_TYPES.BOSS,
+    riskLevel: '高危海域',
     hp: 168,
     armor: 12,
     attackPower: 22,
@@ -86,6 +122,111 @@ export const BUILTIN_ENEMY_ARCHIVE = Object.freeze([
     weaknessLabel: '鱼雷弱点',
     drops: ['钢材 140~220', '铝材 90~150', '银条 280~400', '金条 2~7'],
     builtIn: true,
+  },
+]);
+
+/**
+ * 8 Featured Starter Shipgirls covering ALL 5 ship classes (DD×2, CL×2, CA×1, BB×2, CV×1).
+ * Each receives an independent random Primary × Secondary personality combination upon creation/merge.
+ */
+export const STARTER_PACK_SHIPGIRLS_8 = Object.freeze([
+  {
+    id: 'char_template_01',
+    name: '示范驱逐 · 一号舰',
+    shipType: '驱逐舰',
+    roleTag: '高机动雷击反潜',
+    stats: { maxHp: 78, hp: 78, firepower: 46, armor: 34, torpedo: 76, evasion: 78, recon: 62, aa: 54, asw: 74, morale: 78, ap: 90, maxAp: 100, affinity: 52, level: 1, exp: 0, maxExp: 100 },
+  },
+  {
+    id: 'char_template_02',
+    name: '示范轻巡 · 二号舰',
+    shipType: '轻巡洋舰',
+    roleTag: '均衡侦查防空',
+    stats: { maxHp: 94, hp: 94, firepower: 60, armor: 52, torpedo: 58, evasion: 64, recon: 72, aa: 70, asw: 66, morale: 82, ap: 90, maxAp: 100, affinity: 42, level: 1, exp: 0, maxExp: 100 },
+  },
+  {
+    id: 'char_template_03',
+    name: '示范战列 · 三号舰',
+    shipType: '战列舰',
+    roleTag: '主力重炮重甲',
+    stats: { maxHp: 132, hp: 132, firepower: 86, armor: 82, torpedo: 12, evasion: 38, recon: 48, aa: 68, asw: 22, morale: 76, ap: 90, maxAp: 100, affinity: 38, level: 1, exp: 0, maxExp: 100 },
+  },
+  {
+    id: 'char_pack_ca_04',
+    name: '曙光重巡 · 四号舰',
+    shipType: '重巡洋舰',
+    roleTag: '重甲护盾援护主力',
+    stats: { maxHp: 112, hp: 112, firepower: 76, armor: 70, torpedo: 46, evasion: 54, recon: 58, aa: 62, asw: 32, morale: 80, ap: 100, maxAp: 100, affinity: 35, level: 1, exp: 0, maxExp: 100 },
+  },
+  {
+    id: 'char_pack_cv_05',
+    name: '苍穹航母 · 五号舰',
+    shipType: '航空母舰',
+    roleTag: '舰载机空袭与视野扩展',
+    stats: { maxHp: 118, hp: 118, firepower: 72, armor: 58, torpedo: 0, evasion: 52, recon: 86, aa: 82, asw: 30, morale: 82, ap: 100, maxAp: 100, affinity: 36, level: 1, exp: 0, maxExp: 100 },
+  },
+  {
+    id: 'char_pack_dd_06',
+    name: '疾风驱逐 · 六号舰',
+    shipType: '驱逐舰',
+    roleTag: '高速夜战氧雷突击',
+    stats: { maxHp: 74, hp: 74, firepower: 44, armor: 32, torpedo: 82, evasion: 84, recon: 60, aa: 52, asw: 78, morale: 84, ap: 100, maxAp: 100, affinity: 30, level: 1, exp: 0, maxExp: 100 },
+  },
+  {
+    id: 'char_pack_cl_07',
+    name: '星铃轻巡 · 七号舰',
+    shipType: '轻巡洋舰',
+    roleTag: '区域防空与反潜核心',
+    stats: { maxHp: 92, hp: 92, firepower: 58, armor: 50, torpedo: 60, evasion: 66, recon: 76, aa: 78, asw: 72, morale: 80, ap: 100, maxAp: 100, affinity: 30, level: 1, exp: 0, maxExp: 100 },
+  },
+  {
+    id: 'char_pack_bb_08',
+    name: '铁壁战列 · 八号舰',
+    shipType: '战列舰',
+    roleTag: '远程超重穿甲压阵',
+    stats: { maxHp: 138, hp: 138, firepower: 90, armor: 86, torpedo: 10, evasion: 34, recon: 50, aa: 70, asw: 20, morale: 78, ap: 100, maxAp: 100, affinity: 32, level: 1, exp: 0, maxExp: 100 },
+  },
+]);
+
+export const STARTER_PACK_ENEMIES_TIERED = Object.freeze([
+  {
+    id: 'enemy_pack_low_picket',
+    name: '近海高速哨戒驱逐队',
+    tier: NODE_TYPES.ENCOUNTER,
+    hp: 60,
+    armor: 4,
+    attackPower: 11,
+    airThreat: 0,
+    subThreat: 8,
+    threatLabel: '低危 · 驱逐哨戒编队',
+    weakness: 'shelling',
+    drops: ['燃油 50', '钢材 60', '银条 120'],
+  },
+  {
+    id: 'enemy_pack_mid_ca_cvl',
+    name: '中海重巡轻航混编队',
+    tier: NODE_TYPES.ELITE,
+    hp: 112,
+    armor: 9,
+    attackPower: 17,
+    airThreat: 20,
+    subThreat: 0,
+    threatLabel: '中危 · 航空与重炮混编',
+    weakness: 'torpedo',
+    drops: ['铝材 90', '钢材 110', '银条 210'],
+  },
+  {
+    id: 'enemy_pack_high_carrier_taskforce',
+    name: '深海机动航母特混舰队',
+    tier: NODE_TYPES.BOSS,
+    hp: 196,
+    armor: 14,
+    attackPower: 25,
+    airThreat: 34,
+    subThreat: 16,
+    threatLabel: '高危 · 航母特混决战群',
+    weakness: 'shelling',
+    drops: ['钢材 180', '铝材 160', '银条 360', '金条 4'],
   },
 ]);
 
@@ -597,6 +738,143 @@ export class ContentManager {
     }
     this._emit('content:mod-imported', { mode, counts });
     return counts;
+  }
+
+  /**
+   * Non-destructively merge the full Starter Content Bundle into the current save:
+   *   - 8 featured shipgirls across all 5 ship classes (DD/CL/CA/BB/CV) with distinct random personalities
+   *   - 16 core parts, main weapons, tactical support modules & outfits
+   *   - Low/Medium/High tiered enemy formations
+   *   - 16-event Port Life Daily Pack + 4-Chapter Abyssal Ruins Investigation Story Pack
+   * NEVER overwrites existing characters, items, enemies, or story flags!
+   */
+  async mergeStarterContentBundle({
+    personalityPool = null,
+    storyPacks = null,
+    statRules = null,
+    persistRosterFn = null,
+    silent = false,
+  } = {}) {
+    const summary = {
+      addedShips: 0,
+      addedItems: 0,
+      addedEnemies: 0,
+      addedPacks: 0,
+    };
+
+    // 1. Merge 16-piece Equipment Pack first (only missing IDs)
+    if (this._inventory) {
+      for (const tpl of STARTER_PACK_EQUIPMENT_16) {
+        if (!this._inventory.getItem(tpl.id)) {
+          await this._inventory.createItem(deepClone(tpl));
+          summary.addedItems += 1;
+        }
+      }
+    }
+
+    // 2. Merge 8 Featured Shipgirls across DD/CL/CA/BB/CV (only missing IDs)
+    if (this._entities) {
+      const usedComboKeys = new Set(
+        this._entities
+          .list({ kind: 'character' })
+          .map((c) => c.meta?.personalityCombo?.key)
+          .filter(Boolean)
+      );
+
+      for (const tpl of STARTER_PACK_SHIPGIRLS_8) {
+        if (this._entities.has(tpl.id)) {
+          // Ensure existing ships also have a personality combo if missing (lossless)
+          if (personalityPool) {
+            personalityPool.ensurePersonalityOnEntity(this._entities.get(tpl.id));
+          }
+          continue;
+        }
+        let combo = null;
+        if (personalityPool) {
+          for (let attempt = 0; attempt < 10; attempt++) {
+            const cand = personalityPool.rollCombination();
+            if (!usedComboKeys.has(cand.key)) {
+              combo = cand;
+              break;
+            }
+          }
+          if (!combo) combo = personalityPool.rollCombination();
+          usedComboKeys.add(combo.key);
+        }
+
+        const reg = this._entities.register({
+          id: tpl.id,
+          kind: 'character',
+          name: tpl.name,
+          tags: [tpl.shipType, ...(combo ? [combo.primaryName, combo.secondaryName] : [])],
+          stats: deepClone(tpl.stats),
+          statBounds: {
+            hp: { min: 0, max: 500 },
+            morale: { min: 0, max: 100 },
+            ap: { min: 0, max: 100 },
+            affinity: { min: 0, max: 100 },
+          },
+          meta: {
+            shipType: tpl.shipType,
+            roleTag: tpl.roleTag,
+            avatarAssetId: null,
+            personalityCombo: combo,
+            personality: combo?.description || `${tpl.shipType}主力舰娘，随时待命出击。`,
+            speechHabit: combo?.speechHabit || `「${tpl.name}，报到完毕！」`,
+          },
+        });
+        if (statRules && typeof statRules.ensureShipProgression === 'function') {
+          statRules.ensureShipProgression(reg);
+        }
+
+        // Equip starter core 3-piece so newly merged ships are immediately seaworthy
+        if (this._inventory) {
+          if (this._inventory.getItem('item_core_engine_01')) {
+            await this._inventory.equipItem(reg.id, 'engine', 'item_core_engine_01');
+          }
+          if (this._inventory.getItem('item_core_armor_01')) {
+            await this._inventory.equipItem(reg.id, 'armor', 'item_core_armor_01');
+          }
+          if (this._inventory.getItem('item_core_core_01')) {
+            await this._inventory.equipItem(reg.id, 'core', 'item_core_core_01');
+          }
+          const effMaxHp = Math.round(this._entities.getEffectiveStat(reg.id, 'maxHp', { round: 'round' }).final);
+          this._entities.setStat(reg.id, 'hp', effMaxHp, { min: 0, max: effMaxHp });
+        }
+
+        summary.addedShips += 1;
+      }
+    }
+
+    // 3. Merge Tiered Low / Medium / High Enemy Formations (only missing IDs)
+    const existingEnemyIds = new Set(this._state.customEnemies.map((e) => e.id));
+    for (const enemyTpl of STARTER_PACK_ENEMIES_TIERED) {
+      if (!existingEnemyIds.has(enemyTpl.id)) {
+        await this.createCustomEnemy(deepClone(enemyTpl));
+        summary.addedEnemies += 1;
+      }
+    }
+
+    // 4. Merge 16-Event Port Life Pack & 4-Chapter Abyssal Ruins Pack (only missing IDs)
+    if (storyPacks && typeof storyPacks.ensureStarterStoryPacks === 'function') {
+      const spRes = await storyPacks.ensureStarterStoryPacks();
+      summary.addedPacks = spRes.added || 0;
+    }
+
+    if (typeof persistRosterFn === 'function') {
+      await persistRosterFn();
+    }
+
+    await this.persist();
+    if (!silent && this._logs) {
+      this._logs.add({
+        category: LOG_CATEGORIES.SYSTEM,
+        title: '合并导入「开局标准示范内容大礼包」',
+        detail: `新增舰娘 ${summary.addedShips} 名 · 装备 ${summary.addedItems} 件 · 分级敌舰 ${summary.addedEnemies} 支 · 剧情事件包 ${summary.addedPacks} 套（未覆盖任何旧存档数据）`,
+      });
+    }
+    this._emit('content:mod-imported', { mode: 'starter-merge', counts: summary });
+    return summary;
   }
 
   serialize() {
