@@ -1,4 +1,4 @@
-const CACHE_NAME = 'modular-pwa-base-v20';
+const CACHE_NAME = 'modular-pwa-base-v21';
 
 const CORE_ASSETS = [
   './',

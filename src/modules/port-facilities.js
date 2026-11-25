@@ -10,9 +10,13 @@
  */
 
 import {
+  GRID_COLS,
+  GRID_ROWS,
+  GRID_ROW_LABELS,
   SHIP_TYPE_PRESETS,
   getShipClassProfile,
   getShipClassSvg,
+  getTacticalGridSymbolSvg,
   resolveShipClass,
 } from '../core/stat-rules.js';
 import { openCharacterCardById, persistCharacterRoster } from './character-console.js';
@@ -561,23 +565,34 @@ function createDockyardModule() {
 // ============================================================
 
 function createFormationModule() {
-  const state = { container: null, context: null, unsubs: [], avatarCache: new Map() };
+  const state = {
+    container: null,
+    context: null,
+    unsubs: [],
+    avatarCache: new Map(),
+    selectedCellIndex: null,
+  };
 
   async function render() {
     if (!state.container || !state.context) return;
-    const { formation, entities, resources, assets, modules, uiKit } = state.context;
+    const { formation, entities, resources, assets, rootStorage, modules, uiKit } = state.context;
     const fState = formation.getState();
     const allFormations = formation.listFormations();
     const summary = fState.summary;
     const costInfo = summary.staggeredStepCost || formation.computeStaggeredStepCost();
+    const gridCells = fState.gridCells || formation.getGridSlots();
     const allChars = getAllCharacters(entities);
-    const inFleetIds = new Set(fState.memberIds);
-    const candidates = allChars.filter((c) => !inFleetIds.has(c.id));
+    const gridMap = fState.gridMap || {};
+    const candidates = allChars.filter((c) => !gridMap[c.id]);
 
     const avatars = new Map();
     for (const c of allChars) {
       avatars.set(c.id, await resolveAvatar(assets, state.avatarCache, c));
     }
+
+    const selIdx = state.selectedCellIndex;
+    const selectedCell =
+      Number.isInteger(selIdx) && selIdx >= 0 && selIdx < gridCells.length ? gridCells[selIdx] : null;
 
     state.container.innerHTML = '';
     const root = document.createElement('div');
@@ -586,23 +601,123 @@ function createFormationModule() {
 
     root.appendChild(
       uiKit.createSubpageHeader({
-        title: '舰队编成与阵型',
-        subtitle: `${fState.count}/${fState.cap} 席位 · ${summary.formationName}`,
+        title: '3×4 自由排阵编队',
+        subtitle: `统率上限 ${fState.count}/${fState.cap} 舰 · ${summary.formationName}`,
         modules,
         resources,
-        resourceKeys: ['fuel', 'ammo'],
+        resourceKeys: [],
         id: 'formation-subpage-header',
       })
     );
 
-    // 1. Staggered Cost & Fleet Stats Summary Card
-    const sumCard = document.createElement('section');
-    sumCard.className = 'surface-card lab-stack-sm';
-    sumCard.innerHTML = `
+    // 1. Upper Section: 3×4 Tactical Ship-Class Symbol Formation Board + One-Tap Presets
+    const boardCard = document.createElement('section');
+    boardCard.className = 'surface-card lab-stack-sm form-board-card';
+    boardCard.id = 'formation-board-card';
+
+    const rowsHtml = [];
+    for (let r = 0; r < GRID_ROWS; r++) {
+      const cellsHtml = [];
+      for (let c = 0; c < GRID_COLS; c++) {
+        const idx = r * GRID_COLS + c;
+        const cell = gridCells[idx];
+        const m = cell?.member || null;
+        const isSel = selIdx === idx;
+        if (m) {
+          const hpPct = Math.round((Math.max(0, m.hp) / Math.max(1, m.maxHp)) * 100);
+          cellsHtml.push(`
+            <button type="button" class="tac-grid-cell is-occupied is-ally ${isSel ? 'is-selected' : ''} ${m.isFlagship ? 'is-flagship' : ''}" data-grid-cell="${idx}" title="${escapeHtml(m.name)}（${escapeHtml(cell.rowLabel)}）">
+              <span class="tac-cell-no">${m.isFlagship ? '★' : ''}${escapeHtml(m.slotCode)}</span>
+              ${getTacticalGridSymbolSvg(m.classCode, { side: 'ally', size: 28 })}
+              <span class="tac-cell-mini-name">${escapeHtml(m.name.slice(0, 4))}</span>
+              <span class="tac-cell-hp"><span class="tac-cell-hp-fill ${hpPct < 25 ? 'is-danger' : ''}" style="width:${hpPct}%"></span></span>
+            </button>
+          `);
+        } else {
+          cellsHtml.push(`
+            <button type="button" class="tac-grid-cell is-empty ${isSel ? 'is-selected-empty' : ''}" data-grid-cell="${idx}" aria-label="${escapeHtml(GRID_ROW_LABELS[r])} 第${c + 1}列空位">
+              <span class="tac-radar-dot" aria-hidden="true"></span>
+            </button>
+          `);
+        }
+      }
+      rowsHtml.push(`
+        <div class="tac-grid-row" data-grid-row="${r}">
+          <span class="tac-row-label">${escapeHtml(GRID_ROW_LABELS[r])}</span>
+          <div class="tac-grid-row-cells">${cellsHtml.join('')}</div>
+        </div>
+      `);
+    }
+
+    const hintText = selectedCell
+      ? selectedCell.member
+        ? `已选中 [${selectedCell.member.slotCode}] ${selectedCell.member.name}（${selectedCell.rowLabel}）：点任意格可移动/互换站位，再点自身或下方按钮可撤下`
+        : `已选中 ${selectedCell.rowLabel}空位：请点击下方可用舰娘直接部署到此格`
+      : '点空位部署舰娘 · 点两格互换站位 · 点已部署单位可移位或撤下';
+
+    const quickPresets = [
+      { id: 'line_ahead', label: '单纵阵' },
+      { id: 'double_line', label: '复纵阵' },
+      { id: 'diamond', label: '轮型防空阵' },
+    ];
+    const extraPresets = allFormations.filter((f) => !quickPresets.some((q) => q.id === f.id));
+
+    boardCard.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
-        <h2 class="section-title">全队聚合战力与阶梯消耗</h2>
+        <h2 class="section-title">3×4 舰种战术排阵盘</h2>
         <span class="status-badge badge-ok" id="form-staggered-badge">单步 油${costInfo.fuel} / 弹${costInfo.ammo}</span>
       </div>
+
+      <div class="tac-preset-bar" id="formation-preset-bar">
+        ${quickPresets
+          .map(
+            (p) => `
+          <button type="button" class="${p.id === fState.formationId ? 'btn-primary' : 'btn-secondary'} tac-preset-btn" data-preset-arrange="${p.id}">
+            ${escapeHtml(p.label)}
+          </button>
+        `
+          )
+          .join('')}
+        ${extraPresets
+          .map(
+            (p) => `
+          <button type="button" class="${p.id === fState.formationId ? 'btn-primary' : 'btn-secondary'} tac-preset-btn is-compact" data-preset-arrange="${escapeHtml(p.id)}">
+            ${escapeHtml(p.name)}
+          </button>
+        `
+          )
+          .join('')}
+      </div>
+
+      <div class="tac-radar-board is-editor-board" id="formation-grid-3x4" data-no-swipe="true">
+        <div class="tac-board-axis-hint">▲ 接敌海面方向（前排近距突击 · 后排战列/航母远程压制）</div>
+        ${rowsHtml.join('')}
+      </div>
+
+      <div class="tac-board-hint ${selectedCell ? 'is-active' : ''}" id="formation-grid-hint">${escapeHtml(hintText)}</div>
+
+      ${
+        selectedCell?.member
+          ? `
+        <div class="tac-selected-bar" id="formation-selected-actions">
+          <div class="tac-selected-info">
+            <strong>[${escapeHtml(selectedCell.member.slotCode)}] ${escapeHtml(selectedCell.member.name)}</strong>
+            <span class="status-badge badge-muted">${escapeHtml(selectedCell.rowLabel)} · ${escapeHtml(selectedCell.member.classCode)}</span>
+          </div>
+          <div class="tac-selected-btns">
+            ${
+              !selectedCell.member.isFlagship
+                ? `<button type="button" class="btn-secondary tac-mini-act" id="btn-sel-flagship">设为旗舰</button>`
+                : ''
+            }
+            <button type="button" class="btn-secondary tac-mini-act" id="btn-sel-card">角色卡</button>
+            <button type="button" class="btn-danger tac-mini-act" id="btn-sel-remove">撤下</button>
+          </div>
+        </div>
+      `
+          : ''
+      }
+
       <div class="port-gear-summary">
         <span class="ns-chip">火力 ${summary.effective.firepower}</span>
         <span class="ns-chip">雷击 ${summary.effective.torpedo}</span>
@@ -610,33 +725,112 @@ function createFormationModule() {
         <span class="ns-chip">防空 ${summary.effective.aa}</span>
         <span class="ns-chip">反潜 ${summary.effective.asw}</span>
         <span class="ns-chip">侦查 ${summary.effective.recon}</span>
-        <span class="ns-chip">视野 ${summary.visionRange || 2}格</span>
       </div>
-      <p class="muted-text" style="font-size:11.5px;">
-        阶梯公式：第 1~3 号舰 100% · 第 4~6 号舰 75% · 第 7~12 号舰 55%${
-          costInfo.dispatchDiscount > 0 ? ` × 调度折扣 -${Math.round(costInfo.dispatchDiscount * 100)}%` : ''
-        }
-      </p>
+
       <div class="lab-btn-grid">
         <button type="button" id="btn-form-autofill" class="btn-secondary uikit-touch-target">一键补满席位</button>
         <button type="button" id="btn-form-auto-equip-fleet" class="btn-secondary uikit-touch-target" ${summary.members.length === 0 ? 'disabled' : ''}>全队一键最优配装</button>
       </div>
-      <button type="button" id="btn-form-goto-sortie" class="btn-primary uikit-touch-target">前往出征海图</button>
+      <button type="button" id="btn-form-goto-sortie" class="btn-primary uikit-touch-target">确认阵型 · 前往出征海图</button>
     `;
 
-    sumCard.querySelector('#btn-form-autofill').addEventListener('click', async () => {
-      const next = await formation.autoFillFleet();
-      uiKit.showToast(`已自动编成 ${next.count} 人舰队`, 'ok');
+    // Cell tap interactions: click empty -> select/move; click two cells -> swap; double-tap occupied -> remove
+    boardCard.querySelectorAll('[data-grid-cell]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const idx = Number(btn.getAttribute('data-grid-cell'));
+        const clickedCell = gridCells[idx];
+        const prevIdx = state.selectedCellIndex;
+        const prevCell = Number.isInteger(prevIdx) ? gridCells[prevIdx] : null;
+
+        // Same cell clicked twice: if occupied, remove her cleanly; if empty, deselect
+        if (prevIdx === idx) {
+          if (clickedCell?.member) {
+            const name = clickedCell.member.name;
+            await formation.removeFromCell(idx);
+            state.selectedCellIndex = null;
+            uiKit.showToast(`已将「${name}」从阵型盘撤下`, 'info');
+            render();
+            return;
+          }
+          state.selectedCellIndex = null;
+          render();
+          return;
+        }
+
+        // Previous cell was an occupied ship -> swap/move to clicked cell!
+        if (prevCell?.member) {
+          await formation.swapGridCells(prevIdx, idx);
+          state.selectedCellIndex = null;
+          uiKit.showToast(
+            clickedCell?.member
+              ? `已互换「${prevCell.member.name}」与「${clickedCell.member.name}」站位`
+              : `已移动「${prevCell.member.name}」至${GRID_ROW_LABELS[Math.floor(idx / GRID_COLS)]}`,
+            'ok'
+          );
+          render();
+          return;
+        }
+
+        // Previous cell was an empty target & clicked cell is occupied -> move clicked ship into that empty slot!
+        if (prevCell && !prevCell.member && clickedCell?.member) {
+          await formation.swapGridCells(idx, prevIdx);
+          state.selectedCellIndex = null;
+          uiKit.showToast(`已移动「${clickedCell.member.name}」至${prevCell.rowLabel}`, 'ok');
+          render();
+          return;
+        }
+
+        // Otherwise select this cell
+        state.selectedCellIndex = idx;
+        render();
+      });
+    });
+
+    // Contextual selected ship buttons
+    boardCard.querySelector('#btn-sel-flagship')?.addEventListener('click', async () => {
+      if (!selectedCell?.member) return;
+      await formation.setFlagship(selectedCell.member.id);
+      uiKit.showToast(`已指派「${selectedCell.member.name}」担任旗舰`, 'ok');
+      render();
+    });
+    boardCard.querySelector('#btn-sel-card')?.addEventListener('click', () => {
+      if (!selectedCell?.member) return;
+      openCharacterCardById(selectedCell.member.id, state.context);
+    });
+    boardCard.querySelector('#btn-sel-remove')?.addEventListener('click', async () => {
+      if (!selectedCell?.member) return;
+      const name = selectedCell.member.name;
+      await formation.removeFromCell(selIdx);
+      state.selectedCellIndex = null;
+      uiKit.showToast(`已将「${name}」撤出编队`, 'info');
       render();
     });
 
-    sumCard.querySelector('#btn-form-auto-equip-fleet').addEventListener('click', async () => {
+    // One-tap preset buttons (单纵阵 / 复纵阵 / 轮型防空阵 / 警戒阵 / 梯形阵)
+    boardCard.querySelectorAll('[data-preset-arrange]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const presetId = btn.getAttribute('data-preset-arrange');
+        const next = await formation.applyGridPreset(presetId);
+        state.selectedCellIndex = null;
+        uiKit.showToast(`已一键排阵：${next.formation?.name || presetId}`, 'ok');
+        render();
+      });
+    });
+
+    boardCard.querySelector('#btn-form-autofill').addEventListener('click', async () => {
+      const next = await formation.autoFillFleet();
+      state.selectedCellIndex = null;
+      uiKit.showToast(`已自动补满 ${next.count}/${next.cap} 席位`, 'ok');
+      render();
+    });
+
+    boardCard.querySelector('#btn-form-auto-equip-fleet').addEventListener('click', async () => {
       try {
         const res = await formation.autoEquipFleet({ includeOutfit: true });
         await persistCharacterRoster({ storage: rootStorage, entities });
         uiKit.showToast(
           res.totalEquipped > 0
-            ? `已按旗舰至僚机顺序为 ${res.fleetCount} 名舰娘自动配装 ${res.totalEquipped} 件最优装备！`
+            ? `已按编号顺序为 ${res.fleetCount} 名舰娘自动配装 ${res.totalEquipped} 件最优装备！`
             : `当前编队 ${res.fleetCount} 名舰娘均已是仓库最优配装`,
           res.totalEquipped > 0 ? 'ok' : 'info'
         );
@@ -646,125 +840,63 @@ function createFormationModule() {
       }
     });
 
-    sumCard.querySelector('#btn-form-goto-sortie').addEventListener('click', () => {
+    boardCard.querySelector('#btn-form-goto-sortie').addEventListener('click', () => {
       if (modules.has('sortie-console')) modules.mount('sortie-console', { transition: 'left' });
     });
-    root.appendChild(sumCard);
 
-    // 2. Active Formation Picker
-    const fmtCard = document.createElement('section');
-    fmtCard.className = 'surface-card lab-stack-sm';
-    fmtCard.innerHTML = `
+    root.appendChild(boardCard);
+
+    // 2. Lower Section: Available Shipgirls Roster (Deployed + Candidates)
+    const rosterCard = document.createElement('section');
+    rosterCard.className = 'surface-card lab-stack-sm';
+    rosterCard.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
-        <h2 class="section-title">海战阵型选择</h2>
-        <span class="status-badge badge-muted">${escapeHtml(summary.formationName)}</span>
-      </div>
-      <div class="cc-btn-3col" id="formation-picker-grid">
-        ${allFormations
-          .map(
-            (f) => `
-          <button type="button" class="${f.id === fState.formationId ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" data-pick-formation="${escapeHtml(f.id)}">
-            ${escapeHtml(f.name)}
-          </button>
-        `
-          )
-          .join('')}
-      </div>
-      <p class="muted-text" style="font-size:12px;">${escapeHtml(fState.formation?.description || '')}</p>
-    `;
-
-    fmtCard.querySelectorAll('[data-pick-formation]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        await formation.setFormation(btn.getAttribute('data-pick-formation'));
-        uiKit.showToast('海战阵型已切换', 'ok');
-        render();
-      });
-    });
-    root.appendChild(fmtCard);
-
-    // 3. Active Fleet Members
-    const membersCard = document.createElement('section');
-    membersCard.className = 'surface-card lab-stack-sm';
-    membersCard.innerHTML = `
-      <div class="section-header-row" style="margin-bottom:0;">
-        <h2 class="section-title">当前参战编队（${fState.count}/${fState.cap}）</h2>
-      </div>
-      <div class="lab-stack-sm" id="formation-members-list">
-        ${
-          summary.members.length === 0
-            ? '<p class="muted-text">当前编队为空，请从下方候补舰娘中添加。</p>'
-            : summary.members
-                .map((m, idx) => {
-                  const slotCost = costInfo.breakdown?.[idx];
-                  const avatarUrl = avatars.get(m.id) || '';
-                  return `
-                  <div class="lab-slot-card dorm-roster-row" data-fleet-member="${escapeHtml(m.id)}">
-                    <div class="dorm-row-main">
-                      <button type="button" class="avatar-jump-btn" data-jump-char-card="${escapeHtml(m.id)}">
-                        <img class="dorm-mini-avatar" src="${avatarUrl}" alt="${escapeHtml(m.name)}">
-                      </button>
-                      <div class="dorm-row-info">
-                        <div class="dorm-row-title">
-                          <span class="ship-class-ico">${getShipClassSvg(m.shipType, { size: 16 })}</span>
-                          <strong>${idx === 0 ? '★旗舰 · ' : `#${idx + 1} `}${escapeHtml(m.name)}</strong>
-                          ${slotCost ? `<span class="status-badge badge-muted">阶梯 ${slotCost.tierLabel}</span>` : ''}
-                        </div>
-                        <div class="cc-stat-sub">
-                          ${escapeHtml(m.shipType)} · HP ${m.hp}/${m.maxHp} · 火${m.firepower} 雷${m.torpedo} 机${m.evasion || 50}
-                        </div>
-                      </div>
-                    </div>
-                    <div class="lab-btn-grid">
-                      ${
-                        idx > 0
-                          ? `<button type="button" class="btn-secondary uikit-touch-target" data-fleet-promote="${escapeHtml(m.id)}">设为旗舰</button>`
-                          : '<button type="button" class="btn-secondary uikit-touch-target" disabled>当前旗舰</button>'
-                      }
-                      <button type="button" class="btn-danger uikit-touch-target" data-fleet-remove="${escapeHtml(m.id)}">离队</button>
-                    </div>
-                  </div>
-                `;
-                })
-                .join('')
-        }
-      </div>
-    `;
-    root.appendChild(membersCard);
-
-    // 4. Candidate Pool
-    const candCard = document.createElement('section');
-    candCard.className = 'surface-card lab-stack-sm';
-    candCard.innerHTML = `
-      <div class="section-header-row" style="margin-bottom:0;">
-        <h2 class="section-title">港区候补舰娘（${candidates.length} 名）</h2>
+        <h2 class="section-title">可用舰娘名册（已部署 ${fState.count}/${fState.cap} · 候补 ${candidates.length}）</h2>
       </div>
       <div class="lab-stack-sm" id="formation-candidates-list">
         ${
-          candidates.length === 0
-            ? '<p class="muted-text">所有舰娘均已在编队中。</p>'
-            : candidates
+          allChars.length === 0
+            ? '<p class="muted-text">暂无舰娘，请前往船坞建造。</p>'
+            : allChars
                 .map((c) => {
-                  const check = formation.canAddMember(c.id);
+                  const pos = gridMap[c.id] || null;
+                  const check = pos ? { ok: true, reason: '' } : formation.canAddMember(c.id);
                   const avatarUrl = avatars.get(c.id) || '';
                   const prof = getShipClassProfile(c.meta?.shipType);
+                  const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(c.id, 'maxHp', { round: 'round' }).final));
+                  const curHp = Math.min(effMaxHp, Math.round(Number(c.stats.hp ?? effMaxHp)));
+                  const targetEmptySelected = selectedCell && !selectedCell.member;
                   return `
-                  <div class="lab-slot-card dorm-roster-row">
+                  <div class="lab-slot-card dorm-roster-row ${pos ? 'is-deployed-row' : ''}" data-roster-ship="${escapeHtml(c.id)}">
                     <div class="dorm-row-main">
-                      <button type="button" class="avatar-jump-btn" data-jump-char-card="${escapeHtml(c.id)}">
+                      <button type="button" class="avatar-jump-btn" data-jump-char-card="${escapeHtml(c.id)}" title="点击头像直达精修角色卡">
                         <img class="dorm-mini-avatar" src="${avatarUrl}" alt="${escapeHtml(c.name)}">
                       </button>
                       <div class="dorm-row-info">
                         <div class="dorm-row-title">
                           <span class="ship-class-ico">${getShipClassSvg(c.meta?.shipType, { size: 16 })}</span>
                           <strong>${escapeHtml(c.name)}</strong>
-                          <span class="status-badge badge-muted">${escapeHtml(prof.fullName)}</span>
+                          <span class="status-badge badge-muted">${escapeHtml(prof.code)}</span>
+                          ${
+                            pos
+                              ? `<span class="status-badge badge-ok">${escapeHtml(pos.slotCode)}·${escapeHtml(pos.rowLabel)}</span>`
+                              : ''
+                          }
                         </div>
-                        <div class="cc-stat-sub">${escapeHtml(check.ok ? prof.roleSummary : check.reason)}</div>
+                        <div class="cc-stat-sub">
+                          HP ${curHp}/${effMaxHp} · ${escapeHtml(pos ? '已在阵型盘执勤' : check.ok ? prof.roleSummary : check.reason)}
+                        </div>
                       </div>
                     </div>
-                    <button type="button" class="btn-primary uikit-touch-target" data-fleet-add="${escapeHtml(c.id)}" ${check.ok ? '' : 'disabled'}>
-                      ${check.ok ? '编入舰队' : '暂不可入队'}
-                    </button>
+                    ${
+                      pos
+                        ? `<button type="button" class="btn-secondary uikit-touch-target" data-fleet-remove="${escapeHtml(c.id)}">撤下</button>`
+                        : `<button type="button" class="btn-primary uikit-touch-target" data-fleet-deploy="${escapeHtml(c.id)}" ${
+                            check.ok || (selectedCell?.member && !formation.isCharacterDispatched(c.id)) ? '' : 'disabled'
+                          }>
+                            ${targetEmptySelected ? `部署至${escapeHtml(selectedCell.rowLabel)}` : selectedCell?.member ? '替换站位' : check.ok ? '部署上阵' : '暂不可入队'}
+                          </button>`
+                    }
                   </div>
                 `;
                 })
@@ -772,56 +904,57 @@ function createFormationModule() {
         }
       </div>
     `;
-    root.appendChild(candCard);
 
-    root.querySelectorAll('[data-jump-char-card]').forEach((btn) => {
+    rosterCard.querySelectorAll('[data-jump-char-card]').forEach((btn) => {
       btn.addEventListener('click', () => openCharacterCardById(btn.getAttribute('data-jump-char-card'), state.context));
     });
-    root.querySelectorAll('[data-fleet-promote]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        await formation.setFlagship(btn.getAttribute('data-fleet-promote'));
-        uiKit.showToast('旗舰已更新', 'ok');
-        render();
-      });
-    });
-    root.querySelectorAll('[data-fleet-remove]').forEach((btn) => {
+
+    rosterCard.querySelectorAll('[data-fleet-remove]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         await formation.removeMember(btn.getAttribute('data-fleet-remove'));
-        uiKit.showToast('已移出编队', 'info');
+        state.selectedCellIndex = null;
+        uiKit.showToast('已撤出 3×4 阵型盘', 'info');
         render();
       });
     });
-    root.querySelectorAll('[data-fleet-add]').forEach((btn) => {
+
+    rosterCard.querySelectorAll('[data-fleet-deploy]').forEach((btn) => {
       btn.addEventListener('click', async () => {
+        const cid = btn.getAttribute('data-fleet-deploy');
         try {
-          await formation.addMember(btn.getAttribute('data-fleet-add'));
-          uiKit.showToast('已编入出征舰队', 'ok');
+          if (Number.isInteger(state.selectedCellIndex)) {
+            await formation.deployToCell(cid, state.selectedCellIndex);
+          } else {
+            await formation.addMember(cid);
+          }
+          state.selectedCellIndex = null;
+          uiKit.showToast('已部署至 3×4 阵型盘', 'ok');
           render();
         } catch (err) {
-          uiKit.showToast(err instanceof Error ? err.message : '入队失败', 'warn');
+          uiKit.showToast(err instanceof Error ? err.message : '部署失败', 'warn');
         }
       });
     });
 
+    root.appendChild(rosterCard);
     state.container.appendChild(root);
   }
 
   return {
     id: 'port-formation',
     name: '舰队编成',
-    description: '独立全屏舰队编成页：3~12 人动态上限、五阵型切换与阶梯消耗实时预览。',
+    description: '3×4 舰种符号自由排阵编队：点格部署/互换/撤下、单纵/复纵/轮型防空一键排阵与全队最优配装。',
     isSubpage: true,
     lockSwipe: true,
     mount(container, context) {
       state.container = container;
       state.context = context;
+      state.selectedCellIndex = null;
       state.avatarCache.clear();
       context.ui.setSwipeLocked(true);
+      context.ui.setStageMode?.('facility');
       context.ui.setPlaceholder('舰队编成备忘...');
-      context.ui.setQuickActions([
-        { id: 'form-back', label: '← 返回港区', onClick: () => context.modules.mount('port-hub', { transition: 'right' }) },
-        { id: 'form-sortie', label: '前往出征海图', onClick: () => context.modules.mount('sortie-console', { transition: 'left' }) },
-      ]);
+      context.ui.setQuickActions([]);
       state.unsubs = [
         context.bus.on('formation:changed', () => render()),
         context.bus.on('commander:updated', () => render()),
@@ -829,8 +962,13 @@ function createFormationModule() {
       render();
     },
     unmount() {
-      state.unsubs.forEach((u) => { try { u(); } catch {} });
+      state.unsubs.forEach((u) => {
+        try {
+          u();
+        } catch {}
+      });
       state.unsubs = [];
+      state.selectedCellIndex = null;
       state.container = null;
       state.context = null;
     },

@@ -11,10 +11,12 @@
  */
 
 import {
+  GRID_TOTAL_CELLS,
   KNOWN_EQUIPMENT_TYPES,
   KNOWN_EQUIPMENT_TYPE_MAP,
   inferEquipmentTypeId,
   inferItemRarity,
+  resolveShipClass,
 } from './stat-rules.js';
 
 export const SAVE_ZONES = Object.freeze({
@@ -26,7 +28,7 @@ export const SAVE_ZONES = Object.freeze({
 
 export const DEFAULT_SLOT_COUNT = 5;
 export const VAULT_PRIMARY_SLOTS = 3;
-export const SAVE_SCHEMA_VERSION = 5;
+export const SAVE_SCHEMA_VERSION = 6;
 
 function deepClone(value) {
   if (typeof structuredClone === 'function') {
@@ -41,7 +43,7 @@ function deepClone(value) {
 
 /**
  * Lossless save payload migration: preserves every existing character, item, resource,
- * building, or custom field while safely backfilling any fields introduced in v2/v3/v4/v5+.
+ * building, or custom field while safely backfilling any fields introduced in v2/v3/v4/v5/v6+.
  */
 export function migrateSavePayload(rawData = {}) {
   const data = rawData && typeof rawData === 'object' ? deepClone(rawData) : {};
@@ -78,7 +80,9 @@ export function migrateSavePayload(rawData = {}) {
 
   // Losslessly backfill Shipgirl level/exp/maxExp on all character entities without overwriting user data
   const entityList = Array.isArray(data.entities?.entities) ? data.entities.entities : [];
+  const entityById = new Map();
   for (const ent of entityList) {
+    if (ent?.id) entityById.set(String(ent.id), ent);
     if (!ent || ent.kind !== 'character') continue;
     if (!ent.stats || typeof ent.stats !== 'object') ent.stats = {};
     if (ent.stats.level === undefined || !Number.isFinite(Number(ent.stats.level))) {
@@ -126,7 +130,6 @@ export function migrateSavePayload(rawData = {}) {
         if (slot.equipmentType && KNOWN_EQUIPMENT_TYPE_MAP[slot.equipmentType] && Array.isArray(slot.allowedEquipmentTypes)) {
           return slot;
         }
-        // Prefer currently equipped item's type so zero equipped gear or stats are ever lost
         const equippedItemId = slot.id ? charEq[slot.id] : null;
         const equippedItem = equippedItemId ? itemById.get(String(equippedItemId)) : null;
         const inferredType = equippedItem
@@ -149,6 +152,35 @@ export function migrateSavePayload(rawData = {}) {
           allowedEquipmentTypes: [typeDef.id],
         };
       });
+    }
+  }
+
+  // Schema v6: Losslessly map legacy formation.memberIds into 3x4 gridSlots (length 12)
+  if (data.formation && typeof data.formation === 'object') {
+    const fMembers = Array.isArray(data.formation.memberIds) ? data.formation.memberIds.map(String) : [];
+    const hasValidGrid =
+      Array.isArray(data.formation.gridSlots) && data.formation.gridSlots.length === GRID_TOTAL_CELLS;
+    if (!hasValidGrid && fMembers.length > 0) {
+      const grid = Array(GRID_TOTAL_CELLS).fill(null);
+      const pickCell = (cls) => {
+        const pref = cls === 'DD' || cls === 'CL' || cls === 'SS' ? [0, 1, 2] : cls === 'CA' ? [1, 0, 2] : [2, 1, 0];
+        for (const r of pref) {
+          for (const c of [1, 2, 0, 3]) {
+            const idx = r * 4 + c;
+            if (grid[idx] === null) return idx;
+          }
+        }
+        return grid.findIndex((x) => x === null);
+      };
+      for (const cid of fMembers) {
+        const ent = entityById.get(cid);
+        const cls = resolveShipClass(ent?.meta?.shipType || '');
+        const idx = pickCell(cls);
+        if (idx >= 0) grid[idx] = cid;
+      }
+      data.formation.gridSlots = grid;
+      data.formation.version = 2;
+      migrated = true;
     }
   }
 

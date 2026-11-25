@@ -71,6 +71,8 @@ let sortieState = {
   activeRun: null,
   activeNodeStory: null,
   postBattleSettlement: null,
+  inspectedEnemyId: null,
+  highlightedAllyId: null,
   autoRunning: false,
   busy: false,
   hydrated: false,
@@ -107,6 +109,8 @@ export async function clearActiveSortieState({ storage, combat }) {
   sortieState.activeRun = null;
   sortieState.activeNodeStory = null;
   sortieState.postBattleSettlement = null;
+  sortieState.inspectedEnemyId = null;
+  sortieState.highlightedAllyId = null;
   sortieState.autoRunning = false;
   sortieState.busy = false;
   if (combat && typeof combat.deserialize === 'function') {
@@ -1969,11 +1973,31 @@ async function renderSortieConsole() {
       availableActions,
       busy: sortieState.busy,
       autoRunning: sortieState.autoRunning,
+      inspectedEnemyId: sortieState.inspectedEnemyId,
+      highlightedAllyId: sortieState.highlightedAllyId,
       fxStage,
       uiKit,
       settlementInfo: activeCombatSession ? null : sortieState.postBattleSettlement,
-      onSelectTarget: (enemyId) => {
+      onSelectTarget: (enemyId, opts = {}) => {
         combat.setTargetEnemy(enemyId);
+        if (opts?.openIntel) {
+          sortieState.inspectedEnemyId = enemyId;
+          sortieState.highlightedAllyId = null;
+        }
+        renderSortieConsole();
+      },
+      onInspectEnemy: (enemyId) => {
+        sortieState.inspectedEnemyId = enemyId;
+        sortieState.highlightedAllyId = null;
+        renderSortieConsole();
+      },
+      onClearInspectEnemy: () => {
+        sortieState.inspectedEnemyId = null;
+        renderSortieConsole();
+      },
+      onHighlightAlly: (allyId) => {
+        sortieState.inspectedEnemyId = null;
+        sortieState.highlightedAllyId = sortieState.highlightedAllyId === allyId ? null : allyId;
         renderSortieConsole();
       },
       onExecuteAction: (actionId) => handleBattleShipAction(actionId),
@@ -1989,12 +2013,16 @@ async function renderSortieConsole() {
       onFinishEarly: () => handleBattleFinishEarly(),
       onPostBattleContinue: () => {
         sortieState.postBattleSettlement = null;
+        sortieState.inspectedEnemyId = null;
+        sortieState.highlightedAllyId = null;
         ui.setImmersiveBattle(false);
         ui.setStageMode?.('chart');
         renderSortieConsole();
       },
       onPostBattleDockyard: () => {
         sortieState.postBattleSettlement = null;
+        sortieState.inspectedEnemyId = null;
+        sortieState.highlightedAllyId = null;
         ui.setImmersiveBattle(false);
         if (modules.has('port-dockyard')) modules.mount('port-dockyard', { transition: 'left' });
       },

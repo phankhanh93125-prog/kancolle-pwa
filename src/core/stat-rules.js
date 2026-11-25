@@ -384,6 +384,222 @@ export function getShipClassSvg(shipType = '', { size = 18 } = {}) {
   return `<svg class="ship-class-ico" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 21 17h-6l-3-4-3 4H3L12 3Z" fill="${c}" fill-opacity="0.2"/><path d="M7 20h10"/></svg>`;
 }
 
+export const GRID_ROWS = 3;
+export const GRID_COLS = 4;
+export const GRID_TOTAL_CELLS = GRID_ROWS * GRID_COLS;
+export const GRID_ROW_LABELS = Object.freeze(['前排', '中排', '后排']);
+
+/**
+ * High-contrast minimalist tactical geometric SVG symbol for the 3x4 naval radar grid.
+ * Supports DD (sharp triangle), CL (diamond), CA (heavy shield), BB (twin-turret crest),
+ * CV (angled flight deck), SS (sonar arc/sub), and BOSS (crowned hex).
+ */
+export function getTacticalGridSymbolSvg(shipTypeOrClass = '', { side = 'ally', size = 26 } = {}) {
+  const raw = String(shipTypeOrClass || '').trim().toUpperCase();
+  const code =
+    raw === 'BOSS' || raw === 'SS' || raw === 'DD' || raw === 'CL' || raw === 'CA' || raw === 'BB' || raw === 'CV'
+      ? raw
+      : resolveShipClass(shipTypeOrClass);
+  const s = Math.max(16, Number(size) || 26);
+  const isEnemy = side === 'enemy';
+
+  const palette = isEnemy
+    ? {
+        DD: '#fb7185',
+        CL: '#fb923c',
+        CA: '#f59e0b',
+        BB: '#ef4444',
+        CV: '#e879f9',
+        SS: '#22d3ee',
+        BOSS: '#f43f5e',
+      }
+    : {
+        DD: '#38bdf8',
+        CL: '#2dd4bf',
+        CA: '#fbbf24',
+        BB: '#f97316',
+        CV: '#c084fc',
+        SS: '#06b6d4',
+        BOSS: '#34d399',
+      };
+  const c = palette[code] || (isEnemy ? '#fb7185' : '#38bdf8');
+  const fillOpacity = isEnemy ? '0.24' : '0.22';
+
+  // DD: Sharp acute triangle pointing toward enemy (down for enemy, up for ally)
+  if (code === 'DD') {
+    const pts = isEnemy ? '12 22 4 4 12 8 20 4' : '12 2 20 20 12 16 4 20';
+    return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="${pts}" fill="${c}" fill-opacity="${fillOpacity}"/></svg>`;
+  }
+  // CL: Crisp diamond with inner dot
+  if (code === 'CL') {
+    return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 21 12 12 22 3 12" fill="${c}" fill-opacity="${fillOpacity}"/><circle cx="12" cy="12" r="2.6" fill="${c}"/></svg>`;
+  }
+  // CA: Heavy armored shield
+  if (code === 'CA') {
+    return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 20 6v6.5c0 4.5-3.4 7.6-8 9-4.6-1.4-8-4.5-8-9V6l8-3.5Z" fill="${c}" fill-opacity="${fillOpacity}"/><path d="M8.5 11.5h7M12 8v7"/></svg>`;
+  }
+  // BB: Twin-turret battleship crest
+  if (code === 'BB') {
+    const barrelY1 = isEnemy ? 16 : 8;
+    const barrelY2 = isEnemy ? 22 : 2;
+    return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="7.5" width="15" height="9" rx="2.5" fill="${c}" fill-opacity="${fillOpacity}"/><line x1="9" y1="${barrelY1}" x2="9" y2="${barrelY2}"/><line x1="15" y1="${barrelY1}" x2="15" y2="${barrelY2}"/><line x1="7.5" y1="12" x2="16.5" y2="12"/></svg>`;
+  }
+  // CV: Angled aircraft carrier flight deck mark
+  if (code === 'CV') {
+    return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 18 3 21 21 9 21" fill="${c}" fill-opacity="${fillOpacity}"/><line x1="11" y1="6" x2="15" y2="18" stroke-dasharray="3 2.5"/><line x1="17" y1="9" x2="19.5" y2="9"/></svg>`;
+  }
+  // SS: Acoustic submarine sonar wave mark
+  if (code === 'SS') {
+    return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="14" rx="7.5" ry="3.8" fill="${c}" fill-opacity="${fillOpacity}"/><path d="M12 10V6.5h2.5"/><path d="M6.5 6.5a8 8 0 0 1 11 0" stroke-width="1.6" stroke-dasharray="2.5 2"/></svg>`;
+  }
+  // BOSS: Crowned heavy hexagon emblem
+  return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 21 7 21 17 12 22 3 17 3 7" fill="${c}" fill-opacity="0.28"/><polygon points="12 6.5 16.5 12 12 17.5 7.5 12" fill="${c}" fill-opacity="0.55"/></svg>`;
+}
+
+/**
+ * Free all-grid targeting with Engagement Range (long/medium/close) + Row Distance (0..4)
+ * dynamic accuracy & damage decay formula.
+ *   - Row 0 = Frontline, Row 1 = Midline, Row 2 = Backline
+ *   - effectiveDist = baseRangeDist (long:2, medium:1, close:0) + attackerRow + defenderRow (0..6)
+ */
+export function computeRangeRowCombatModifiers({
+  engagementRange = 'long',
+  attackerRow = 0,
+  defenderRow = 0,
+  actionId = 'tactical_shelling',
+  shipClass = 'CL',
+} = {}) {
+  const aRow = clamp(Math.floor(Number(attackerRow) || 0), 0, 2);
+  const dRow = clamp(Math.floor(Number(defenderRow) || 0), 0, 2);
+  const baseDist = engagementRange === 'close' ? 0 : engagementRange === 'medium' ? 1 : 2;
+  const rowSpan = aRow + dRow;
+  const effectiveDist = baseDist + rowSpan; // 0 (front-vs-front close) .. 6 (back-vs-back long)
+  const cls = String(shipClass || 'CL').toUpperCase();
+  const act = String(actionId || '');
+
+  const isUltraLong =
+    act === 'main_salvo' ||
+    act === 'fire_suppress' ||
+    act === 'carrier_airstrike' ||
+    act === 'salvo' ||
+    act === 'airstrike' ||
+    cls === 'BB' ||
+    cls === 'CV' ||
+    cls === 'BOSS';
+
+  const isShortRange =
+    act === 'torpedo_strike' ||
+    act === 'depth_asw' ||
+    act === 'torpedo_ambush' ||
+    act === 'torpedo_salvo' ||
+    (!isUltraLong && (cls === 'DD' || cls === 'SS'));
+
+  if (isUltraLong) {
+    // Battleships & Carriers excel across the entire 3x4 grid even from backline -> enemy backline
+    if (effectiveDist >= 4) {
+      return { effectiveDist, rowSpan, dmgMult: 1.15, hitMod: 2, label: '超远射程全威', tone: 'ok' };
+    }
+    if (effectiveDist >= 2) {
+      return { effectiveDist, rowSpan, dmgMult: 1.08, hitMod: 1, label: '远中程稳定压制', tone: 'ok' };
+    }
+    if (effectiveDist === 1) {
+      return { effectiveDist, rowSpan, dmgMult: 1.0, hitMod: 0, label: '常规射程', tone: 'muted' };
+    }
+    return { effectiveDist, rowSpan, dmgMult: 0.92, hitMod: -1, label: '过近贴身微降', tone: 'warn' };
+  }
+
+  if (isShortRange) {
+    // Destroyers, Submarines & Torpedoes suffer heavy decay across rows at long range,
+    // and erupt with massive close-range front-row burst when advancing!
+    if (effectiveDist === 0) {
+      return { effectiveDist, rowSpan, dmgMult: 1.32, hitMod: 3, label: '前排贴脸全额爆发', tone: 'ok' };
+    }
+    if (effectiveDist === 1) {
+      return { effectiveDist, rowSpan, dmgMult: 1.16, hitMod: 2, label: '近中距突击加成', tone: 'ok' };
+    }
+    if (effectiveDist === 2) {
+      return { effectiveDist, rowSpan, dmgMult: 1.0, hitMod: 0, label: '标准交战射程', tone: 'muted' };
+    }
+    if (effectiveDist === 3) {
+      return { effectiveDist, rowSpan, dmgMult: 0.84, hitMod: -2, label: '跨排射程衰减', tone: 'warn' };
+    }
+    if (effectiveDist === 4) {
+      return { effectiveDist, rowSpan, dmgMult: 0.72, hitMod: -3, label: '远距跨排明显衰减', tone: 'danger' };
+    }
+    return { effectiveDist, rowSpan, dmgMult: 0.62, hitMod: -4, label: '超距衰减（建议突进）', tone: 'danger' };
+  }
+
+  // Mid-range Cruisers (CL/CA shelling)
+  if (effectiveDist <= 1) {
+    return { effectiveDist, rowSpan, dmgMult: 1.1, hitMod: 1, label: '近中距精准火力', tone: 'ok' };
+  }
+  if (effectiveDist <= 3) {
+    return { effectiveDist, rowSpan, dmgMult: 1.04, hitMod: 0, label: '巡洋最佳射程', tone: 'ok' };
+  }
+  if (effectiveDist === 4) {
+    return { effectiveDist, rowSpan, dmgMult: 0.9, hitMod: -1, label: '远距微幅衰减', tone: 'warn' };
+  }
+  return { effectiveDist, rowSpan, dmgMult: 0.82, hitMod: -2, label: '远距跨排衰减', tone: 'warn' };
+}
+
+/**
+ * Evaluate same-row & adjacent-cell (Chebyshev distance <= 1) CL/CA escort aura
+ * for anti-air damage mitigation and cooperative vanguard damage sharing.
+ */
+export function getSameRowAndAdjacentAura(allies = [], targetUnit = null) {
+  if (!targetUnit || !Array.isArray(allies)) {
+    return { aaReduction: 0, aaProviders: [], guardian: null, guardShareRatio: 0 };
+  }
+  const tRow = Number(targetUnit.gridRow ?? 0);
+  const tCol = Number(targetUnit.gridCol ?? 0);
+  const aaProviders = [];
+  let bestGuardian = null;
+  let bestGuardScore = -1;
+
+  for (const u of allies) {
+    if (!u || !u.alive || u.id === targetUnit.id) continue;
+    const cls = String(u.classCode || resolveShipClass(u.shipType)).toUpperCase();
+    if (cls !== 'CL' && cls !== 'CA') continue;
+
+    const uRow = Number(u.gridRow ?? 0);
+    const uCol = Number(u.gridCol ?? 0);
+    const sameRow = uRow === tRow;
+    const adjacent = Math.abs(uRow - tRow) <= 1 && Math.abs(uCol - tCol) <= 1;
+    if (!sameRow && !adjacent) continue;
+
+    aaProviders.push({ id: u.id, name: u.name, classCode: cls, sameRow, adjacent });
+
+    // CA / CL with healthy HP (> 30%) can intercept & share damage for teammates in same row / adjacent cell
+    const hpRatio = Number(u.hp || 0) / Math.max(1, Number(u.maxHp || 100));
+    if (hpRatio > 0.3) {
+      const score = (cls === 'CA' ? 100 : 60) + (adjacent ? 25 : 10) + Number(u.armor || 0);
+      if (score > bestGuardScore) {
+        bestGuardScore = score;
+        bestGuardian = u;
+      }
+    }
+  }
+
+  let aaReduction = 0;
+  for (const p of aaProviders) {
+    aaReduction += p.classCode === 'CL' ? (p.adjacent ? 0.14 : 0.1) : p.adjacent ? 0.1 : 0.07;
+  }
+  aaReduction = clamp(Number(aaReduction.toFixed(2)), 0, 0.34);
+
+  const guardShareRatio = bestGuardian
+    ? String(bestGuardian.classCode || resolveShipClass(bestGuardian.shipType)).toUpperCase() === 'CA'
+      ? 0.4
+      : 0.28
+    : 0;
+
+  return {
+    aaReduction,
+    aaProviders,
+    guardian: bestGuardian,
+    guardShareRatio,
+  };
+}
+
 /**
  * Full 8 Naval Stats displayed on every Shipgirl Character Card
  * (maxHp is the survival durability ceiling; the other 7 are combat/utility stats).

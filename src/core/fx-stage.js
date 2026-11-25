@@ -485,4 +485,139 @@ export class FxStage {
     this._unsubs = [];
     this._attached = false;
   }
+
+  buildPointToPointTrajectorySvg(visualStyle, coords) {
+    return buildPointToPointTrajectorySvg(visualStyle, coords);
+  }
 }
+
+/**
+ * Pure SVG point-to-point trajectory generator between any two (x1,y1)->(x2,y2) cells
+ * on the 3x4 vs 3x4 naval radar sandbox.
+ */
+export function buildPointToPointTrajectorySvg(
+  visualStyle = 'shelling',
+  { x1 = 180, y1 = 230, x2 = 180, y2 = 55 } = {}
+) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const mx = (x1 + x2) / 2;
+  const my = (y1 + y2) / 2;
+  const curveShift = Math.abs(dx) < 28 ? 34 : Math.sign(dx) * -28;
+  const cx = mx + curveShift;
+  const cy = my;
+  const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+
+  if (visualStyle === 'airstrike' || visualStyle === 'enemy_airstrike') {
+    const isEnemy = visualStyle === 'enemy_airstrike';
+    const stroke1 = isEnemy ? '#f43f5e' : '#c084fc';
+    const stroke2 = isEnemy ? '#fb7185' : '#a78bfa';
+    const fillRing = isEnemy ? 'rgba(244,63,94,0.28)' : 'rgba(192,132,252,0.28)';
+    return `
+      <g class="bf-anim-airstrike">
+        <path class="bf-arc-path" d="M ${x1} ${y1} Q ${cx - 18} ${cy} ${x2} ${y2}" stroke="${stroke1}" stroke-width="2.6" stroke-dasharray="6 4" fill="none" />
+        <path class="bf-arc-path" d="M ${x1 + 10} ${y1} Q ${cx + 22} ${cy} ${x2 + 6} ${y2 + 4}" stroke="${stroke2}" stroke-width="2.2" stroke-dasharray="5 4" fill="none" />
+        <polygon points="-7,-4 8,0 -7,4 -3,0" fill="${stroke1}" transform="translate(${(mx + x2) / 2},${(my + y2) / 2}) rotate(${angleDeg})" />
+        <circle class="bf-impact-ring" cx="${x2}" cy="${y2}" r="18" stroke="${stroke1}" stroke-width="2.6" fill="${fillRing}" />
+      </g>
+    `;
+  }
+
+  if (visualStyle === 'torpedo' || visualStyle === 'enemy_torpedo') {
+    const isEnemy = visualStyle === 'enemy_torpedo';
+    const stroke1 = isEnemy ? '#fb7185' : '#22d3ee';
+    const stroke2 = isEnemy ? '#f43f5e' : '#38bdf8';
+    const fillRing = isEnemy ? 'rgba(244,63,94,0.26)' : 'rgba(34,211,238,0.24)';
+    return `
+      <g class="bf-anim-torpedo">
+        <line class="bf-torp-path" x1="${x1 - 5}" y1="${y1}" x2="${x2 - 4}" y2="${y2}" stroke="${stroke1}" stroke-width="2.8" stroke-dasharray="10 6" stroke-linecap="round" />
+        <line class="bf-torp-path" x1="${x1 + 5}" y1="${y1}" x2="${x2 + 4}" y2="${y2}" stroke="${stroke2}" stroke-width="2.4" stroke-dasharray="10 6" stroke-linecap="round" />
+        <circle class="bf-torp-ripple" cx="${x2}" cy="${y2}" r="18" stroke="${stroke1}" stroke-width="2.5" fill="${fillRing}" />
+      </g>
+    `;
+  }
+
+  if (visualStyle === 'asw') {
+    return `
+      <g class="bf-anim-asw">
+        <circle class="bf-sonar-fan" cx="${x2}" cy="${y2}" r="14" stroke="#22d3ee" stroke-width="2" fill="rgba(34,211,238,0.16)" />
+        <circle class="bf-sonar-fan" cx="${x2}" cy="${y2}" r="28" stroke="#38bdf8" stroke-width="1.6" stroke-dasharray="5 4" fill="none" />
+        <path class="bf-arc-path" d="M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}" stroke="#34d399" stroke-width="2.6" fill="none" />
+        <circle class="bf-impact-ring" cx="${x2}" cy="${y2}" r="16" stroke="#34d399" stroke-width="2.5" fill="rgba(52,211,153,0.28)" />
+      </g>
+    `;
+  }
+
+  if (visualStyle === 'scan') {
+    return `
+      <g class="bf-anim-scan">
+        <line class="bf-speed-line" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#34d399" stroke-width="2" stroke-dasharray="5 4" />
+        <circle class="bf-sonar-fan" cx="${x2}" cy="${y2}" r="24" fill="rgba(16,185,129,0.2)" stroke="#34d399" stroke-width="2" />
+        <circle class="bf-impact-ring" cx="${x2}" cy="${y2}" r="12" stroke="#6ee7b7" stroke-width="2" fill="none" stroke-dasharray="3 2" />
+      </g>
+    `;
+  }
+
+  if (visualStyle === 'smoke') {
+    return `
+      <g class="bf-anim-smoke">
+        <circle class="bf-sonar-fan" cx="${x1 - 24}" cy="${y1}" r="22" fill="rgba(148,163,184,0.34)" stroke="#cbd5e1" stroke-width="1.8" />
+        <circle class="bf-sonar-fan" cx="${x1}" cy="${y1 - 8}" r="28" fill="rgba(148,163,184,0.32)" stroke="#e2e8f0" stroke-width="2" />
+        <circle class="bf-sonar-fan" cx="${x1 + 24}" cy="${y1}" r="22" fill="rgba(148,163,184,0.34)" stroke="#cbd5e1" stroke-width="1.8" />
+      </g>
+    `;
+  }
+
+  if (visualStyle === 'aa') {
+    return `
+      <g class="bf-anim-aa">
+        <line class="bf-speed-line" x1="${x1}" y1="${y1}" x2="${mx - 28}" y2="${my}" stroke="#fbbf24" stroke-width="2.2" stroke-dasharray="5 4" />
+        <line class="bf-speed-line" x1="${x1}" y1="${y1}" x2="${mx}" y2="${my - 14}" stroke="#fde047" stroke-width="2.4" stroke-dasharray="5 4" />
+        <line class="bf-speed-line" x1="${x1}" y1="${y1}" x2="${mx + 28}" y2="${my}" stroke="#fbbf24" stroke-width="2.2" stroke-dasharray="5 4" />
+        <circle class="bf-impact-ring" cx="${mx - 28}" cy="${my}" r="10" stroke="#fde047" stroke-width="2" fill="rgba(250,204,21,0.26)" />
+        <circle class="bf-impact-ring" cx="${mx + 28}" cy="${my}" r="10" stroke="#fde047" stroke-width="2" fill="rgba(250,204,21,0.26)" />
+      </g>
+    `;
+  }
+
+  if (visualStyle === 'guard' || visualStyle === 'enemy_guard') {
+    const isEnemy = visualStyle === 'enemy_guard';
+    const stroke = isEnemy ? '#fb923c' : '#60a5fa';
+    const fill = isEnemy ? 'rgba(251,146,60,0.22)' : 'rgba(59,130,246,0.24)';
+    return `
+      <g class="bf-anim-guard">
+        <circle class="bf-shield-hex" cx="${x1}" cy="${y1}" r="24" fill="${fill}" stroke="${stroke}" stroke-width="2.6" />
+        <path d="M ${x1 - 8} ${y1} L ${x1 - 2} ${y1 + 6} L ${x1 + 9} ${y1 - 6}" stroke="${stroke}" stroke-width="2.8" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+      </g>
+    `;
+  }
+
+  if (visualStyle === 'advance' || visualStyle === 'evade') {
+    return `
+      <g class="bf-anim-evade">
+        <path class="bf-speed-line" d="M ${x1 - 22} ${y1 + 10} L ${x1} ${y1 - 14} L ${x1 + 22} ${y1 + 10}" stroke="#38bdf8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+        <path class="bf-speed-line" d="M ${x1 - 16} ${y1 - 4} L ${x1} ${y1 - 26} L ${x1 + 16} ${y1 - 4}" stroke="#60a5fa" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+      </g>
+    `;
+  }
+
+  if (visualStyle === 'ambush' || visualStyle === 'enemy_salvo' || visualStyle === 'counter') {
+    return `
+      <g class="bf-anim-counter">
+        <path class="bf-arc-path" d="M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}" stroke="#ef4444" stroke-width="3.2" fill="none" stroke-linecap="round" />
+        <path class="bf-arc-path" d="M ${x1 + 6} ${y1} Q ${cx + 12} ${cy} ${x2 + 4} ${y2}" stroke="#fb923c" stroke-width="2.2" fill="none" stroke-linecap="round" />
+        <circle class="bf-impact-ring" cx="${x2}" cy="${y2}" r="19" stroke="#f87171" stroke-width="2.6" fill="rgba(239,68,68,0.28)" />
+      </g>
+    `;
+  }
+
+  // Default: allied shelling / heavy_shelling / main_salvo
+  return `
+    <g class="bf-anim-shelling">
+      <path class="bf-arc-path" d="M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}" stroke="#f97316" stroke-width="3.2" fill="none" stroke-linecap="round" />
+      <path class="bf-arc-path" d="M ${x1 + 6} ${y1} Q ${cx + 12} ${cy} ${x2 + 4} ${y2}" stroke="#fbbf24" stroke-width="2.2" fill="none" stroke-linecap="round" />
+      <circle class="bf-impact-ring" cx="${x2}" cy="${y2}" r="18" stroke="#fb923c" stroke-width="2.6" fill="rgba(249,115,22,0.26)" />
+    </g>
+  `;
+}
+

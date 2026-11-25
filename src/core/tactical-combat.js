@@ -17,16 +17,63 @@
 
 import { clamp } from './calc-engine.js';
 import {
+  GRID_COLS,
+  GRID_ROW_LABELS,
+  GRID_TOTAL_CELLS,
   TACTICAL_ACTION_DEFS,
   clampEnemyStrengthMultiplier,
   computeDynamicEnemyScale,
   computeOpeningAirstrikeOutcome,
   computeOpeningTorpedoOutcome,
+  computeRangeRowCombatModifiers,
+  getSameRowAndAdjacentAura,
   getShipClassProfile,
   getShipClassTacticalActions,
   resolveShipClass,
 } from './stat-rules.js';
 import { NODE_TYPES, SEA_DIFFICULTIES, buildEnemyUnitByClass } from './route-generator.js';
+
+function assignEnemyGridPositions(enemies = []) {
+  const occupied = new Set();
+  const colOrder = [1, 2, 0, 3];
+  const pickCell = (cls) => {
+    const c = String(cls || 'CL').toUpperCase();
+    // Row 0 = Enemy Frontline (facing sea divider), Row 1 = Midline, Row 2 = Backline
+    const rowOrder =
+      c === 'DD' || c === 'SS'
+        ? [0, 1, 2]
+        : c === 'CL' || c === 'CA'
+        ? [1, 0, 2]
+        : [2, 1, 0]; // BB, CV, BOSS
+    for (const r of rowOrder) {
+      for (const col of colOrder) {
+        const idx = r * GRID_COLS + col;
+        if (!occupied.has(idx)) {
+          occupied.add(idx);
+          return { row: r, col, index: idx };
+        }
+      }
+    }
+    for (let idx = 0; idx < GRID_TOTAL_CELLS; idx++) {
+      if (!occupied.has(idx)) {
+        occupied.add(idx);
+        return { row: Math.floor(idx / GRID_COLS), col: idx % GRID_COLS, index: idx };
+      }
+    }
+    return { row: 0, col: 0, index: 0 };
+  };
+
+  enemies.forEach((en, i) => {
+    const pos = pickCell(en.shipClass || inferEnemyShipClass(en));
+    en.gridRow = pos.row;
+    en.gridCol = pos.col;
+    en.gridIndex = pos.index;
+    en.rowLabel = GRID_ROW_LABELS[pos.row] || '前排';
+    en.slotNo = i + 1;
+    en.slotCode = String(i + 1).padStart(2, '0');
+  });
+  return enemies;
+}
 
 export const ENGAGEMENT_RANGES = Object.freeze({
   LONG: 'long',
@@ -991,6 +1038,13 @@ export class TacticalCombatEngine {
       };
     });
 
+    assignEnemyGridPositions(enemies);
+
+    const allyPositions =
+      this._formation && typeof this._formation.getGridMap === 'function'
+        ? deepClone(this._formation.getGridMap())
+        : {};
+
     const initialRange =
       node?.lane === 'stealth' ? ENGAGEMENT_RANGES.MEDIUM : ENGAGEMENT_RANGES.LONG;
 
@@ -1003,6 +1057,7 @@ export class TacticalCombatEngine {
       id: `cmb_${Date.now().toString(36)}`,
       characterId: flagshipId,
       fleetMemberIds: memberIds,
+      allyPositions,
       formationId: activeFormationId,
       nodeCode: node?.code || 'A',
       nodeName: node?.name || rawTpl.name || '交战海域',
@@ -1121,14 +1176,26 @@ export class TacticalCombatEngine {
   }
 
   _getFleetCombatContext(session) {
+    const posMap = session?.allyPositions || {};
     if (this._formation) {
       const summary = this._formation.computeFleetSummary(session.fleetMemberIds, session.formationId);
       const enrichedMembers = (summary.members || []).map((m, idx) => {
         const eff = this._entities.getEffectiveStats(m.id, { round: 'round' });
         const ent = this._entities.get(m.id);
+        const snapPos = posMap[m.id];
+        const gridIndex = snapPos?.index ?? m.gridIndex ?? idx % GRID_TOTAL_CELLS;
+        const gridRow = snapPos?.row ?? m.gridRow ?? Math.floor(gridIndex / GRID_COLS);
+        const gridCol = snapPos?.col ?? m.gridCol ?? gridIndex % GRID_COLS;
+        const slotNo = snapPos?.slotNo ?? m.slotNo ?? idx + 1;
         return {
           ...m,
           slotIndex: idx,
+          slotNo,
+          slotCode: String(slotNo).padStart(2, '0'),
+          gridIndex,
+          gridRow,
+          gridCol,
+          rowLabel: GRID_ROW_LABELS[gridRow] || '前排',
           evasion: Math.round(Number(eff.evasion ?? ent?.stats?.evasion ?? 50)),
           recon: Math.round(Number(eff.recon ?? ent?.stats?.recon ?? 50)),
           aa: Math.round(Number(eff.aa ?? ent?.stats?.aa ?? 45)),
@@ -1419,16 +1486,39 @@ export class TacticalCombatEngine {
       en.armorBraceBonus = Math.max(en.armorBraceBonus || 0, 4);
       text = `【敌方装甲强化】[${en.shipClass}]${en.name} 收缩阵型强化护甲（护甲 +4）！`;
     } else {
-      // Honor pre-telegraphed locked target if still alive, else smart re-pick
+      // Honor pre-telegraphed locked target if still alive, else smart re-pick (free all-grid targeting)
       targetAlly =
         livingAllies.find((m) => m.id === intent.targetAllyId) ||
         selectSmartAllyTarget(livingAllies, en, rng);
 
+      const rangeRowMod = computeRangeRowCombatModifiers({
+        engagementRange: session.range,
+        attackerRow: en.gridRow ?? 0,
+        defenderRow: targetAlly.gridRow ?? 0,
+        actionId: intent.id,
+        shipClass: en.shipClass,
+      });
+
+      const escortAura = getSameRowAndAdjacentAura(livingAllies, targetAlly);
+
       let guardedBy = null;
+      let guardShareRatio = 0.55;
+      let guardSourceLabel = '前排援护';
       if (session.guardTurns > 0 && session.guardActorId && targetAlly.id !== session.guardActorId) {
         const guardian = livingAllies.find((m) => m.id === session.guardActorId);
         if (guardian && guardian.hp > 5) {
           guardedBy = guardian;
+          guardShareRatio = 0.55;
+          guardSourceLabel = '前排援护';
+        }
+      } else if (escortAura.guardian) {
+        const procChance =
+          (escortAura.guardian.classCode === 'CA' ? 0.55 : 0.35) +
+          (freshFleet.formationMods?.guardBonus || 0);
+        if (rng() < procChance) {
+          guardedBy = escortAura.guardian;
+          guardShareRatio = escortAura.guardShareRatio || 0.35;
+          guardSourceLabel = '同排/邻格协同援护';
         }
       }
 
@@ -1443,7 +1533,7 @@ export class TacticalCombatEngine {
           ? 1.08
           : 1.0;
 
-      let rawAtk = en.attackPower * skillMult;
+      let rawAtk = en.attackPower * skillMult * rangeRowMod.dmgMult;
       if (en.suppressedTurns > 0) rawAtk *= 0.65;
       if (session.smokeTurns > 0) rawAtk *= 0.62;
       if (session.evasionBuffTurns > 0) rawAtk *= 0.72;
@@ -1451,8 +1541,13 @@ export class TacticalCombatEngine {
         rawAtk *= 1.18;
       }
 
+      let auraAaNote = '';
       if (intent.id === 'airstrike') {
         if (session.aaAlertTurns > 0) rawAtk *= 0.42;
+        if (escortAura.aaReduction > 0) {
+          rawAtk *= 1 - escortAura.aaReduction;
+          auraAaNote = `（同排/邻格防空减伤 -${Math.round(escortAura.aaReduction * 100)}%）`;
+        }
         const aaRes = computeOpeningAirstrikeOutcome({
           attackerAirPower: Math.max(40, en.attackPower * 2.5),
           defenderAa: freshFleet.effective?.aa || 45,
@@ -1471,16 +1566,16 @@ export class TacticalCombatEngine {
       const dmg = Math.max(3, Math.round(rawAtk * armorMit));
 
       if (guardedBy) {
-        const sharedDmg = Math.max(2, Math.round(dmg * 0.55));
-        const residualDmg = Math.max(1, Math.round(dmg * 0.2));
+        const sharedDmg = Math.max(2, Math.round(dmg * guardShareRatio));
+        const residualDmg = Math.max(1, Math.round(dmg * (1 - guardShareRatio - 0.15)));
         this._entities.adjustStat(guardedBy.id, 'hp', -sharedDmg, { min: 0, max: guardedBy.maxHp });
         this._entities.adjustStat(targetAlly.id, 'hp', -residualDmg, { min: 0, max: targetAlly.maxHp });
         damageTaken = sharedDmg + residualDmg;
-        text = `【敌方行动】[${en.shipClass}]${en.name} 发动【${intent.label}】集火「${targetAlly.name}」→「${guardedBy.name}」前排援护挡下主力伤害（援护 -${sharedDmg} / ${targetAlly.name} -${residualDmg}）！`;
+        text = `【敌方行动】[${en.shipClass}]${en.name} 发动【${intent.label}】瞄准「${targetAlly.name}」${auraAaNote}→「${guardedBy.name}」${guardSourceLabel}分担伤害（${guardedBy.name} -${sharedDmg} / ${targetAlly.name} -${residualDmg}）！`;
       } else {
         this._entities.adjustStat(targetAlly.id, 'hp', -dmg, { min: 0, max: targetAlly.maxHp });
         damageTaken = dmg;
-        text = `【敌方行动】[${en.shipClass}]${en.name} 发动【${intent.label}】命中「${targetAlly.name}」，造成 ${dmg} 点伤害！`;
+        text = `【敌方行动】[${en.shipClass}]${en.name} 发动【${intent.label}】命中「${targetAlly.name}」${auraAaNote}（${rangeRowMod.label}），造成 ${dmg} 点伤害！`;
       }
     }
 
@@ -1512,6 +1607,10 @@ export class TacticalCombatEngine {
       actorId: en.id,
       actorName: en.name,
       actorClass: en.shipClass,
+      attackerGrid: { side: 'enemy', row: en.gridRow ?? 0, col: en.gridCol ?? 0, index: en.gridIndex ?? 0 },
+      targetGrid: targetAlly
+        ? { side: 'ally', row: targetAlly.gridRow ?? 0, col: targetAlly.gridCol ?? 0, index: targetAlly.gridIndex ?? 0 }
+        : null,
       targetAllyId: targetAlly?.id || null,
       targetAllyName: targetAlly?.name || null,
       targetEnemyId: en.id,
@@ -1633,7 +1732,7 @@ export class TacticalCombatEngine {
       }
     }
 
-    // 2. Perform 1D20 check
+    // 2. Perform 1D20 check (with free all-grid range-row hit & damage modifiers)
     const seaMods = session.seaCondition?.mods || {};
     const cmdTactics = this._commander ? this._commander.getTacticsCheckBonus() : 0;
     const cmdLuckFx = this._commander ? this._commander.getLuckEffects() : { luck: 0, edgeCheckMod: 0 };
@@ -1642,9 +1741,30 @@ export class TacticalCombatEngine {
     const classProfile = getShipClassProfile(actor.shipType);
     const isNight = session.phase === 'night';
 
+    const rangeRowMod = computeRangeRowCombatModifiers({
+      engagementRange: session.range,
+      attackerRow: actor.gridRow ?? 0,
+      defenderRow: targetEnemy.gridRow ?? 0,
+      actionId,
+      shipClass: classProfile.code,
+    });
+
+    const isOffensiveAction =
+      actionId === 'torpedo_strike' ||
+      actionId === 'depth_asw' ||
+      actionId === 'main_salvo' ||
+      actionId === 'fire_suppress' ||
+      actionId === 'heavy_shelling' ||
+      actionId === 'tactical_shelling' ||
+      actionId === 'carrier_airstrike';
+
     let statVal = Number(actor[actionDef.statKey] ?? 50);
     let dc = session.enemy.shellingDc || 13;
-    let extraMod = (seaMods.checkBonus || 0) + cmdTactics + session.lockOnBonus;
+    let extraMod =
+      (seaMods.checkBonus || 0) +
+      cmdTactics +
+      session.lockOnBonus +
+      (isOffensiveAction ? rangeRowMod.hitMod : 0);
 
     if (actionId === 'radar_scan' || actionId === 'carrier_recon') {
       dc = (session.enemy.scanDc || 13) + (seaMods.scanDcDelta || 0);
@@ -1655,14 +1775,13 @@ export class TacticalCombatEngine {
       extraMod += (seaMods.evadeBonus || 0);
     } else if (actionId === 'torpedo_strike') {
       dc = session.enemy.torpedoDc || 14;
-      extraMod += (cmdLuckFx.edgeCheckMod || 0) + (session.range === ENGAGEMENT_RANGES.CLOSE ? 3 : 0) + (isNight ? 3 : 0);
+      extraMod += (cmdLuckFx.edgeCheckMod || 0) + (isNight ? 3 : 0);
     } else if (actionId === 'depth_asw') {
       dc = 12;
       extraMod += targetEnemy.role === 'sub' || targetEnemy.shipClass === 'SS' || targetEnemy.subThreat > 0 ? 4 : 1;
     } else if (actionId === 'carrier_airstrike') {
       statVal = Math.round(actor.firepower * 0.65 + actor.recon * 0.55);
       dc = session.enemy.shellingDc || 13;
-      extraMod += session.range === ENGAGEMENT_RANGES.LONG ? 2 : 0;
     }
 
     const checkResult = this._statRules.performCheck({
@@ -1696,15 +1815,7 @@ export class TacticalCombatEngine {
     let scannedNow = false;
     const seaDmgMult = seaMods.dmgMult || 1.0;
 
-    const calcRangeMult = () => {
-      if (actionId === 'main_salvo' || actionId === 'carrier_airstrike' || actionId === 'fire_suppress') {
-        return session.range === ENGAGEMENT_RANGES.LONG ? 1.15 : session.range === ENGAGEMENT_RANGES.MEDIUM ? 1.05 : 0.9;
-      }
-      if (actionId === 'torpedo_strike' || actionId === 'depth_asw') {
-        return session.range === ENGAGEMENT_RANGES.CLOSE ? 1.3 : session.range === ENGAGEMENT_RANGES.MEDIUM ? 1.0 : 0.75;
-      }
-      return session.range === ENGAGEMENT_RANGES.MEDIUM ? 1.08 : 1.0;
-    };
+    const calcRangeMult = () => rangeRowMod.dmgMult;
 
     const nightDmgMult =
       isNight && actionId === 'torpedo_strike'
@@ -1818,6 +1929,10 @@ export class TacticalCombatEngine {
         const enemyAaMit = clamp(1 - ((targetEnemy.aa || 40) * 0.0045 + (targetEnemy.airThreat || 0) * 0.008), 0.52, 1.0);
         basePower *= enemyAaMit;
         if (targetEnemy.weakness === 'aa') weakBonus = 1.3;
+      }
+
+      if (rangeRowMod.dmgMult !== 1.0) {
+        extraEvents.push(`${rangeRowMod.label}（伤害 x${rangeRowMod.dmgMult.toFixed(2)}）`);
       }
 
       const mitigatedArmor = effectiveArmor * (1 - armorPen);
@@ -1975,6 +2090,11 @@ export class TacticalCombatEngine {
       actorId: actor.id,
       actorName: actor.name,
       actorClass: classProfile.code,
+      attackerGrid: { side: 'ally', row: actor.gridRow ?? 0, col: actor.gridCol ?? 0, index: actor.gridIndex ?? 0 },
+      targetGrid: targetEnemy
+        ? { side: 'enemy', row: targetEnemy.gridRow ?? 0, col: targetEnemy.gridCol ?? 0, index: targetEnemy.gridIndex ?? 0 }
+        : null,
+      rangeMod: rangeRowMod,
       targetEnemyId: targetEnemy.id,
       targetEnemyName: targetEnemy.name,
       outcomeTag,
@@ -2107,6 +2227,16 @@ export class TacticalCombatEngine {
         if (e.guardingEnemyId === undefined) e.guardingEnemyId = null;
         if (e.guardTurns === undefined) e.guardTurns = 0;
       }
+    }
+
+    if (s.enemies.some((e) => e.gridIndex === undefined || e.gridRow === undefined || !e.slotCode)) {
+      assignEnemyGridPositions(s.enemies);
+    }
+    if (!s.allyPositions || typeof s.allyPositions !== 'object') {
+      s.allyPositions =
+        this._formation && typeof this._formation.getGridMap === 'function'
+          ? deepClone(this._formation.getGridMap())
+          : {};
     }
 
     if (!s.range) s.range = ENGAGEMENT_RANGES.LONG;

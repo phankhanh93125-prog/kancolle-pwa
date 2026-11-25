@@ -5318,6 +5318,717 @@ html[data-theme-mode="light"] .bottom-tab-bar {
   background: var(--surface-elevated);
 }
 
+/* ============================================================
+   v21: 3x4 Tactical Formation Board & Three-Tier Radar Combat Stage
+   ============================================================ */
+
+/* Formation 3x4 Editor Board */
+.tac-preset-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tac-preset-btn {
+  flex: 1 1 auto;
+  min-height: 36px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tac-preset-btn.is-compact {
+  flex: 0 1 auto;
+  font-size: 11px;
+  padding: 0 8px;
+}
+
+.tac-radar-board {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 8px;
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+    radial-gradient(circle at 50% 0%, rgba(20, 184, 166, 0.14), transparent 70%),
+    #0b1320;
+  background-size: 24px 24px, 24px 24px, 100% 100%, 100% 100%;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+}
+
+.tac-board-axis-hint {
+  text-align: center;
+  font-size: 10.5px;
+  color: #7dd3fc;
+  letter-spacing: 0.04em;
+  opacity: 0.9;
+}
+
+.tac-grid-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.tac-row-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-align: center;
+  letter-spacing: 0.03em;
+}
+
+.tac-grid-row-cells {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.tac-grid-cell {
+  position: relative;
+  min-height: 62px;
+  padding: 4px 2px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.tac-grid-cell:active {
+  transform: scale(0.95);
+}
+
+.tac-grid-cell.is-empty {
+  background: transparent;
+  border: 1px dashed rgba(148, 163, 184, 0.16);
+}
+
+.tac-grid-cell.is-empty.is-selected-empty {
+  background: rgba(20, 184, 166, 0.16);
+  border: 1.5px solid #2dd4bf;
+  box-shadow: 0 0 0 2px rgba(45, 212, 191, 0.25);
+}
+
+.tac-radar-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.42);
+  display: block;
+}
+
+.tac-grid-cell.is-occupied {
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  color: #f8fafc;
+}
+
+.tac-grid-cell.is-occupied.is-selected {
+  border-color: #fbbf24;
+  background: rgba(251, 191, 36, 0.18);
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.45);
+}
+
+.tac-grid-cell.is-flagship {
+  border-color: #2dd4bf;
+}
+
+.tac-cell-no {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 800;
+  color: #7dd3fc;
+  line-height: 1;
+}
+
+.tac-cell-mini-name {
+  font-size: 10px;
+  font-weight: 600;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  line-height: 1.1;
+}
+
+.tac-cell-hp {
+  width: 78%;
+  height: 3px;
+  border-radius: 99px;
+  background: rgba(148, 163, 184, 0.28);
+  overflow: hidden;
+}
+
+.tac-cell-hp-fill {
+  display: block;
+  height: 100%;
+  background: #34d399;
+}
+
+.tac-cell-hp-fill.is-danger {
+  background: #ef4444;
+}
+
+.tac-board-hint {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+}
+
+.tac-board-hint.is-active {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.tac-selected-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+}
+
+.tac-selected-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.tac-selected-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tac-mini-act {
+  min-height: 32px;
+  padding: 0 9px;
+  font-size: 11.5px;
+}
+
+.is-deployed-row {
+  border-color: var(--accent);
+}
+
+/* ============================================================
+   Three-Tier 3x4 Tactical Battle Stage
+   ============================================================ */
+
+.battle-fullscreen-root.is-three-tier-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.bf-compact-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 2px;
+}
+
+.bf-mini-buffs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* Tier 1: Enemy 3x4 vs Ally 3x4 Radar Sandbox */
+.bf-radar-sandbox {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 8px 10px;
+  border-radius: var(--radius-md);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(14, 165, 233, 0.14) 0%, transparent 64%),
+    linear-gradient(rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+    #08111e;
+  background-size: 100% 100%, 22px 22px, 22px 22px, 100% 100%;
+  border: 1.5px solid rgba(56, 189, 248, 0.34);
+  overflow: hidden;
+}
+
+.radar-side-grid {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.radar-grid-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+
+.radar-row-tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: 0.02em;
+  opacity: 0.78;
+}
+
+.radar-row-tag.is-enemy { color: #fda4af; }
+.radar-row-tag.is-ally { color: #7dd3fc; }
+
+.radar-row-cells {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.radar-cell {
+  position: relative;
+  min-height: 44px;
+  padding: 3px 2px;
+  border-radius: 9px;
+  border: none;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  transition: transform 0.12s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.radar-cell.is-empty {
+  pointer-events: none;
+}
+
+.radar-cell.is-occupied {
+  cursor: pointer;
+  background: rgba(15, 23, 42, 0.62);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.radar-cell.is-occupied.is-enemy {
+  background: rgba(127, 29, 29, 0.24);
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.radar-cell.is-occupied.is-ally {
+  background: rgba(14, 116, 144, 0.22);
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+.radar-cell.is-targeted {
+  border: 1.5px solid #f43f5e !important;
+  box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.42), inset 0 0 10px rgba(244, 63, 94, 0.24);
+}
+
+.radar-cell.is-inspected {
+  box-shadow: 0 0 0 2px #fbbf24, 0 0 12px rgba(251, 191, 36, 0.45) !important;
+}
+
+.radar-cell.is-highlighted {
+  border: 1.5px solid #fbbf24 !important;
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.5), 0 0 12px rgba(251, 191, 36, 0.38);
+}
+
+.radar-cell.is-acting-pulse {
+  animation: radarPulseHalo 1.15s ease-in-out infinite;
+  border-color: #2dd4bf !important;
+  z-index: 3;
+}
+
+.radar-cell.is-enemy.is-acting-pulse {
+  border-color: #fb7185 !important;
+}
+
+@keyframes radarPulseHalo {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(45, 212, 191, 0.65), 0 0 12px rgba(45, 212, 191, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(45, 212, 191, 0.2), 0 0 18px rgba(45, 212, 191, 0.72);
+  }
+}
+
+.radar-cell.is-sunk {
+  opacity: 0.28;
+  filter: grayscale(1);
+}
+
+.radar-cell.is-heavy-dmg {
+  border-color: rgba(239, 68, 68, 0.7);
+}
+
+.radar-cell-no {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.radar-cell-no.is-enemy { color: #fda4af; }
+.radar-cell-no.is-ally { color: #7dd3fc; }
+
+.radar-cell-flag {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-size: 8.5px;
+  font-weight: 800;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: rgba(251, 146, 60, 0.85);
+  color: #0f172a;
+}
+
+.radar-cell-flag.is-ally {
+  background: rgba(56, 189, 248, 0.88);
+}
+
+.radar-cell-hp {
+  width: 78%;
+  height: 3px;
+  border-radius: 99px;
+  background: rgba(148, 163, 184, 0.28);
+  overflow: hidden;
+}
+
+.radar-cell-hp-fill {
+  display: block;
+  height: 100%;
+}
+
+.radar-cell-hp-fill.is-enemy { background: #fb7185; }
+.radar-cell-hp-fill.is-ally { background: #34d399; }
+.radar-cell-hp-fill.is-danger { background: #ef4444; }
+
+/* Sea Divider & Engagement Range Ruler */
+.radar-sea-divider {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px;
+  margin: 2px 0;
+  border-top: 1px dashed rgba(56, 189, 248, 0.34);
+  border-bottom: 1px dashed rgba(56, 189, 248, 0.34);
+  background: rgba(15, 23, 42, 0.56);
+}
+
+.radar-range-ruler {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.radar-range-pill {
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.radar-range-pill.is-active {
+  color: #04131c;
+  background: #38bdf8;
+  border-color: #38bdf8;
+}
+
+.radar-sea-divider .bf-banner {
+  position: static;
+  transform: none;
+  font-size: 11px;
+  padding: 2px 8px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.radar-sea-divider .bf-callout {
+  position: static;
+  transform: none;
+  margin-top: 1px;
+}
+
+/* Full-Sandbox Cell-to-Cell SVG Overlay */
+.radar-svg-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 5;
+  pointer-events: none;
+}
+
+/* Tier 2: Middle Command Bar */
+.bf-cmd-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.bf-actor-row-pill {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 600;
+}
+
+.bf-target-preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  font-size: 11.5px;
+  color: #e2e8f0;
+}
+
+/* Tier 3: Lower Allied Status List & Click-to-Inspect Enemy Intel Panel */
+.bf-lower-status-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+}
+
+.bf-lower-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.bf-lower-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.bf-ally-status-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.bf-ally-row-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 9px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.bf-ally-row-card.is-acting {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.bf-ally-row-card.is-highlighted {
+  border-color: #fbbf24;
+  box-shadow: 0 0 0 1.5px rgba(251, 191, 36, 0.55);
+}
+
+.bf-ally-row-card.is-danger {
+  border-color: rgba(239, 68, 68, 0.6);
+}
+
+.bf-ally-row-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11.5px;
+}
+
+.bf-ally-num {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 800;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.bf-ally-full-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bf-ally-pos-tag {
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.bf-ally-row-hp {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bf-ally-row-hp .bf-mini-hp-track {
+  flex: 1 1 auto;
+}
+
+.bf-ally-hp-num {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+/* Enemy Intel Inspector Panel (Tier 3 Alternate View) */
+.bf-enemy-intel-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bf-intel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.bf-intel-title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.bf-intel-hp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bf-intel-hp-row .bf-mini-hp-track.is-tall {
+  flex: 1 1 auto;
+  height: 8px;
+}
+
+.bf-intel-hp-val {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.bf-intel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.bf-intel-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  font-size: 12px;
+}
+
+.bf-intel-k {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.bf-intel-intent-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.42);
+  font-size: 11.5px;
+}
+
+.bf-intel-intent-desc {
+  color: var(--text-primary);
+}
+
+.bf-intel-range-note {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--bg-input);
+}
+
+html[data-theme-mode="light"] .bf-target-preview-bar {
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+html[data-theme-mode="light"] .bf-actor-row-pill {
+  color: var(--text-secondary);
+}
+
+
 
 
 
