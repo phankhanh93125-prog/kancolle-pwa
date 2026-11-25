@@ -989,6 +989,11 @@ export class TacticalCombatEngine {
     const initialRange =
       node?.lane === 'stealth' ? ENGAGEMENT_RANGES.MEDIUM : ENGAGEMENT_RANGES.LONG;
 
+    const resDropMult =
+      this._resources && typeof this._resources.getDropMultiplier === 'function'
+        ? this._resources.getDropMultiplier()
+        : 1.0;
+
     this._session = {
       id: `cmb_${Date.now().toString(36)}`,
       characterId: flagshipId,
@@ -1000,7 +1005,8 @@ export class TacticalCombatEngine {
       difficulty: diffId,
       depthRatio,
       strengthMultiplier: strMult,
-      lootBonus: dynScale.lootBonus,
+      resourceDropMultiplier: resDropMult,
+      lootBonus: Number((dynScale.lootBonus * resDropMult).toFixed(2)),
       seaCondition: seaCondition ? deepClone(seaCondition) : null,
       round: 1,
       turn: 1,

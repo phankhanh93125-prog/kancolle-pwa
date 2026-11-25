@@ -225,11 +225,43 @@ export class PortBuildingsSystem {
       changed = true;
     }
 
+    // 3. Port-level boosted hourly offline resource recovery (dorm/dock levels + custom building resource_regen buffs)
+    let offlineResourceReport = null;
+    if (this._resources && typeof this._resources.settleOfflineResources === 'function') {
+      const buffs = this.getGlobalBuffSummary();
+      const portLevelBonusPct =
+        Math.max(0, (this._state.dormitory.level - 1) * 8) +
+        Math.max(0, (this._state.dockyard.level - 1) * 10);
+      const totalRegenPct = (buffs.resourceRegenPct || 0) + portLevelBonusPct + 20; // +20% 港区基础后勤产能
+      offlineResourceReport = await this._resources.settleOfflineResources({
+        now,
+        extraRegenPct: totalRegenPct,
+      });
+    }
+
     this._syncDockTasksToEntitySystem();
     if (changed) {
       await this.persist();
     }
-    return { settledDormResidents: validResidents.length, autoCompletedRepairs: finished.length };
+    return {
+      settledDormResidents: validResidents.length,
+      autoCompletedRepairs: finished.length,
+      offlineResourceReport,
+    };
+  }
+
+  /** Return effective hourly natural resource recovery across fuel/ammo/steel/bauxite. */
+  getHourlyResourceYield() {
+    if (!this._resources || typeof this._resources.getHourlyRecoverySummary !== 'function') {
+      return { fuel: 0, ammo: 0, steel: 0, bauxite: 0 };
+    }
+    const buffs = this.getGlobalBuffSummary();
+    const portLevelBonusPct =
+      Math.max(0, (this._state.dormitory.level - 1) * 8) +
+      Math.max(0, (this._state.dockyard.level - 1) * 10);
+    return this._resources.getHourlyRecoverySummary({
+      extraRegenPct: (buffs.resourceRegenPct || 0) + portLevelBonusPct + 20,
+    });
   }
 
   // ------------------------------------------------------------

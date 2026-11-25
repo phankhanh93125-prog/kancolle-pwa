@@ -12,9 +12,12 @@
  */
 
 import {
+  EQUIPMENT_SUBCATEGORY_DEFS,
   ITEM_CATEGORIES,
   ITEM_CATEGORY_LABELS,
+  ITEM_ICON_PRESETS,
   MAX_ENHANCE_LEVEL,
+  OUTFIT_STYLE_PRESETS,
   WAREHOUSE_GROUPS,
   WAREHOUSE_GROUP_DEFS,
   classifyItemWarehouseGroup,
@@ -22,6 +25,14 @@ import {
   getEnhanceCost,
   getItemIconSvg,
 } from '../core/inventory-system.js';
+import {
+  ITEM_RARITIES,
+  ITEM_RARITY_DEFS,
+  ITEM_RARITY_MAP,
+  NAVAL_EIGHT_STAT_DEFS,
+  inferItemRarity,
+  normalizeRarity,
+} from '../core/stat-rules.js';
 import { createResourceOverviewBar } from '../core/resource-manager.js';
 import { LOG_CATEGORIES } from '../core/log-system.js';
 import { getActiveCharacterId, persistCharacterRoster } from './character-console.js';
@@ -263,6 +274,7 @@ let workshopState = {
   context: null,
   activeTab: 'warehouse', // 'warehouse' | 'shop' | 'gacha'
   warehouseGroup: WAREHOUSE_GROUPS.ALL,
+  rarityFilter: 'all', // 'all' | 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary'
   equipStatus: 'all', // 'all' | 'idle' | 'equipped'
   expandedItemId: null,
   targetCharId: null,
@@ -657,17 +669,460 @@ function formatCompactStatTags(bonuses = [], maxCount = 3) {
     });
 }
 
+/**
+ * Reusable Visual Equipment & Outfit Editor Sheet (used by both Supply Workshop & Compendium Studio).
+ * Supports Core 3-piece (engine/armor/core), Main Weapons (main_gun/torpedo/aircraft),
+ * Tactical Support (radar/sonar/aa_gun), and Shipgirl Outfits with White->Orange Rarity,
+ * custom SVG icon selector, Outfit Style tag (linked to Secretary dialogue), and all 8 Naval Stats.
+ */
+export function openEquipmentOutfitEditorSheet(
+  context,
+  { item = null, template = null, onSaved = null } = {}
+) {
+  const { inventory, contentManager, entities, rootStorage, uiKit } = context;
+  const source = item || template || null;
+  const isEditingWarehouseItem = Boolean(item);
+  const isEditingTemplate = Boolean(template);
+
+  // Infer initial subcategory from source
+  const resolveSubCat = (src) => {
+    if (!src) return 'main_gun';
+    if (src.subCategory && EQUIPMENT_SUBCATEGORY_DEFS.some((d) => d.id === src.subCategory)) {
+      return src.subCategory;
+    }
+    if (src.category === ITEM_CATEGORIES.ENGINE) return 'engine';
+    if (src.category === ITEM_CATEGORIES.ARMOR) return 'armor';
+    if (src.category === ITEM_CATEGORIES.CORE) return 'core';
+    if (src.category === ITEM_CATEGORIES.OUTFIT) return 'outfit';
+    const grp = classifyItemWarehouseGroup(src);
+    return grp === WAREHOUSE_GROUPS.TACTICAL ? 'radar' : 'main_gun';
+  };
+
+  const statValues = {};
+  for (const def of NAVAL_EIGHT_STAT_DEFS) statValues[def.key] = 0;
+  let checkBonusVal = 0;
+  for (const b of source?.baseBonuses || source?.bonuses || []) {
+    if (b.stat === 'checkBonus') checkBonusVal += Number(b.value) || 0;
+    else if (statValues[b.stat] !== undefined) statValues[b.stat] += Number(b.value) || 0;
+  }
+
+  let draft = {
+    subCategory: resolveSubCat(source),
+    rarity: source ? inferItemRarity(source) : ITEM_RARITIES.RARE,
+    name: source?.name || '',
+    iconKey: source?.iconKey || resolveSubCat(source),
+    description: source?.description || '',
+    outfitStyle: source?.outfitStyle || '优雅礼服',
+    stats: statValues,
+    checkBonus: checkBonusVal,
+  };
+
+  uiKit.openModal({
+    title: isEditingWarehouseItem
+      ? `编辑装备/服装 · ${source.name}`
+      : isEditingTemplate
+      ? `编辑图鉴模板 · ${source.name}`
+      : '+ 新建自定义装备与服装',
+    renderContent: (body, close) => {
+      const renderEditor = () => {
+        const subDef =
+          EQUIPMENT_SUBCATEGORY_DEFS.find((d) => d.id === draft.subCategory) || EQUIPMENT_SUBCATEGORY_DEFS[3];
+        const isOutfit = subDef.category === ITEM_CATEGORIES.OUTFIT;
+        const rDef = ITEM_RARITY_MAP[draft.rarity] || ITEM_RARITY_MAP.common;
+        const previewItem = {
+          name: draft.name || '未命名装备',
+          category: subDef.category,
+          subGroup: subDef.subGroup,
+          iconKey: draft.iconKey,
+          rarity: draft.rarity,
+        };
+
+        body.innerHTML = `
+          <div class="module-stack" id="eq-visual-editor">
+            <!-- Live Rarity Preview Header -->
+            <div class="wh-compact-card is-rarity-${escapeHtml(draft.rarity)}" style="padding:10px 12px;">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <span class="wh-item-ico">${getItemIconSvg(previewItem, { size: 28, iconKey: draft.iconKey })}</span>
+                <div style="flex:1; min-width:0;">
+                  <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                    <strong>${escapeHtml(draft.name || (isOutfit ? '新自定义舰娘服装' : '新自定义战术装备'))}</strong>
+                    <span class="rarity-pill is-rarity-${escapeHtml(draft.rarity)}">${escapeHtml(rDef.label)}</span>
+                    ${isOutfit && draft.outfitStyle ? `<span class="status-badge badge-muted">${escapeHtml(draft.outfitStyle)}</span>` : ''}
+                  </div>
+                  <span class="muted-text" style="font-size:11.5px;">${escapeHtml(subDef.group)} · ${escapeHtml(subDef.label)}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 1. Category / Subcategory Selector -->
+            <div class="form-group">
+              <label class="form-label">1. 装备 / 服装类别</label>
+              <select id="eq-ed-subcat" class="form-input">
+                ${['核心三件套', '主战武器', '战术辅助', '舰娘服装']
+                  .map(
+                    (grp) => `
+                  <optgroup label="${escapeHtml(grp)}">
+                    ${EQUIPMENT_SUBCATEGORY_DEFS.filter((d) => d.group === grp)
+                      .map(
+                        (d) =>
+                          `<option value="${escapeHtml(d.id)}" ${draft.subCategory === d.id ? 'selected' : ''}>${escapeHtml(d.label)}</option>`
+                      )
+                      .join('')}
+                  </optgroup>
+                `
+                  )
+                  .join('')}
+              </select>
+            </div>
+
+            <!-- 2. Five-Tier Rarity Selector (White -> Orange) -->
+            <div class="form-group">
+              <label class="form-label">2. 品级选择（白→绿→蓝→紫→橙）</label>
+              <div class="rarity-picker-row" id="eq-ed-rarity-row">
+                ${ITEM_RARITY_DEFS.map(
+                  (r) => `
+                  <button type="button" class="rarity-pick-btn is-rarity-${r.id} ${draft.rarity === r.id ? 'is-active' : ''}" data-ed-rarity="${r.id}">
+                    ${escapeHtml(r.label)}
+                  </button>
+                `
+                ).join('')}
+              </div>
+            </div>
+
+            <!-- 3. Name & Description -->
+            <div class="form-group">
+              <label class="form-label" for="eq-ed-name">3. 名称</label>
+              <input id="eq-ed-name" class="form-input" type="text" value="${escapeHtml(draft.name)}" placeholder="${isOutfit ? '例如：星海盛夏礼服 / 暗夜特勤作战服' : '例如：460mm 三联装主炮 / 试验型高频声呐'}" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="eq-ed-desc">描述文本</label>
+              <textarea id="eq-ed-desc" class="form-textarea" style="min-height:60px;" placeholder="描述该装备的战术背景或服装设计细节...">${escapeHtml(draft.description)}</textarea>
+            </div>
+
+            <!-- 4. Vector Icon Picker -->
+            <div class="form-group">
+              <label class="form-label">4. 矢量图标选择</label>
+              <div class="eq-icon-grid" id="eq-ed-icon-grid">
+                ${ITEM_ICON_PRESETS.map(
+                  (ic) => `
+                  <button type="button" class="eq-icon-btn ${draft.iconKey === ic.id ? 'is-active' : ''}" data-ed-icon="${ic.id}" title="${escapeHtml(ic.label)}">
+                    ${getItemIconSvg(previewItem, { size: 22, iconKey: ic.id })}
+                    <span>${escapeHtml(ic.label.slice(0, 4))}</span>
+                  </button>
+                `
+                ).join('')}
+              </div>
+            </div>
+
+            <!-- 5. Outfit Style Tag (linked to Secretary Dialogue!) -->
+            ${
+              isOutfit
+                ? `
+              <div class="form-group" id="eq-ed-style-box">
+                <label class="form-label" for="eq-ed-outfit-style">5. 服装风格标签（联动秘书舰日常台词反馈）</label>
+                <div class="chip-row" style="margin-bottom:6px;">
+                  ${OUTFIT_STYLE_PRESETS.map(
+                    (st) => `
+                    <button type="button" class="preset-chip ${draft.outfitStyle === st.id ? 'is-active' : ''}" data-ed-style="${escapeHtml(st.id)}">
+                      ${escapeHtml(st.label)}
+                    </button>
+                  `
+                  ).join('')}
+                </div>
+                <input id="eq-ed-outfit-style" class="form-input" type="text" value="${escapeHtml(draft.outfitStyle)}" placeholder="可输入任意自定义服装风格，如：哥特洋装 / 冬日大衣..." />
+              </div>
+            `
+                : ''
+            }
+
+            <!-- 6. Eight Naval Stats + Check Bonus -->
+            <div class="form-group">
+              <label class="form-label">6. 八维海战属性加成配置（留 0 则不附加该词条）</label>
+              <div class="eq-stat-8grid">
+                ${NAVAL_EIGHT_STAT_DEFS.map(
+                  (st) => `
+                  <label class="eq-stat-cell">
+                    <span>${escapeHtml(st.label)}</span>
+                    <input type="number" class="form-input" data-ed-stat="${st.key}" value="${draft.stats[st.key] ?? 0}" min="-99" max="500" />
+                  </label>
+                `
+                ).join('')}
+                <label class="eq-stat-cell">
+                  <span>检定加值</span>
+                  <input type="number" class="form-input" id="eq-ed-check-bonus" value="${draft.checkBonus ?? 0}" min="-5" max="10" />
+                </label>
+              </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="lab-stack-sm">
+              ${
+                isEditingWarehouseItem
+                  ? `
+                <button type="button" id="btn-eq-ed-update" class="btn-primary uikit-touch-target">保存修改到仓库物品</button>
+                <button type="button" id="btn-eq-ed-save-tpl" class="btn-secondary uikit-touch-target">另存为本地内容图鉴模板</button>
+              `
+                  : `
+                <button type="button" id="btn-eq-ed-save-and-issue" class="btn-primary uikit-touch-target">保存至图鉴并发放 1 件到仓库</button>
+                <button type="button" id="btn-eq-ed-save-tpl" class="btn-secondary uikit-touch-target">仅保存至本地内容图鉴</button>
+              `
+              }
+            </div>
+          </div>
+        `;
+
+        const syncInputsToDraft = () => {
+          draft.name = body.querySelector('#eq-ed-name')?.value.trim() || '';
+          draft.description = body.querySelector('#eq-ed-desc')?.value.trim() || '';
+          const styleEl = body.querySelector('#eq-ed-outfit-style');
+          if (styleEl) draft.outfitStyle = styleEl.value.trim();
+          body.querySelectorAll('[data-ed-stat]').forEach((inp) => {
+            const k = inp.getAttribute('data-ed-stat');
+            draft.stats[k] = Number(inp.value) || 0;
+          });
+          draft.checkBonus = Number(body.querySelector('#eq-ed-check-bonus')?.value) || 0;
+        };
+
+        const buildPayload = () => {
+          syncInputsToDraft();
+          const curSub =
+            EQUIPMENT_SUBCATEGORY_DEFS.find((d) => d.id === draft.subCategory) || EQUIPMENT_SUBCATEGORY_DEFS[3];
+          const bonuses = [];
+          for (const st of NAVAL_EIGHT_STAT_DEFS) {
+            const v = Math.round(Number(draft.stats[st.key]) || 0);
+            if (v !== 0) bonuses.push({ stat: st.key, layer: 'baseAdd', value: v });
+          }
+          const cb = Math.round(Number(draft.checkBonus) || 0);
+          if (cb !== 0) bonuses.push({ stat: 'checkBonus', layer: 'flatFinal', value: cb });
+
+          return {
+            id: isEditingTemplate ? template.id : undefined,
+            name: draft.name,
+            category: curSub.category,
+            subGroup: curSub.subGroup,
+            subCategory: curSub.id,
+            rarity: normalizeRarity(draft.rarity),
+            iconKey: draft.iconKey,
+            outfitStyle: curSub.category === ITEM_CATEGORIES.OUTFIT ? draft.outfitStyle : '',
+            description: draft.description,
+            tags: [curSub.group, curSub.label, ITEM_RARITY_MAP[draft.rarity]?.shortLabel || '普通'],
+            bonuses,
+          };
+        };
+
+        body.querySelector('#eq-ed-subcat').addEventListener('change', (e) => {
+          syncInputsToDraft();
+          draft.subCategory = e.target.value;
+          const nextSub = EQUIPMENT_SUBCATEGORY_DEFS.find((d) => d.id === draft.subCategory);
+          if (nextSub) draft.iconKey = nextSub.defaultIcon;
+          renderEditor();
+        });
+
+        body.querySelectorAll('[data-ed-rarity]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            syncInputsToDraft();
+            draft.rarity = btn.getAttribute('data-ed-rarity');
+            renderEditor();
+          });
+        });
+
+        body.querySelectorAll('[data-ed-icon]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            syncInputsToDraft();
+            draft.iconKey = btn.getAttribute('data-ed-icon');
+            renderEditor();
+          });
+        });
+
+        body.querySelectorAll('[data-ed-style]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            syncInputsToDraft();
+            draft.outfitStyle = btn.getAttribute('data-ed-style');
+            renderEditor();
+          });
+        });
+
+        const btnUpdate = body.querySelector('#btn-eq-ed-update');
+        if (btnUpdate && item) {
+          btnUpdate.addEventListener('click', async () => {
+            try {
+              const payload = buildPayload();
+              if (!payload.name) throw new Error('请输入装备/服装名称');
+              await inventory.updateItem(item.id, payload);
+              if (rootStorage && entities) {
+                await persistCharacterRoster({ storage: rootStorage, entities });
+              }
+              uiKit.showToast(`已保存「${payload.name}」的品级与属性修改`, 'ok');
+              close();
+              if (typeof onSaved === 'function') onSaved();
+            } catch (err) {
+              uiKit.showToast(err instanceof Error ? err.message : '保存失败', 'warn');
+            }
+          });
+        }
+
+        const btnSaveTpl = body.querySelector('#btn-eq-ed-save-tpl');
+        if (btnSaveTpl) {
+          btnSaveTpl.addEventListener('click', async () => {
+            try {
+              const payload = buildPayload();
+              if (!payload.name) throw new Error('请输入装备/服装名称');
+              if (!contentManager) throw new Error('内容图鉴引擎未就绪');
+              await contentManager.saveCustomEquipmentTemplate(payload);
+              uiKit.showToast(`已保存模板「${payload.name}」至本地内容图鉴`, 'ok');
+              close();
+              if (typeof onSaved === 'function') onSaved();
+            } catch (err) {
+              uiKit.showToast(err instanceof Error ? err.message : '保存模板失败', 'warn');
+            }
+          });
+        }
+
+        const btnSaveIssue = body.querySelector('#btn-eq-ed-save-and-issue');
+        if (btnSaveIssue) {
+          btnSaveIssue.addEventListener('click', async () => {
+            try {
+              const payload = buildPayload();
+              if (!payload.name) throw new Error('请输入装备/服装名称');
+              if (contentManager) {
+                const tpl = await contentManager.saveCustomEquipmentTemplate(payload);
+                await contentManager.issueEquipmentToWarehouse(tpl.id, 1);
+              } else {
+                await inventory.createItem(payload);
+              }
+              uiKit.showToast(`已保存「${payload.name}」至图鉴并发放 1 件到仓库！`, 'ok');
+              close();
+              if (typeof onSaved === 'function') onSaved();
+            } catch (err) {
+              uiKit.showToast(err instanceof Error ? err.message : '保存发放失败', 'warn');
+            }
+          });
+        }
+      };
+
+      renderEditor();
+    },
+  });
+}
+
+function openBatchDisassembleSheet(context, { onDone = null } = {}) {
+  const { inventory, resources, logs, uiKit } = context;
+  let selectedRarities = new Set([ITEM_RARITIES.COMMON, ITEM_RARITIES.UNCOMMON]);
+  let includeEnhanced = false;
+
+  uiKit.openModal({
+    title: '按品级批量拆解闲置装备',
+    renderContent: (body, close) => {
+      const renderPanel = () => {
+        const dropMult = typeof resources.getDropMultiplier === 'function' ? resources.getDropMultiplier() : 1.0;
+        const preview = inventory.previewBatchDisassemble({
+          rarities: Array.from(selectedRarities),
+          includeEnhanced,
+          dropMultiplier: dropMult,
+        });
+
+        body.innerHTML = `
+          <div class="module-stack">
+            <p class="muted-text" style="font-size:12px; margin:0;">
+              选择要批量拆解的闲置品级（已装备给舰娘的物品与消耗品绝对不会被拆解），拆解返还钢材、铝材与银条（受当前 ${dropMult.toFixed(1)}x 资源掉落倍率加成）。
+            </p>
+
+            <div class="rarity-picker-row">
+              ${ITEM_RARITY_DEFS.map(
+                (r) => `
+                <button type="button" class="rarity-pick-btn is-rarity-${r.id} ${selectedRarities.has(r.id) ? 'is-active' : ''}" data-dis-rarity="${r.id}">
+                  ${selectedRarities.has(r.id) ? '✓ ' : ''}${escapeHtml(r.label)}
+                </button>
+              `
+              ).join('')}
+            </div>
+
+            <label class="checkbox-row">
+              <input type="checkbox" id="chk-dis-enhanced" ${includeEnhanced ? 'checked' : ''} />
+              <span>同时包含已强化（+1 以上）的闲置装备</span>
+            </label>
+
+            <div class="surface-card lab-stack-sm" style="background:var(--surface-alt);">
+              <div class="section-header-row" style="margin-bottom:0;">
+                <strong>预计拆解数量</strong>
+                <span class="status-badge ${preview.count > 0 ? 'badge-warn' : 'badge-muted'}">${preview.count} 件闲置装备</span>
+              </div>
+              <div class="port-gear-summary">
+                <span class="ns-chip">返还钢材 +${preview.yield.steel}</span>
+                <span class="ns-chip">返还铝材 +${preview.yield.bauxite}</span>
+                <span class="ns-chip">返还银条 +${preview.yield.silver}</span>
+              </div>
+              ${
+                preview.count > 0
+                  ? `<p class="muted-text" style="font-size:11.5px; margin:0;">含：${escapeHtml(
+                      preview.items
+                        .slice(0, 8)
+                        .map((i) => i.name)
+                        .join('、')
+                    )}${preview.count > 8 ? ' 等' : ''}</p>`
+                  : '<p class="muted-text" style="font-size:11.5px; margin:0;">当前勾选品级下暂无可拆解的闲置装备。</p>'
+              }
+            </div>
+
+            <button type="button" id="btn-confirm-disassemble" class="btn-danger uikit-touch-target" ${preview.count === 0 ? 'disabled' : ''}>
+              确认批量拆解 ${preview.count} 件并领取物资
+            </button>
+          </div>
+        `;
+
+        body.querySelectorAll('[data-dis-rarity]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const rid = btn.getAttribute('data-dis-rarity');
+            if (selectedRarities.has(rid)) selectedRarities.delete(rid);
+            else selectedRarities.add(rid);
+            renderPanel();
+          });
+        });
+
+        body.querySelector('#chk-dis-enhanced').addEventListener('change', (e) => {
+          includeEnhanced = Boolean(e.target.checked);
+          renderPanel();
+        });
+
+        body.querySelector('#btn-confirm-disassemble').addEventListener('click', async () => {
+          const res = await inventory.disassembleItemsByRarity({
+            rarities: Array.from(selectedRarities),
+            includeEnhanced,
+            resources,
+          });
+          if (res.removedCount > 0) {
+            logs.add({
+              category: LOG_CATEGORIES.EQUIPMENT,
+              title: `按品级批量拆解 ${res.removedCount} 件闲置装备`,
+              detail: `返还 钢材+${res.yield.steel} / 铝材+${res.yield.bauxite} / 银条+${res.yield.silver}`,
+            });
+            uiKit.showToast(
+              `拆解 ${res.removedCount} 件装备成功！返还 钢+${res.yield.steel} 铝+${res.yield.bauxite} 银+${res.yield.silver}`,
+              'ok'
+            );
+          }
+          close();
+          if (typeof onDone === 'function') onDone();
+        });
+      };
+
+      renderPanel();
+    },
+  });
+}
+
 function renderWarehouseEnhanceTab(host) {
-  const { inventory, resources, entities, commander, rootStorage, logs, uiKit } = workshopState.context;
+  const { inventory, resources, entities, commander, rootStorage, uiKit } = workshopState.context;
   const targetChar = getTargetCharacter();
   const allItems = inventory.listItems();
   const items = inventory.listItems({
     warehouseGroup: workshopState.warehouseGroup,
+    rarity: workshopState.rarityFilter,
     equipStatus: workshopState.equipStatus,
   });
   const idleCleanable = inventory.getIdleUnenhancedItems();
 
-  // Compute counts per warehouse group for clear overview
   const groupCounts = { [WAREHOUSE_GROUPS.ALL]: allItems.length };
   for (const g of WAREHOUSE_GROUP_DEFS) {
     if (g.id === WAREHOUSE_GROUPS.ALL) continue;
@@ -679,8 +1134,8 @@ function renderWarehouseEnhanceTab(host) {
   card.id = 'sw-warehouse-card';
   card.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">紧凑分类装备仓库（${items.length}/${allItems.length}）</h2>
-      <span class="status-badge badge-muted">点击条目展开操作</span>
+      <h2 class="section-title">分类装备与服装仓库（${items.length}/${allItems.length}）</h2>
+      <button type="button" id="btn-sw-new-custom-eq" class="btn-primary uikit-touch-target" style="padding:0 12px;">+ 新建装备/服装</button>
     </div>
 
     <!-- Category Tabs -->
@@ -694,7 +1149,19 @@ function renderWarehouseEnhanceTab(host) {
       ).join('')}
     </div>
 
-    <!-- Status Filter + Batch Cleanup -->
+    <!-- Five-Tier Rarity Filter Strip (White -> Green -> Blue -> Purple -> Orange) -->
+    <div class="wh-filter-strip" id="sw-wh-rarity-tabs" role="tablist" aria-label="品级筛选">
+      <button type="button" class="wh-pill-btn is-sm ${workshopState.rarityFilter === 'all' ? 'is-active' : ''}" data-wh-rarity="all">全部品级</button>
+      ${ITEM_RARITY_DEFS.map(
+        (r) => `
+        <button type="button" class="wh-pill-btn is-sm is-rarity-${r.id} ${workshopState.rarityFilter === r.id ? 'is-active' : ''}" data-wh-rarity="${r.id}">
+          ${escapeHtml(r.label)}
+        </button>
+      `
+      ).join('')}
+    </div>
+
+    <!-- Status Filter + Batch Disassemble by Rarity -->
     <div class="wh-status-toolbar">
       <div class="wh-status-pills" id="sw-wh-status-filters">
         ${[
@@ -712,16 +1179,29 @@ function renderWarehouseEnhanceTab(host) {
           .join('')}
       </div>
       <button type="button" id="btn-sw-batch-clean" class="btn-danger uikit-touch-target wh-clean-btn" ${idleCleanable.length === 0 ? 'disabled' : ''}>
-        清理闲置+0 (${idleCleanable.length})
+        按品级拆解 (${idleCleanable.length})
       </button>
     </div>
 
     <div class="wh-compact-list" id="sw-enhance-list"></div>
   `;
 
+  card.querySelector('#btn-sw-new-custom-eq').addEventListener('click', () => {
+    openEquipmentOutfitEditorSheet(workshopState.context, {
+      onSaved: () => renderWorkshop(),
+    });
+  });
+
   card.querySelectorAll('[data-wh-group]').forEach((btn) => {
     btn.addEventListener('click', () => {
       workshopState.warehouseGroup = btn.getAttribute('data-wh-group');
+      renderWorkshop();
+    });
+  });
+
+  card.querySelectorAll('[data-wh-rarity]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      workshopState.rarityFilter = btn.getAttribute('data-wh-rarity');
       renderWorkshop();
     });
   });
@@ -733,39 +1213,21 @@ function renderWarehouseEnhanceTab(host) {
     });
   });
 
-  card.querySelector('#btn-sw-batch-clean').addEventListener('click', async () => {
-    const cleanTargets = inventory.getIdleUnenhancedItems();
-    if (cleanTargets.length === 0) {
-      uiKit.showToast('当前没有可清理的闲置未强化装备', 'info');
-      return;
-    }
-    const confirmed = await uiKit.confirmDialog({
-      title: `批量清理闲置未强化装备（${cleanTargets.length} 件）`,
-      message: `将清理所有当前未被任何舰娘装备且强化等级为 +0 的装备（消耗品与已装备/已强化装备不受影响）：${cleanTargets
-        .slice(0, 6)
-        .map((i) => i.name)
-        .join('、')}${cleanTargets.length > 6 ? ' 等' : ''}。确认执行吗？`,
-      confirmLabel: `确认清理 ${cleanTargets.length} 件`,
-      tone: 'danger',
+  card.querySelector('#btn-sw-batch-clean').addEventListener('click', () => {
+    openBatchDisassembleSheet(workshopState.context, {
+      onDone: () => renderWorkshop(),
     });
-    if (!confirmed) return;
-    const res = await inventory.cleanupIdleUnenhancedItems();
-    logs.add({
-      category: LOG_CATEGORIES.EQUIPMENT,
-      title: `仓库批量清理闲置未强化装备（${res.removedCount} 件）`,
-      detail: res.removedNames.join('、'),
-    });
-    uiKit.showToast(`已清理 ${res.removedCount} 件闲置未强化装备`, 'ok');
-    renderWorkshop();
   });
 
   const maintDisc = commander ? commander.getEnhanceCostDiscount() : 0;
   const listEl = card.querySelector('#sw-enhance-list');
   if (items.length === 0) {
-    listEl.innerHTML = '<p class="muted-text" style="padding:8px 0;">当前分类与筛选条件下暂无物品。</p>';
+    listEl.innerHTML = '<p class="muted-text" style="padding:8px 0;">当前分类与品级筛选条件下暂无物品。</p>';
   } else {
     for (const item of items) {
       const lv = Number(item.level) || 0;
+      const rarityId = inferItemRarity(item);
+      const rDef = ITEM_RARITY_MAP[rarityId] || ITEM_RARITY_MAP.common;
       const isConsumable = item.category === ITEM_CATEGORIES.CONSUMABLE;
       const isMax = isConsumable || lv >= MAX_ENHANCE_LEVEL;
       const cost = isConsumable ? null : getEnhanceCost(item, { discount: maintDisc });
@@ -777,20 +1239,23 @@ function renderWarehouseEnhanceTab(host) {
       const equippedSlotOnTarget = targetChar ? inventory.getEquippedSlotOfItem(targetChar.id, item.id) : null;
 
       const row = document.createElement('div');
-      row.className = `wh-compact-card ${isExpanded ? 'is-expanded' : ''} ${wearers.length ? 'is-equipped' : ''}`;
+      row.className = `wh-compact-card is-rarity-${rarityId} ${isExpanded ? 'is-expanded' : ''} ${wearers.length ? 'is-equipped' : ''}`;
       row.dataset.enhanceItemId = item.id;
       row.dataset.whGroup = classifyItemWarehouseGroup(item);
+      row.dataset.rarity = rarityId;
 
       row.innerHTML = `
         <button type="button" class="wh-compact-header" data-wh-toggle="${escapeHtml(item.id)}" aria-expanded="${isExpanded ? 'true' : 'false'}">
           <span class="wh-item-ico">${getItemIconSvg(item, { size: 20 })}</span>
           <div class="wh-compact-main">
             <div class="wh-compact-title-row">
+              <span class="rarity-pill is-rarity-${rarityId}">${escapeHtml(rDef.shortLabel)}</span>
               <strong class="wh-item-name">${escapeHtml(item.name)}</strong>
               ${lv > 0 ? `<span class="wh-lv-pill">+${lv}</span>` : ''}
               ${isConsumable ? `<span class="wh-qty-pill">×${item.quantity}</span>` : ''}
             </div>
             <div class="wh-compact-stat-row">
+              ${item.outfitStyle ? `<span class="wh-stat-mini">风:${escapeHtml(item.outfitStyle)}</span>` : ''}
               ${statTags.map((t) => `<span class="wh-stat-mini">${escapeHtml(t)}</span>`).join('')}
             </div>
           </div>
@@ -807,7 +1272,9 @@ function renderWarehouseEnhanceTab(host) {
             ? `
           <div class="wh-compact-detail">
             <div class="cc-badge-row">
+              <span class="rarity-pill is-rarity-${rarityId}">${escapeHtml(rDef.label)}</span>
               <span class="status-badge badge-muted">${escapeHtml(ITEM_CATEGORY_LABELS[item.category] || item.category)}</span>
+              ${item.outfitStyle ? `<span class="status-badge badge-ok">风格：${escapeHtml(item.outfitStyle)}</span>` : ''}
               ${wearers.length > 0 ? `<span class="status-badge badge-ok">已装备：${escapeHtml(wearers.map((w) => w.name).join('、'))}</span>` : '<span class="status-badge badge-muted">当前闲置</span>'}
             </div>
             ${item.description ? `<p class="muted-text" style="font-size:12px; margin:0;">${escapeHtml(item.description)}</p>` : ''}
@@ -836,7 +1303,12 @@ function renderWarehouseEnhanceTab(host) {
                     </button>`
                   : ''
               }
-              <button type="button" class="btn-danger uikit-touch-target" data-do-delete>删除装备</button>
+              ${
+                !isConsumable
+                  ? '<button type="button" class="btn-secondary uikit-touch-target" data-do-edit>编辑品级/属性</button>'
+                  : ''
+              }
+              <button type="button" class="btn-danger uikit-touch-target" data-do-delete>拆解/删除</button>
             </div>
           </div>
         `
@@ -900,20 +1372,30 @@ function renderWarehouseEnhanceTab(host) {
         });
       }
 
+      const editBtn = row.querySelector('[data-do-edit]');
+      if (editBtn) {
+        editBtn.addEventListener('click', () => {
+          openEquipmentOutfitEditorSheet(workshopState.context, {
+            item,
+            onSaved: () => renderWorkshop(),
+          });
+        });
+      }
+
       const delBtn = row.querySelector('[data-do-delete]');
       if (delBtn) {
         delBtn.addEventListener('click', async () => {
           const ok = await uiKit.confirmDialog({
-            title: `删除物品「${item.name}」`,
-            message: '确认从仓库永久删除该装备吗？',
-            confirmLabel: '确认删除',
+            title: `拆解并删除「${item.name}」`,
+            message: '确认从仓库拆解移除该物品吗？',
+            confirmLabel: '确认移除',
             tone: 'danger',
           });
           if (!ok) return;
           await inventory.deleteItem(item.id);
           await persistCharacterRoster({ storage: rootStorage, entities });
           workshopState.expandedItemId = null;
-          uiKit.showToast(`已删除「${item.name}」`, 'ok');
+          uiKit.showToast(`已移除「${item.name}」`, 'ok');
           renderWorkshop();
         });
       }

@@ -13,9 +13,11 @@
 
 import { clamp } from './calc-engine.js';
 import { formatDurationZh } from './entity-system.js';
+import { clampResourceDropMultiplier } from './stat-rules.js';
 
 const STORAGE_NS = 'core-resources';
 const STATE_KEY = 'resources-state-v2';
+const DROP_MULT_KEY = 'resource-drop-mult-v1';
 
 export const DEFAULT_RESOURCES = Object.freeze([
   {
@@ -23,55 +25,55 @@ export const DEFAULT_RESOURCES = Object.freeze([
     name: '燃油',
     unit: '',
     group: 'resource',
-    amount: 1200,
+    amount: 1800,
     min: 0,
-    cap: 3000,
+    cap: 6000,
     max: 999999,
     autoRecover: true,
-    recoveryPerMin: 1.5,
+    recoveryPerMin: 3.5, // 210/小时基础自然恢复
   },
   {
     id: 'ammo',
     name: '弹药',
     unit: '',
     group: 'resource',
-    amount: 1200,
+    amount: 1800,
     min: 0,
-    cap: 3000,
+    cap: 6000,
     max: 999999,
     autoRecover: true,
-    recoveryPerMin: 1.5,
+    recoveryPerMin: 3.5, // 210/小时基础自然恢复
   },
   {
     id: 'steel',
     name: '钢材',
     unit: '',
     group: 'resource',
-    amount: 1200,
+    amount: 1800,
     min: 0,
-    cap: 3000,
+    cap: 6000,
     max: 999999,
     autoRecover: true,
-    recoveryPerMin: 1.5,
+    recoveryPerMin: 3.5, // 210/小时基础自然恢复
   },
   {
     id: 'bauxite',
     name: '铝材',
     unit: '',
     group: 'resource',
-    amount: 800,
+    amount: 1200,
     min: 0,
-    cap: 2000,
+    cap: 4000,
     max: 999999,
     autoRecover: true,
-    recoveryPerMin: 0.8,
+    recoveryPerMin: 2.2, // 132/小时基础自然恢复
   },
   {
     id: 'silver',
     name: '银条',
     unit: '',
     group: 'currency',
-    amount: 2500,
+    amount: 3200,
     min: 0,
     cap: 9999999,
     max: 9999999,
@@ -83,7 +85,7 @@ export const DEFAULT_RESOURCES = Object.freeze([
     name: '金条',
     unit: '',
     group: 'currency',
-    amount: 120,
+    amount: 180,
     min: 0,
     cap: 9999999,
     max: 9999999,
@@ -175,7 +177,30 @@ export class ResourceManager {
     /** @type {Map<string, object>} */
     this._resources = new Map();
     this._lastRecoveryAt = Date.now();
+    this._dropMultiplier = clampResourceDropMultiplier(this._scope.get(DROP_MULT_KEY, 1.0));
     this._hydrated = false;
+  }
+
+  getDropMultiplier() {
+    return this._dropMultiplier;
+  }
+
+  setDropMultiplier(val) {
+    const clean = clampResourceDropMultiplier(val);
+    this._dropMultiplier = clean;
+    this._scope.set(DROP_MULT_KEY, clean);
+    this._emit('resource:multiplier-changed', { multiplier: clean });
+    return clean;
+  }
+
+  getHourlyRecoverySummary({ extraRegenPct = 0 } = {}) {
+    const mult = this._dropMultiplier * (1 + Math.max(0, Number(extraRegenPct) || 0) / 100);
+    const out = {};
+    for (const id of CORE_RESOURCE_IDS) {
+      const r = this._resources.get(id);
+      out[id] = r && r.autoRecover ? Math.round((Number(r.recoveryPerMin) || 0) * 60 * mult) : 0;
+    }
+    return out;
   }
 
   _emit(event, payload) {
@@ -191,13 +216,17 @@ export class ResourceManager {
 
     if (saved && Array.isArray(saved.resources) && saved.resources.length > 0) {
       this.deserialize(saved, { persist: false });
-      // Ensure all 6 mandatory defaults exist
+      // Ensure all 6 mandatory defaults exist & upgrade legacy low recovery rates/caps losslessly
       for (const def of DEFAULT_RESOURCES) {
-        if (!this._resources.has(def.id)) {
+        const cur = this._resources.get(def.id);
+        if (!cur) {
           this._resources.set(def.id, { ...def, updatedAt: now });
+        } else if (def.autoRecover) {
+          if ((Number(cur.recoveryPerMin) || 0) < def.recoveryPerMin) cur.recoveryPerMin = def.recoveryPerMin;
+          if ((Number(cur.cap) || 0) < def.cap) cur.cap = def.cap;
         }
       }
-      // Settle slow offline auto-recovery for the 4 base resources if >= 60s elapsed
+      // Settle offline auto-recovery for the 4 base resources if >= 60s elapsed
       if (this._lastRecoveryAt && now - this._lastRecoveryAt >= 60 * 1000) {
         await this.settleOfflineResources({ lastTimestamp: this._lastRecoveryAt, now });
       }
@@ -286,17 +315,23 @@ export class ResourceManager {
    * Settle slow offline auto-recovery for resources with `autoRecover === true` up to their soft `cap`.
    * Currencies (silver / gold) are never auto-recovered.
    */
-  async settleOfflineResources({ lastTimestamp = this._lastRecoveryAt, now = Date.now(), maxElapsedSec = 86400 * 7 } = {}) {
+  async settleOfflineResources({
+    lastTimestamp = this._lastRecoveryAt,
+    now = Date.now(),
+    maxElapsedSec = 86400 * 7,
+    extraRegenPct = 0,
+  } = {}) {
     const prevTs = Number(lastTimestamp) || now;
     const elapsedSec = Math.min(Math.max(0, (now - prevTs) / 1000), maxElapsedSec);
     const elapsedMins = elapsedSec / 60;
+    const totalMult = this._dropMultiplier * (1 + Math.max(0, Number(extraRegenPct) || 0) / 100);
     const changes = [];
 
     for (const r of this._resources.values()) {
       if (!r.autoRecover || !(r.recoveryPerMin > 0)) continue;
-      const cap = Number(r.cap ?? r.max ?? 3000);
+      const cap = Number(r.cap ?? r.max ?? 6000);
       if (r.amount >= cap) continue;
-      const gain = Math.floor(elapsedMins * r.recoveryPerMin);
+      const gain = Math.floor(elapsedMins * r.recoveryPerMin * totalMult);
       if (gain <= 0) continue;
       const before = r.amount;
       const after = Math.min(cap, before + gain);
@@ -316,6 +351,7 @@ export class ResourceManager {
     const report = {
       elapsedSec: Number(elapsedSec.toFixed(1)),
       formattedDuration: formatDurationZh(elapsedSec),
+      multiplier: totalMult,
       changes,
       timestamp: now,
     };
@@ -443,8 +479,9 @@ export class ResourceManager {
 
   serialize() {
     return {
-      version: 2,
+      version: 3,
       lastRecoveryAt: this._lastRecoveryAt,
+      dropMultiplier: this._dropMultiplier,
       resources: this.list(),
     };
   }
@@ -456,6 +493,10 @@ export class ResourceManager {
       if (r && r.id) this._resources.set(String(r.id), deepClone(r));
     }
     this._lastRecoveryAt = Number(snapshot.lastRecoveryAt) || Date.now();
+    if (snapshot.dropMultiplier !== undefined) {
+      this._dropMultiplier = clampResourceDropMultiplier(snapshot.dropMultiplier);
+      this._scope.set(DROP_MULT_KEY, this._dropMultiplier);
+    }
     if (persist) {
       this.persist();
     }

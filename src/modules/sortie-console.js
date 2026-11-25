@@ -102,6 +102,19 @@ export async function hydrateSortieConsole({ storage, routeGenerator, combat }) 
   sortieState.hydrated = true;
 }
 
+export async function clearActiveSortieState({ storage, combat }) {
+  sortieState.activeRun = null;
+  sortieState.postBattleSettlement = null;
+  sortieState.autoRunning = false;
+  sortieState.busy = false;
+  if (combat && typeof combat.deserialize === 'function') {
+    combat.deserialize(null);
+  }
+  if (storage) {
+    await storage.namespace(SORTIE_STORAGE_NS).removeLarge(RUN_KEY);
+  }
+}
+
 async function persistActiveRun() {
   if (!sortieState.context) return;
   const scope = sortieState.context.rootStorage.namespace(SORTIE_STORAGE_NS);
@@ -588,7 +601,11 @@ async function advanceNextNode() {
     });
 
     const isSuccess = checkResult.outcome === 'crit-success' || checkResult.outcome === 'success';
-    const mult = (checkResult.outcome === 'crit-success' ? 1.4 : isSuccess ? 1.0 : 0.45) * (1 + Math.max(-0.25, luckDropBonus));
+    const dropMult = typeof resources.getDropMultiplier === 'function' ? resources.getDropMultiplier() : 1.0;
+    const mult =
+      (checkResult.outcome === 'crit-success' ? 1.45 : isSuccess ? 1.0 : 0.5) *
+      dropMult *
+      (1 + Math.max(-0.2, luckDropBonus));
     const chips = [
       { text: `燃油 -${stepCost.fuel}`, negative: true },
       { text: `弹药 -${stepCost.ammo}`, negative: true },
@@ -602,6 +619,20 @@ async function advanceNextNode() {
       run.loot[rk] = (run.loot[rk] || 0) + val;
       gained[rk] = val;
       chips.push({ text: `${resources.get(rk)?.name || rk} +${val}`, negative: false });
+    }
+
+    // High-probability equipment / outfit crate drop on resource salvage nodes
+    const { inventory } = sortieState.context;
+    const salvageCrateChance = Math.min(0.92, (node.type === NODE_TYPES.RESOURCE ? 0.42 : 0.25) * dropMult);
+    if (isSuccess && inventory && typeof inventory.rollLootDropItem === 'function' && Math.random() < salvageCrateChance) {
+      const dropped = await inventory.rollLootDropItem({
+        tier: 'resource',
+        difficulty: run.difficulty || node.difficulty || 'low',
+        dropMultiplier: dropMult,
+      });
+      if (dropped) {
+        chips.push({ text: `打捞装备箱：${dropped.name}`, negative: false });
+      }
     }
 
     const affMult = commander ? commander.getAffinityGainMultiplier() : 1.0;
@@ -903,6 +934,8 @@ async function finalizeBattleOutcome(session) {
     const rewardFactor = session.status === 'victory' ? 1.0 : session.status === 'day_ended' ? 0.55 : 0;
 
     const lootBonus = Math.max(0.8, Number(session.lootBonus) || 1.0);
+    const dropMult = typeof resources.getDropMultiplier === 'function' ? resources.getDropMultiplier() : 1.0;
+    const droppedItems = [];
     if (rewardFactor > 0) {
       for (const [rk, rawVal] of Object.entries(node.loot || {})) {
         const val = Math.round((Number(rawVal) || 0) * rewardFactor * lootBonus * (1 + Math.max(-0.2, luckDropBonus)));
@@ -911,6 +944,33 @@ async function finalizeBattleOutcome(session) {
         run.loot[rk] = (run.loot[rk] || 0) + val;
         gained[rk] = val;
       }
+
+      // High-rarity equipment & outfit crate drops on combat victory!
+      const { inventory } = sortieState.context;
+      if (session.status === 'victory' && inventory && typeof inventory.rollLootDropItem === 'function') {
+        const tierKey =
+          node.type === NODE_TYPES.BOSS ? 'boss' : node.type === NODE_TYPES.ELITE ? 'elite' : 'encounter';
+        const baseChance = tierKey === 'boss' || tierKey === 'elite' ? 1.0 : Math.min(1.0, 0.7 * dropMult);
+        if (Math.random() < baseChance) {
+          const item1 = await inventory.rollLootDropItem({
+            tier: tierKey,
+            difficulty: run.difficulty || node.difficulty || 'low',
+            dropMultiplier: dropMult,
+          });
+          if (item1) droppedItems.push(item1);
+        }
+        // Bonus 2nd crate on BOSS or high dropMultiplier elite victories!
+        const bonusChance = tierKey === 'boss' ? Math.min(0.95, 0.55 * dropMult) : tierKey === 'elite' ? Math.min(0.8, 0.25 * dropMult) : 0;
+        if (bonusChance > 0 && Math.random() < bonusChance) {
+          const item2 = await inventory.rollLootDropItem({
+            tier: tierKey,
+            difficulty: run.difficulty || node.difficulty || 'low',
+            dropMultiplier: dropMult,
+          });
+          if (item2) droppedItems.push(item2);
+        }
+      }
+
       const aff = Math.max(1, Math.round((Number(node.affinityGain) || 3) * affMult));
       const shipExp = node.type === NODE_TYPES.BOSS ? 65 : node.type === NODE_TYPES.ELITE ? 45 : 28;
       for (const m of fleetMembers) {
@@ -931,6 +991,8 @@ async function finalizeBattleOutcome(session) {
 
     resolveNextStepAfterNode(run, nodeIdx);
     const lootText = formatLootSummary(gained, resources);
+    const dropCrateText =
+      droppedItems.length > 0 ? ` · 缴获装备/服装：${droppedItems.map((d) => d.name).join('、')}` : '';
 
     logs.add({
       category: LOG_CATEGORIES.STAT,
@@ -939,7 +1001,7 @@ async function finalizeBattleOutcome(session) {
       title: `[${char?.name || ''}等] 节点 ${node.code}·${node.name} ${
         session.status === 'victory' ? '交战胜利' : session.status === 'day_ended' ? '昼战收兵' : '迂回通过'
       }`,
-      detail: rewardFactor > 0 ? `战利品：${lootText}` : '全队无伤绕过敌方封锁',
+      detail: rewardFactor > 0 ? `战利品：${lootText}${dropCrateText}` : '全队无伤绕过敌方封锁',
     });
     bus.emit('sortie:node-resolved', {
       routeId: run.routeId,
@@ -960,13 +1022,13 @@ async function finalizeBattleOutcome(session) {
       tone: session.status === 'victory' ? 'ok' : 'warn',
       summary:
         rewardFactor > 0
-          ? `获得战利品：${lootText}。${run.completed ? '已击破本海域全部目标，可凯旋返航！' : '可返回分岔海图继续推进或直达船坞整备。'}`
+          ? `获得战利品：${lootText}${dropCrateText}。${run.completed ? '已击破本海域全部目标，可凯旋返航！' : '可返回分岔海图继续推进或直达船坞整备。'}`
           : '全队保持完整耐久绕过封锁，可继续推进海图。',
       continueLabel: run.completed ? '返回海图并凯旋返航' : '继续分岔雷达海图航行',
     };
 
     uiKit.showToast(
-      session.status === 'victory' ? `战斗胜利！打捞：${lootText}` : `节点 ${node.code} 战斗已结算`,
+      session.status === 'victory' ? `战斗胜利！${lootText}${dropCrateText}` : `节点 ${node.code} 战斗已结算`,
       'ok'
     );
   } else if (session.status === 'defeated') {

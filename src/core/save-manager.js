@@ -10,6 +10,8 @@
  * Supports event-driven auto-saving, single-slot and full-bundle JSON export/import.
  */
 
+import { inferItemRarity } from './stat-rules.js';
+
 export const SAVE_ZONES = Object.freeze({
   GLOBAL_SETTINGS: 'save-global-settings',
   AUTO_SAVE: 'save-auto',
@@ -19,7 +21,7 @@ export const SAVE_ZONES = Object.freeze({
 
 export const DEFAULT_SLOT_COUNT = 5;
 export const VAULT_PRIMARY_SLOTS = 3;
-export const SAVE_SCHEMA_VERSION = 3;
+export const SAVE_SCHEMA_VERSION = 4;
 
 function deepClone(value) {
   if (typeof structuredClone === 'function') {
@@ -34,7 +36,7 @@ function deepClone(value) {
 
 /**
  * Lossless save payload migration: preserves every existing character, item, resource,
- * building, or custom field while safely backfilling any fields introduced in v2/v3+.
+ * building, or custom field while safely backfilling any fields introduced in v2/v3/v4+.
  */
 export function migrateSavePayload(rawData = {}) {
   const data = rawData && typeof rawData === 'object' ? deepClone(rawData) : {};
@@ -85,6 +87,16 @@ export function migrateSavePayload(rawData = {}) {
     if (ent.stats.maxExp === undefined || !Number.isFinite(Number(ent.stats.maxExp))) {
       const lv = Math.max(1, Math.floor(Number(ent.stats.level) || 1));
       ent.stats.maxExp = 100 + (lv - 1) * 50;
+      migrated = true;
+    }
+  }
+
+  // Losslessly backfill universal White->Orange rarity on all historical equipment & outfits
+  const invItems = Array.isArray(data.inventory?.items) ? data.inventory.items : [];
+  for (const it of invItems) {
+    if (!it || typeof it !== 'object') continue;
+    if (!it.rarity) {
+      it.rarity = inferItemRarity(it);
       migrated = true;
     }
   }

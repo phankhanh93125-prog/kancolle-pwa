@@ -338,6 +338,7 @@ export class InteractionSystem {
         actor,
         commanderName: vars.commander.name,
         outfitName: vars.outfit,
+        outfitStyle: equipped?.outfit?.outfitStyle || '',
         affStageId: vars.stageKey,
         isOathed: this.isOathed(actor.id),
         oathTitle: vars.oathTitle,

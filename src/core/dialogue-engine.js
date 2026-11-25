@@ -382,6 +382,7 @@ export class DialogueEngine {
     actor,
     commanderName = '港区指挥官',
     outfitName = '日常港区常服',
+    outfitStyle = '',
     affStageId = 'familiar',
     isOathed = false,
     oathTitle = '永恒誓约',
@@ -408,6 +409,18 @@ export class DialogueEngine {
       coreLine = `「${combo.speechPrefix || ''}穿着${outfitName}的${actor?.name || '舰娘'}面向${commanderName}微笑：${combo.catchphrase || '今天也请多关照！'}${combo.speechSuffix || ''}」`;
     }
 
+    const styleReactions = {
+      优雅礼服: '（轻轻提起礼服裙摆行了一礼，举止典雅大方）',
+      海滨泳装: '（清爽的海风拂过泳装丝带，洋溢着夏日度假的轻快气息）',
+      战术作战服: '（利落地整理好作战服肩带，眼神锐利、随时准备出击）',
+      日常便装: '（身着舒适的日常便装，神情放松而亲切）',
+      祭典和服: '（和服袖口随海风轻摆，带着节庆花火般的柔和笑意）',
+      誓约花嫁: '（纯白花嫁礼装在阳光下泛起微光，望向指挥官的目光满怀深情）',
+    };
+    const styleNote = outfitStyle
+      ? styleReactions[outfitStyle] || `（身着「${outfitStyle}」风格装扮，展露出与众不同的气质）`
+      : '';
+
     const secLine = secFlavor
       ? this._fill(secFlavor.portAdd, vars)
       : combo.catchphrase
@@ -419,7 +432,7 @@ export class DialogueEngine {
       ? `（★ 誓约·${oathTitle} · ${combo.comboLabel}）`
       : `${AFFINITY_ADDONS[stageKey] || ''} · 性格【${combo.comboLabel}】`;
 
-    const text = `${dmgPrefix}${coreLine}${secLine ? ` ${secLine}` : ''} ${affNote}`.trim();
+    const text = `${dmgPrefix}${coreLine}${styleNote ? ` ${styleNote}` : ''}${secLine ? ` ${secLine}` : ''} ${affNote}`.trim();
     return {
       text,
       combo,

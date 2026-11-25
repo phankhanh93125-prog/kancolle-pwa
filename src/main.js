@@ -14,9 +14,13 @@ import { RuleEngine } from './core/rule-engine.js';
 import { StateMachine, TurnStepper } from './core/state-machine.js';
 import { PromptPipeline } from './core/prompt-pipeline.js';
 import { AssetManager } from './core/asset-manager.js';
-import { StatRulesEngine } from './core/stat-rules.js';
-import { InventorySystem } from './core/inventory-system.js';
-import { ResourceManager } from './core/resource-manager.js';
+import {
+  ITEM_RARITIES,
+  RESOURCE_DROP_MULTIPLIER_PRESETS,
+  StatRulesEngine,
+} from './core/stat-rules.js';
+import { ITEM_CATEGORIES, InventorySystem, STARTER_ITEMS } from './core/inventory-system.js';
+import { DEFAULT_RESOURCES, ResourceManager } from './core/resource-manager.js';
 import { LogSystem } from './core/log-system.js';
 import { FxStage } from './core/fx-stage.js';
 import { RouteGenerator } from './core/route-generator.js';
@@ -35,7 +39,7 @@ import { createUIKit, showToast } from './core/ui-kit.js';
 import { REGISTERED_MODULES } from './modules/index.js';
 import { hydrateCharacterRoster, persistCharacterRoster } from './modules/character-console.js';
 import { hydrateActionConsole } from './modules/action-console.js';
-import { hydrateSortieConsole } from './modules/sortie-console.js';
+import { clearActiveSortieState, hydrateSortieConsole } from './modules/sortie-console.js';
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -212,6 +216,15 @@ const ui = {
     }
   },
 
+  setTitleScreenMode(active) {
+    const flag = Boolean(active);
+    document.body.classList.toggle('is-title-screen', flag);
+    ui.setSwipeLocked(flag);
+    if (els.moduleNavStrip) {
+      els.moduleNavStrip.hidden = flag;
+    }
+  },
+
   setPlaceholder(text) {
     els.inputField.placeholder = text || '输入指令或消息...';
   },
@@ -247,6 +260,7 @@ const ui = {
     activeInputHandler = null;
     ui.setInputBusy(false);
     ui.setImmersiveBattle(false);
+    ui.setTitleScreenMode(false);
     ui.setPlaceholder('输入指令或消息...');
     els.quickActionsSlot.innerHTML = '';
   },
@@ -287,6 +301,13 @@ els.inputField.addEventListener('keydown', (e) => {
 // ------------------------------------------------------------
 // 4. Module Manager Initialization
 // ------------------------------------------------------------
+const appActions = {
+  startNewJourney: null,
+  openSaveVault: () => openSaveVaultSheet(),
+  openSettings: () => openThemeSheet(),
+  returnToTitle: () => moduleManager.mount('title-screen'),
+};
+
 const moduleManager = new ModuleManager({
   stageElement: els.stage,
   bus,
@@ -320,6 +341,7 @@ const moduleManager = new ModuleManager({
     storyPacks,
     theme,
     uiKit,
+    appActions,
   },
 });
 
@@ -341,6 +363,7 @@ function isAnyModalOpen() {
 }
 
 const SWIPE_LOCKED_MODULE_IDS = new Set([
+  'title-screen',
   'port-dormitory',
   'port-dockyard',
   'port-formation',
@@ -917,11 +940,262 @@ async function restoreFullWorldSnapshot(rawData) {
   if (data.theme) theme.deserialize(data.theme, { persist: true });
 
   const active = moduleManager.getActive();
-  if (active?.id) {
+  if (!active?.id || active.id === 'title-screen') {
+    moduleManager.mount('port-hub', { transition: 'left' });
+  } else {
     moduleManager.mount(active.id);
   }
   return { migrated };
 }
+
+async function startNewJourney(prefs = {}) {
+  const commanderName = String(prefs.commanderName || '新任提督').trim() || '新任提督';
+  const fleetPref = ['balanced', 'torpedo', 'battleship', 'carrier'].includes(prefs.fleetPreference)
+    ? prefs.fleetPreference
+    : 'balanced';
+  const isAbundant = prefs.resourceMode === 'abundant';
+  const keepCustomData = prefs.keepCustomData !== false;
+
+  // 1. Clear active sortie / combat / expeditions / interaction history
+  await clearActiveSortieState({ storage, combat });
+  expeditions.deserialize({ version: 1, completedCount: 0, activeRuns: [] }, { persist: true });
+  interaction.deserialize(
+    { version: 1, secretaryId: null, oaths: {}, lastInteraction: null, interactionHistory: [] },
+    { persist: true }
+  );
+
+  // 2. Reset buildings (preserve custom buildings when keepCustomData is enabled)
+  const preservedCustomBuildings = keepCustomData ? buildings.listCustomBuildings() : [];
+  buildings.deserialize(
+    {
+      version: 1,
+      dormitory: { level: 1, capacity: 3, maxCapacity: 10, residents: [], lastSettledAt: Date.now() },
+      dockyard: { level: 1, capacity: 2, maxCapacity: 6, queue: [], completedRepairs: 0, constructedCount: 0 },
+      customBuildings: preservedCustomBuildings,
+      updatedAt: Date.now(),
+    },
+    { persist: true }
+  );
+
+  // 3. Reset commander profile & stats cleanly with player's chosen callsign
+  commander.deserialize(
+    {
+      name: commanderName,
+      title: isAbundant ? '丰饶舰队司令' : '新任提督',
+      avatarAssetId: null,
+      personalityTags: ['沉着务实', '重视协同'],
+      level: 1,
+      exp: 0,
+      freePoints: 0,
+      stats: { command: 10, tactics: 10, charisma: 10, affinity: 10, dispatch: 10, maintenance: 10 },
+      luck: 0,
+    },
+    { persist: true }
+  );
+
+  // 4. Reset resources & drop multiplier based on Resource Mode
+  const now = Date.now();
+  const baseAmounts = isAbundant
+    ? { fuel: 6000, ammo: 6000, steel: 6000, bauxite: 4000, silver: 12000, gold: 600 }
+    : { fuel: 1800, ammo: 1800, steel: 1800, bauxite: 1200, silver: 3200, gold: 180 };
+  const freshResources = DEFAULT_RESOURCES.map((def) => ({
+    ...def,
+    amount: baseAmounts[def.id] ?? def.amount,
+    updatedAt: now,
+  }));
+  const targetDropMult = isAbundant ? 2.0 : 1.0;
+  resources.deserialize(
+    { version: 3, lastRecoveryAt: now, dropMultiplier: targetDropMult, resources: freshResources },
+    { persist: true }
+  );
+
+  // 5. Handle custom data preservation vs clean wipe
+  if (!keepCustomData) {
+    theme.resetTheme();
+    contentManager.deserialize(
+      { version: 1, customEnemies: [], customDialogues: [], customGifts: [], customEquipment: [], clearedRouteCounts: {} },
+      { persist: true }
+    );
+    storyPacks.deserialize({ version: 1, flags: {}, packs: [], history: [] }, { persist: true });
+    await storyPacks.init();
+  } else {
+    // Keep all installed story packs & custom content packs, only reset progression flags for the fresh run
+    const spSnap = storyPacks.serialize();
+    storyPacks.deserialize({ ...spSnap, flags: {}, history: [] }, { persist: true });
+  }
+
+  // 6. Reset entities & warehouse to clean starter state, then load full 8-ship / 16-gear starter bundle
+  entities.clear();
+  inventory.deserialize(
+    {
+      version: 3,
+      customSlotsByCharacter: {},
+      equipped: {},
+      items: STARTER_ITEMS.map((it) => ({ ...it, level: 0, createdAt: now, updatedAt: now })),
+    },
+    { persist: true }
+  );
+
+  await contentManager.mergeStarterContentBundle({
+    personalityPool,
+    storyPacks,
+    statRules,
+    persistRosterFn: () => persistCharacterRoster({ storage, entities }),
+    silent: true,
+  });
+
+  // 7. Apply Starter Fleet Archetype preference (3-ship active fleet + formation + themed bonus gear)
+  const archetypeConfig = {
+    balanced: {
+      label: '均衡编队',
+      formationId: 'double_line',
+      members: ['char_template_01', 'char_template_02', 'char_template_03'],
+      bonusGear: [],
+    },
+    torpedo: {
+      label: '雷击先锋',
+      formationId: 'echelon',
+      members: ['char_template_01', 'char_pack_dd_06', 'char_template_02'],
+      bonusGear: [
+        {
+          name: '先锋五联酸素鱼雷',
+          category: ITEM_CATEGORIES.EXTENSION,
+          subGroup: 'weapon',
+          subCategory: 'torpedo',
+          iconKey: 'torpedo',
+          rarity: ITEM_RARITIES.UNCOMMON,
+          tags: ['开局补给', '主战武器', '鱼雷'],
+          description: '雷击先锋开局特配高爆鱼雷发射管，显著提升雷击与机动先攻。',
+          bonuses: [
+            { stat: 'torpedo', layer: 'baseAdd', value: 18 },
+            { stat: 'evasion', layer: 'baseAdd', value: 6 },
+          ],
+        },
+        {
+          name: '高速主动深水声呐',
+          category: ITEM_CATEGORIES.EXTENSION,
+          subGroup: 'tactical',
+          subCategory: 'sonar',
+          iconKey: 'sonar',
+          rarity: ITEM_RARITIES.UNCOMMON,
+          tags: ['开局补给', '战术辅助', '声呐'],
+          description: '雷击先锋开局特配反潜声呐，提前捕捉敌方水下潜艇。',
+          bonuses: [
+            { stat: 'asw', layer: 'baseAdd', value: 18 },
+            { stat: 'recon', layer: 'baseAdd', value: 6 },
+          ],
+        },
+      ],
+    },
+    battleship: {
+      label: '重炮主力',
+      formationId: 'line_ahead',
+      members: ['char_template_03', 'char_pack_bb_08', 'char_pack_ca_04'],
+      bonusGear: [
+        {
+          name: '主力双联穿甲重炮',
+          category: ITEM_CATEGORIES.EXTENSION,
+          subGroup: 'weapon',
+          subCategory: 'main_gun',
+          iconKey: 'main_gun',
+          rarity: ITEM_RARITIES.RARE,
+          tags: ['开局补给', '主战武器', '主炮'],
+          description: '重炮主力开局特配大口径主炮，大幅增强齐射火力与穿透威慑。',
+          bonuses: [
+            { stat: 'firepower', layer: 'baseAdd', value: 22 },
+            { stat: 'armor', layer: 'baseAdd', value: 6 },
+          ],
+        },
+        {
+          name: '精炼复合主装甲带',
+          category: ITEM_CATEGORIES.ARMOR,
+          subGroup: 'core',
+          subCategory: 'armor',
+          iconKey: 'armor',
+          rarity: ITEM_RARITIES.RARE,
+          tags: ['开局补给', '核心必装', '防护'],
+          description: '重炮主力开局特配高强度舰体装甲，大幅提高前排耐久与防弹能力。',
+          bonuses: [
+            { stat: 'armor', layer: 'baseAdd', value: 18 },
+            { stat: 'maxHp', layer: 'baseAdd', value: 22 },
+          ],
+        },
+      ],
+    },
+    carrier: {
+      label: '航空制空',
+      formationId: 'diamond',
+      members: ['char_pack_cv_05', 'char_pack_ca_04', 'char_pack_cl_07'],
+      bonusGear: [
+        {
+          name: '制空舰载俯冲轰炸机队',
+          category: ITEM_CATEGORIES.EXTENSION,
+          subGroup: 'weapon',
+          subCategory: 'aircraft',
+          iconKey: 'aircraft',
+          rarity: ITEM_RARITIES.RARE,
+          tags: ['开局补给', '主战武器', '舰载机'],
+          description: '航空制空开局特配舰载机联队，强化开幕空袭与全图索敌能力。',
+          bonuses: [
+            { stat: 'firepower', layer: 'baseAdd', value: 16 },
+            { stat: 'recon', layer: 'baseAdd', value: 16 },
+            { stat: 'aa', layer: 'baseAdd', value: 10 },
+          ],
+        },
+        {
+          name: '舰队远程相控对空雷达',
+          category: ITEM_CATEGORIES.EXTENSION,
+          subGroup: 'tactical',
+          subCategory: 'radar',
+          iconKey: 'radar',
+          rarity: ITEM_RARITIES.RARE,
+          tags: ['开局补给', '战术辅助', '雷达'],
+          description: '航空制空开局特配对空警戒雷达，提供高额防空与侦查视野。',
+          bonuses: [
+            { stat: 'recon', layer: 'baseAdd', value: 16 },
+            { stat: 'aa', layer: 'baseAdd', value: 16 },
+            { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
+          ],
+        },
+      ],
+    },
+  };
+
+  const chosen = archetypeConfig[fleetPref] || archetypeConfig.balanced;
+  for (const gear of chosen.bonusGear) {
+    await inventory.createItem(gear);
+  }
+  if (isAbundant) {
+    await inventory.rollLootDropItem({ tier: 'elite', difficulty: 'medium', dropMultiplier: 2.0 });
+    await inventory.rollLootDropItem({ tier: 'boss', difficulty: 'medium', dropMultiplier: 2.0 });
+  }
+
+  const validMemberIds = chosen.members.filter((id) => entities.has(id));
+  formation.deserialize(
+    { version: 1, memberIds: validMemberIds, formationId: chosen.formationId, customFormationMods: {} },
+    { persist: true }
+  );
+  if (validMemberIds.length > 0) {
+    await interaction.setSecretary(validMemberIds[0]);
+  }
+  await persistCharacterRoster({ storage, entities });
+
+  // 8. Capture fresh Auto-Save snapshot immediately and enter Port Hub
+  await saves.autoSave(captureFullWorldSnapshot(), {
+    reason: 'new-journey',
+    name: `新征程 · ${commanderName}`,
+    summary: buildSaveSummary('new-journey'),
+  });
+
+  fxStage.playSfx('success');
+  showToast(
+    `欢迎就任，${commanderName}！已配置「${chosen.label}」· ${isAbundant ? '丰饶畅玩 (2.0x)' : '标准开荒 (1.0x)'}`,
+    'ok'
+  );
+  moduleManager.mount('port-hub', { transition: 'left' });
+}
+
+appActions.startNewJourney = startNewJourney;
 
 function formatTimeShort(ts) {
   if (!ts) return '—';
@@ -1066,6 +1340,44 @@ function openThemeSheet() {
             </div>
           </div>
 
+          <div class="lab-divider"></div>
+
+          <div class="lab-stack-sm">
+            <div class="section-header-row" style="margin-bottom:0;">
+              <strong style="font-size:13.5px;">5. 资源与掉落倍率调节（实时持久化）</strong>
+              <span class="status-badge badge-ok" id="theme-drop-mult-badge">${resources.getDropMultiplier().toFixed(1)}x</span>
+            </div>
+            <p class="muted-text" style="font-size:12px;">
+              同步调节出征物资与战利品收益、高品级装备箱掉率、批量拆解回收及港区每小时自然恢复产量。
+            </p>
+            <div class="lab-btn-grid" style="grid-template-columns: repeat(3, 1fr);">
+              ${RESOURCE_DROP_MULTIPLIER_PRESETS.map((p) => {
+                const isCur = Math.abs(resources.getDropMultiplier() - p.value) < 0.05;
+                return `
+                  <button
+                    type="button"
+                    class="${isCur ? 'btn-primary' : 'btn-secondary'} uikit-touch-target"
+                    data-drop-mult-preset="${p.value}"
+                    style="font-size:12px; padding:0 6px;"
+                  >${escapeHtml(p.label)}</button>
+                `;
+              }).join('')}
+            </div>
+            <div class="form-group">
+              <div class="form-label-row">
+                <label class="form-label" for="theme-drop-mult-range">自定义倍率（0.5x ~ 5.0x）</label>
+                <span id="theme-drop-mult-val" class="status-model">${resources.getDropMultiplier().toFixed(1)}x</span>
+              </div>
+              <input id="theme-drop-mult-range" class="range-input" type="range" min="0.5" max="5.0" step="0.1" value="${resources.getDropMultiplier().toFixed(1)}">
+            </div>
+            ${(() => {
+              const hr = buildings.getHourlyResourceYield();
+              return `<div class="muted-text" id="theme-hourly-yield-readout" style="font-size:12px; padding:8px 10px; border-radius:var(--radius-sm); background:var(--surface-alt); border:1px solid var(--border);">
+                当前港区自然恢复（每小时）：燃油 +${hr.fuel} · 弹药 +${hr.ammo} · 钢材 +${hr.steel} · 铝材 +${hr.bauxite}
+              </div>`;
+            })()}
+          </div>
+
           <button type="button" id="btn-theme-reset" class="btn-secondary uikit-touch-target">恢复默认深海主题与布局</button>
         </div>
       `;
@@ -1153,6 +1465,35 @@ function openThemeSheet() {
         });
       });
 
+      const refreshDropMultUi = (nextVal) => {
+        const clean = resources.setDropMultiplier(nextVal);
+        const badgeEl = body.querySelector('#theme-drop-mult-badge');
+        const valEl = body.querySelector('#theme-drop-mult-val');
+        const rangeEl = body.querySelector('#theme-drop-mult-range');
+        const yieldEl = body.querySelector('#theme-hourly-yield-readout');
+        if (badgeEl) badgeEl.textContent = `${clean.toFixed(1)}x`;
+        if (valEl) valEl.textContent = `${clean.toFixed(1)}x`;
+        if (rangeEl) rangeEl.value = clean.toFixed(1);
+        if (yieldEl) {
+          const hr = buildings.getHourlyResourceYield();
+          yieldEl.textContent = `当前港区自然恢复（每小时）：燃油 +${hr.fuel} · 弹药 +${hr.ammo} · 钢材 +${hr.steel} · 铝材 +${hr.bauxite}`;
+        }
+        return clean;
+      };
+
+      body.querySelectorAll('[data-drop-mult-preset]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const target = Number(btn.getAttribute('data-drop-mult-preset'));
+          const clean = refreshDropMultUi(target);
+          showToast(`资源与掉落倍率已设为 ${clean.toFixed(1)}x`, 'ok');
+          renderThemeView();
+        });
+      });
+
+      body.querySelector('#theme-drop-mult-range')?.addEventListener('input', (e) => {
+        refreshDropMultUi(Number(e.target.value));
+      });
+
       body.querySelector('#btn-theme-reset').addEventListener('click', () => {
         theme.resetTheme();
         showToast('已恢复默认深海战术终端主题与港区布局', 'ok');
@@ -1196,6 +1537,13 @@ function openSaveVaultSheet() {
 
       body.innerHTML = `
         <div class="module-stack">
+          <div class="section-header-row" style="margin-bottom:0; gap:8px;">
+            <span class="muted-text" style="font-size:12px;">随时返回封面切换新征程或继续航行</span>
+            <button type="button" id="btn-vault-return-title" class="btn-secondary uikit-touch-target" style="padding:0 12px; flex-shrink:0;">
+              返回标题画面
+            </button>
+          </div>
+
           <div class="vault-slot-card is-auto" id="vault-auto-card">
             <div class="section-header-row" style="margin-bottom:0;">
               <strong>自动存档快照（Auto-Save）</strong>
@@ -1259,9 +1607,9 @@ function openSaveVaultSheet() {
           <div class="lab-divider"></div>
 
           <div class="lab-stack-sm">
-            <strong style="font-size:13.5px;">全量存档文件备份与跨版本无损迁移（v2）</strong>
+            <strong style="font-size:13.5px;">全量存档文件备份与跨版本无损迁移（v4）</strong>
             <p class="muted-text" style="font-size:12px;">
-              导出的 JSON 包含自动存档、所有手动槽位与全局设置；导入旧版（v1）存档将自动无损补齐指挥官、剧情 Flags 与主题字段，不会丢失原有舰娘与装备。
+              导出的 JSON 包含自动存档、所有手动槽位与全局设置；导入旧版（v1~v3）存档将自动无损补齐装备品级（白~橙）、指挥官、剧情 Flags 与主题字段，不会丢失原有舰娘与装备。
             </p>
             ${
               lastExportNote
@@ -1274,6 +1622,11 @@ function openSaveVaultSheet() {
           </div>
         </div>
       `;
+
+      body.querySelector('#btn-vault-return-title')?.addEventListener('click', () => {
+        closeSheet();
+        moduleManager.mount('title-screen');
+      });
 
       const loadAutoBtn = body.querySelector('#btn-vault-load-auto');
       if (loadAutoBtn) {
@@ -1496,6 +1849,7 @@ async function bootApplication() {
       'character:exp-gained',
       'character:leveled-up',
       'resource:changed',
+      'resource:multiplier-changed',
       'stat-rules:changed',
       'action:settled',
       'action:events-changed',
@@ -1515,8 +1869,8 @@ async function bootApplication() {
     { debounceMs: 180 }
   );
 
-  // Boot strictly into Port Hub by default (unless user explicitly pinned a custom default module)
-  moduleManager.mountInitial();
+  // Boot onto the Title Cover screen so players can Continue, start a New Journey with preferences, or Load Save
+  moduleManager.mount('title-screen');
 }
 
 bootApplication();

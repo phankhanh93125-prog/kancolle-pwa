@@ -790,35 +790,41 @@ export class RouteGenerator {
       const intelRevealed = forceReveal || type === NODE_TYPES.BOSS || type === NODE_TYPES.ANCHORAGE || rng() < revealChance;
       if (intelRevealed) revealedCount += 1;
 
-      const laneBonus = lane === 'assault' ? 1.5 : 1.0;
-      const scale = tier.lootScale * laneBonus * (type === NODE_TYPES.BOSS ? 1.9 : type === NODE_TYPES.ELITE ? 1.35 : 1.0);
+      const laneBonus = lane === 'assault' ? 1.55 : 1.0;
+      const scale = tier.lootScale * laneBonus * (type === NODE_TYPES.BOSS ? 2.1 : type === NODE_TYPES.ELITE ? 1.5 : 1.15);
       const loot =
         type === NODE_TYPES.ANCHORAGE
-          ? { fuel: 15, silver: 30 }
+          ? { fuel: 45, ammo: 35, silver: 75 }
           : type === NODE_TYPES.RESOURCE
           ? {
-              fuel: Math.round(52 * scale),
-              steel: Math.round(56 * scale),
-              bauxite: Math.round(32 * scale),
-              silver: Math.round(80 * scale),
+              fuel: Math.round(125 * scale),
+              ammo: Math.round(95 * scale),
+              steel: Math.round(130 * scale),
+              bauxite: Math.round(85 * scale),
+              silver: Math.round(190 * scale),
             }
           : type === NODE_TYPES.WEATHER
           ? {
-              fuel: Math.round(36 * scale),
-              bauxite: Math.round(44 * scale),
-              silver: Math.round(70 * scale),
+              fuel: Math.round(85 * scale),
+              ammo: Math.round(65 * scale),
+              bauxite: Math.round(105 * scale),
+              silver: Math.round(165 * scale),
             }
           : type === NODE_TYPES.BOSS
           ? {
-              steel: Math.round(105 * scale),
-              bauxite: Math.round(72 * scale),
-              silver: Math.round(200 * scale),
-              gold: tier.goldBonus,
+              fuel: Math.round(140 * scale),
+              ammo: Math.round(135 * scale),
+              steel: Math.round(230 * scale),
+              bauxite: Math.round(165 * scale),
+              silver: Math.round(440 * scale),
+              gold: Math.max(4, Math.round((tier.goldBonus || 4) * 1.6)),
             }
           : {
-              steel: Math.round(64 * scale),
-              bauxite: Math.round(40 * scale),
-              silver: Math.round(120 * scale),
+              fuel: Math.round(80 * scale),
+              ammo: Math.round(75 * scale),
+              steel: Math.round(140 * scale),
+              bauxite: Math.round(95 * scale),
+              silver: Math.round(260 * scale),
             };
 
       return {

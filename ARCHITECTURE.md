@@ -140,5 +140,12 @@
 - **开幕航空战与开幕雷击（`src/core/stat-rules.js` & `src/core/tactical-combat.js`）**：第 1 回合前自动结算并播放纯 SVG 轨迹：双方航母触发开幕航空战（按防空 `aa` 比例拦截减伤并判定制空状态）；潜艇及高雷装舰艇触发开幕雷击（受反潜 `asw` 与机动抑制）。
 - **动态 6~12 敌舰缩放、智能集火 AI 与敌军强度倍率（`src/core/route-generator.js`、`src/core/tactical-combat.js`、`src/modules/sortie-console.js`）**：中高危海域与深层节点随危级、深度、我方编队人数与强度倍率动态生成 6~12 艘混合舰种敌舰；敌方按自身舰种执行航母空袭、潜艇雷击、重巡援护、战列齐射并优先集火我方残血或高威胁目标（含锁定预警）；出征准备台内置持久化「敌军强度倍率」预设（`常规 1.0x` / `拟真高难 1.5x` / `深海炼狱 2.2x`）与 `0.5x~3.5x` 自定义滑块。
 
+### 9. 启动封面、全站白→橙五阶品级、自定义装备/服装编辑器与高产倍率调节（v16）
+- **启动封面与开局偏好设置（`src/modules/title-screen.js`、`src/core/save-manager.js`、`src/main.js`）**：启动默认呈现全屏封面，提供「继续航行」（显示最近存档指挥官名、等级、舰队人数与秘书舰）、「新的征程」（弹窗设置指挥官代号、初始舰队流派 `均衡编队/雷击先锋/重炮主力/航空制空`、开局资源模式 `标准开荒/丰饶畅玩` 及默认勾选保留个人创作内容包/性格池/UI 皮肤）与「读取存档」；顶部存档保险箱新增「返回标题画面」按钮，存档迁移升级至 Schema v4 自动无损回填品级。
+- **全站统一白→绿→蓝→紫→橙五阶品级（`src/core/stat-rules.js`、`src/core/inventory-system.js`、`src/modules/supply-workshop.js`）**：所有装备模块与舰娘服装均统一接入 `common(白·普通)`、`uncommon(绿·精良)`、`rare(蓝·稀有)`、`epic(紫·史诗)`、`legendary(橙·传说)` 五阶品级，呈现品级色框与角标，支持仓库按品级筛选及历史存档自动无损推断补齐。
+- **自定义装备与服装可视化编辑器（`src/modules/supply-workshop.js`、`src/modules/compendium-studio.js`、`src/core/content-manager.js`、`src/core/dialogue-engine.js`）**：仓库工坊与图鉴内容库均提供「+ 新建装备/服装」入口，覆盖核心三件套、主战武器、战术辅助与舰娘服装，支持五阶品级、SVG 图标选择、自由配置八维属性与检定加成、服装风格标签（联动秘书舰交谈台词反馈），支持保存至本地图鉴、一键发放到仓库及随世界模组 JSON 导出/导入。
+- **高产出资源、品级批量拆解与倍率调节器（`src/core/resource-manager.js`、`src/core/port-buildings.js`、`src/core/route-generator.js`、`src/modules/sortie-console.js`）**：全面提升出征节点/精英/Boss 收益与高品级装备/服装箱掉落，提高港区离线每小时自然恢复速度；仓库工坊支持按品级批量拆解闲置装备返还钢材、铝材与银条；设置面板新增持久化「资源与掉落倍率」调节器（`1.0x 常规` / `2.0x 丰饶` / `3.0x 畅玩` + `0.5x~5.0x` 自定义滑块）。
+
+
 
 

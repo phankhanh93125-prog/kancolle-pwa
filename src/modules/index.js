@@ -1,3 +1,4 @@
+import titleScreenModule from './title-screen.js';
 import portHubModule from './port-hub.js';
 import {
   portDormitoryModule,
@@ -29,6 +30,7 @@ export const REGISTERED_MODULES = [
   portDormitoryModule,
   portDockyardModule,
   portExpeditionModule,
+  titleScreenModule,
   frameworkLabModule,
   aiConsoleModule,
 ];

@@ -17,7 +17,10 @@ import { createResourceOverviewBar } from '../core/resource-manager.js';
 import { PACK_CATEGORIES, PACK_CATEGORY_LABELS } from '../core/story-pack-engine.js';
 import { NARRATIVE_MODES } from '../core/prompt-pipeline.js';
 import { triggerJsonDownload } from '../core/save-manager.js';
+import { getItemIconSvg } from '../core/inventory-system.js';
+import { ITEM_RARITY_MAP, inferItemRarity } from '../core/stat-rules.js';
 import { persistCharacterRoster } from './character-console.js';
+import { openEquipmentOutfitEditorSheet } from './supply-workshop.js';
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -337,14 +340,66 @@ function renderCompendiumTab(host) {
         .join('')}
     `;
   } else if (csState.compSubTab === 'equipment') {
+    const customTemplates = report.customEquipment || [];
     listCard.innerHTML = `
-      <h3 class="section-title">装备与服装图鉴（${report.equipment.length} 件）</h3>
+      <div class="section-header-row" style="margin-bottom:0;">
+        <h3 class="section-title">装备与服装图鉴（${report.equipment.length} 仓库 / ${customTemplates.length} 自定义模板）</h3>
+        <button type="button" id="btn-cs-new-eq-tpl" class="btn-primary uikit-touch-target" style="padding:0 12px;">+ 新建装备/服装</button>
+      </div>
+
+      ${
+        customTemplates.length > 0
+          ? `
+        <div class="lab-stack-sm" id="cs-custom-eq-list">
+          <strong style="font-size:12.5px; color:var(--accent-hover);">本地自定义装备与服装模板（支持随世界模组 JSON 导出/导入）</strong>
+          ${customTemplates
+            .map((tpl) => {
+              const rId = inferItemRarity(tpl);
+              const rDef = ITEM_RARITY_MAP[rId] || ITEM_RARITY_MAP.common;
+              return `
+              <div class="lab-slot-card is-rarity-${rId}" data-custom-eq-tpl="${escapeHtml(tpl.id)}">
+                <div class="lab-slot-head">
+                  <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                    <span class="wh-item-ico">${getItemIconSvg(tpl, { size: 20 })}</span>
+                    <span class="rarity-pill is-rarity-${rId}">${escapeHtml(rDef.label)}</span>
+                    <strong>${escapeHtml(tpl.name)}</strong>
+                    ${tpl.outfitStyle ? `<span class="status-badge badge-ok">风格:${escapeHtml(tpl.outfitStyle)}</span>` : ''}
+                  </div>
+                </div>
+                <p class="muted-text" style="font-size:12px;">${escapeHtml(tpl.description || '无描述')}</p>
+                <div class="port-gear-summary">
+                  ${(tpl.bonuses || [])
+                    .map((b) => `<span class="ns-chip">${escapeHtml(b.stat)} ${formatSigned(b.value)}</span>`)
+                    .join('') || '<span class="ns-chip">无属性词条</span>'}
+                </div>
+                <div class="lab-btn-grid">
+                  <button type="button" class="btn-primary uikit-touch-target" data-issue-tpl="${escapeHtml(tpl.id)}">一键发放到仓库</button>
+                  <button type="button" class="btn-secondary uikit-touch-target" data-edit-tpl="${escapeHtml(tpl.id)}">编辑模板</button>
+                  <button type="button" class="btn-danger uikit-touch-target" data-del-tpl="${escapeHtml(tpl.id)}">删除</button>
+                </div>
+              </div>
+            `;
+            })
+            .join('')}
+        </div>
+        <div class="lab-divider"></div>
+      `
+          : ''
+      }
+
       ${report.equipment
-        .map(
-          (it) => `
-        <div class="lab-slot-card" data-comp-equip="${escapeHtml(it.id)}">
+        .map((it) => {
+          const rId = inferItemRarity(it);
+          const rDef = ITEM_RARITY_MAP[rId] || ITEM_RARITY_MAP.common;
+          return `
+        <div class="lab-slot-card is-rarity-${rId}" data-comp-equip="${escapeHtml(it.id)}">
           <div class="lab-slot-head">
-            <strong>${escapeHtml(it.name)}${it.level > 0 ? ` +${it.level}` : ''}</strong>
+            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+              <span class="wh-item-ico">${getItemIconSvg(it, { size: 18 })}</span>
+              <span class="rarity-pill is-rarity-${rId}">${escapeHtml(rDef.shortLabel)}</span>
+              <strong>${escapeHtml(it.name)}${it.level > 0 ? ` +${it.level}` : ''}</strong>
+              ${it.outfitStyle ? `<span class="status-badge badge-ok">${escapeHtml(it.outfitStyle)}</span>` : ''}
+            </div>
             <span class="status-badge badge-muted">${escapeHtml(it.categoryLabel)} ×${it.quantity}</span>
           </div>
           <p class="muted-text" style="font-size:12px;">${escapeHtml(it.description || '无描述')}</p>
@@ -354,10 +409,50 @@ function renderCompendiumTab(host) {
               .join('') || '<span class="ns-chip">无属性词条</span>'}
           </div>
         </div>
-      `
-        )
+      `;
+        })
         .join('')}
     `;
+
+    listCard.querySelector('#btn-cs-new-eq-tpl')?.addEventListener('click', () => {
+      openEquipmentOutfitEditorSheet(csState.context, {
+        onSaved: () => renderCompendiumStudio(),
+      });
+    });
+
+    listCard.querySelectorAll('[data-issue-tpl]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-issue-tpl');
+        try {
+          const issued = await contentManager.issueEquipmentToWarehouse(id, 1);
+          uiKit.showToast(`已发放「${issued[0]?.name || '自定义物品'}」×1 到仓库！`, 'ok');
+          renderCompendiumStudio();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '发放失败', 'warn');
+        }
+      });
+    });
+
+    listCard.querySelectorAll('[data-edit-tpl]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-edit-tpl');
+        const tpl = customTemplates.find((t) => t.id === id);
+        if (!tpl) return;
+        openEquipmentOutfitEditorSheet(csState.context, {
+          template: tpl,
+          onSaved: () => renderCompendiumStudio(),
+        });
+      });
+    });
+
+    listCard.querySelectorAll('[data-del-tpl]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-del-tpl');
+        await contentManager.deleteCustomEquipmentTemplate(id);
+        uiKit.showToast('已删除自定义装备/服装模板', 'info');
+        renderCompendiumStudio();
+      });
+    });
   } else if (csState.compSubTab === 'enemies') {
     listCard.innerHTML = `
       <h3 class="section-title">敌舰档案（${report.enemies.length} 类）</h3>

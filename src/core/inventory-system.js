@@ -16,7 +16,16 @@
  *      automatically expands the character card's stat breakdown (`getCharacterStatBreakdown`).
  */
 
-import { NAVAL_EIGHT_STAT_DEFS, NAVAL_EIGHT_STAT_MAP, normalizeStatKey } from './stat-rules.js';
+import {
+  ITEM_RARITIES,
+  ITEM_RARITY_MAP,
+  NAVAL_EIGHT_STAT_DEFS,
+  NAVAL_EIGHT_STAT_MAP,
+  getDisassembleYieldByRarity,
+  inferItemRarity,
+  normalizeRarity,
+  normalizeStatKey,
+} from './stat-rules.js';
 
 const STORAGE_NS = 'core-inventory';
 const STATE_KEY = 'inventory-state-v3';
@@ -40,6 +49,48 @@ export const ITEM_CATEGORY_LABELS = Object.freeze({
   [ITEM_CATEGORIES.OUTFIT]: '服装',
   [ITEM_CATEGORIES.CONSUMABLE]: '消耗品',
 });
+
+/**
+ * Unified Visual Editor Subcategory Presets covering Core 3-piece, Main Weapons,
+ * Tactical Support, and Shipgirl Outfits.
+ */
+export const EQUIPMENT_SUBCATEGORY_DEFS = Object.freeze([
+  { id: 'engine', group: '核心三件套', label: '引擎部件', category: ITEM_CATEGORIES.ENGINE, subGroup: 'core', defaultIcon: 'engine' },
+  { id: 'armor', group: '核心三件套', label: '装甲部件', category: ITEM_CATEGORIES.ARMOR, subGroup: 'core', defaultIcon: 'armor' },
+  { id: 'core', group: '核心三件套', label: '核心部件', category: ITEM_CATEGORIES.CORE, subGroup: 'core', defaultIcon: 'core' },
+  { id: 'main_gun', group: '主战武器', label: '主炮', category: ITEM_CATEGORIES.EXTENSION, subGroup: 'weapon', defaultIcon: 'main_gun' },
+  { id: 'torpedo', group: '主战武器', label: '鱼雷', category: ITEM_CATEGORIES.EXTENSION, subGroup: 'weapon', defaultIcon: 'torpedo' },
+  { id: 'aircraft', group: '主战武器', label: '舰载机', category: ITEM_CATEGORIES.EXTENSION, subGroup: 'weapon', defaultIcon: 'aircraft' },
+  { id: 'radar', group: '战术辅助', label: '雷达', category: ITEM_CATEGORIES.EXTENSION, subGroup: 'tactical', defaultIcon: 'radar' },
+  { id: 'sonar', group: '战术辅助', label: '声呐', category: ITEM_CATEGORIES.EXTENSION, subGroup: 'tactical', defaultIcon: 'sonar' },
+  { id: 'aa_gun', group: '战术辅助', label: '防空炮', category: ITEM_CATEGORIES.EXTENSION, subGroup: 'tactical', defaultIcon: 'aa_gun' },
+  { id: 'outfit', group: '舰娘服装', label: '舰娘服装', category: ITEM_CATEGORIES.OUTFIT, subGroup: 'outfit', defaultIcon: 'outfit_dress' },
+]);
+
+export const ITEM_ICON_PRESETS = Object.freeze([
+  { id: 'engine', label: '涡轮引擎' },
+  { id: 'armor', label: '重装盾甲' },
+  { id: 'core', label: '中枢晶核' },
+  { id: 'main_gun', label: '主炮炮管' },
+  { id: 'torpedo', label: '酸素鱼雷' },
+  { id: 'aircraft', label: '舰载机翼' },
+  { id: 'radar', label: '相控雷达' },
+  { id: 'sonar', label: '水下声呐' },
+  { id: 'aa_gun', label: '防空火网' },
+  { id: 'outfit_casual', label: '日常常服' },
+  { id: 'outfit_dress', label: '华美礼服' },
+  { id: 'outfit_tactical', label: '战术作战服' },
+  { id: 'outfit_oath', label: '誓约花嫁' },
+]);
+
+export const OUTFIT_STYLE_PRESETS = Object.freeze([
+  { id: '优雅礼服', label: '优雅礼服' },
+  { id: '海滨泳装', label: '海滨泳装' },
+  { id: '战术作战服', label: '战术作战服' },
+  { id: '日常便装', label: '日常便装' },
+  { id: '祭典和服', label: '祭典和服' },
+  { id: '誓约花嫁', label: '誓约花嫁' },
+]);
 
 export const MANDATORY_CORE_SLOTS = Object.freeze([
   { id: 'engine', label: '引擎', required: true, custom: false, allowedCategories: [ITEM_CATEGORIES.ENGINE] },
@@ -74,11 +125,7 @@ export const WAREHOUSE_GROUP_DEFS = Object.freeze([
 ]);
 
 /**
- * Classify any item into one of the 4 compact warehouse tabs:
- *   - core              : 引擎 / 装甲 / 核心
- *   - weapon            : 主炮 / 鱼雷 / 舰载机
- *   - tactical          : 雷达 / 声呐 / 防空 / 电探 / 火控观瞄
- *   - outfit_consumable : 服装 / 消耗品
+ * Classify any item into one of the 4 compact warehouse tabs.
  */
 export function classifyItemWarehouseGroup(item) {
   if (!item) return WAREHOUSE_GROUPS.TACTICAL;
@@ -107,28 +154,66 @@ export function classifyItemWarehouseGroup(item) {
 }
 
 /**
- * Pure geometric SVG icon for compact equipment warehouse rows.
+ * Pure geometric SVG icon for compact equipment & outfit cards (supports custom `iconKey` + rarity tint).
  */
-export function getItemIconSvg(item, { size = 20 } = {}) {
+export function getItemIconSvg(item, { size = 20, iconKey = null } = {}) {
   const s = Number(size) || 20;
+  const rarityId = inferItemRarity(item);
+  const rarityColor = ITEM_RARITY_MAP[rarityId]?.color || null;
+  const key = iconKey || item?.iconKey || '';
+
+  if (key === 'torpedo') {
+    const c = rarityColor || '#22d3ee';
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 16L17 5l2 2-11 13-4-4Z" stroke="${c}" stroke-width="1.9" fill="rgba(34,211,238,0.16)"/><path d="M5 19l-2 2M8 19l-1 2" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+  }
+  if (key === 'aircraft') {
+    const c = rarityColor || '#c084fc';
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l8 14h-6l-2-3-2 3H4l8-14Z" stroke="${c}" stroke-width="1.9" fill="rgba(192,132,252,0.18)"/></svg>`;
+  }
+  if (key === 'main_gun') {
+    const c = rarityColor || '#f97316';
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 18L17 5M14 5H19V10M7 15L10 18" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  if (key === 'sonar') {
+    const c = rarityColor || '#38bdf8';
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="${c}" stroke-width="1.6" stroke-dasharray="4 3"/><circle cx="12" cy="12" r="4.5" stroke="${c}" stroke-width="1.8"/><circle cx="12" cy="12" r="1.6" fill="${c}"/></svg>`;
+  }
+  if (key === 'aa_gun') {
+    const c = rarityColor || '#fbbf24';
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 19L11 6M19 19L13 6M8 15h8" stroke="${c}" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="5" r="2" fill="${c}"/></svg>`;
+  }
+  if (key === 'radar') {
+    const c = rarityColor || '#34d399';
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="${c}" stroke-width="1.8" stroke-dasharray="3 2"/><circle cx="12" cy="12" r="3" stroke="${c}" stroke-width="1.8"/><path d="M12 12L17.5 6.5" stroke="${c}" stroke-width="2" stroke-linecap="round"/></svg>`;
+  }
+  if (key === 'outfit_oath') {
+    const c = rarityColor || '#f9a8d4';
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 20s-7-4.5-7-9.5A4.2 4.2 0 0 1 12 7.4 4.2 4.2 0 0 1 19 10.5C19 15.5 12 20 12 20Z" stroke="${c}" stroke-width="1.9" fill="rgba(244,114,182,0.22)"/></svg>`;
+  }
+  if (key === 'outfit_tactical') {
+    const c = rarityColor || '#38bdf8';
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4h10l3 5-3 3v8H7v-8L4 9l3-5Z" stroke="${c}" stroke-width="1.8" fill="rgba(56,189,248,0.16)"/><path d="M10 11h4M12 9v6" stroke="${c}" stroke-width="1.6"/></svg>`;
+  }
+  if (key === 'outfit_dress' || key === 'outfit_casual' || item?.category === ITEM_CATEGORIES.OUTFIT) {
+    const c = rarityColor || '#f472b6';
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 4L12 7L16 4L20 8L17 11V20H7V11L4 8L8 4Z" stroke="${c}" stroke-width="1.8" fill="rgba(244,114,182,0.16)" stroke-linejoin="round"/></svg>`;
+  }
+
   const grp = classifyItemWarehouseGroup(item);
-  if (item?.category === ITEM_CATEGORIES.ENGINE) {
-    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="7" stroke="#38bdf8" stroke-width="2"/><path d="M12 5V12L17 15" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/></svg>`;
+  if (key === 'engine' || item?.category === ITEM_CATEGORIES.ENGINE) {
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="7" stroke="${rarityColor || '#38bdf8'}" stroke-width="2"/><path d="M12 5V12L17 15" stroke="${rarityColor || '#38bdf8'}" stroke-width="2" stroke-linecap="round"/></svg>`;
   }
-  if (item?.category === ITEM_CATEGORIES.ARMOR) {
-    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3L19 6V12C19 16.5 15.8 19.8 12 21C8.2 19.8 5 16.5 5 12V6L12 3Z" stroke="#60a5fa" stroke-width="2" fill="rgba(96,165,250,0.16)"/></svg>`;
+  if (key === 'armor' || item?.category === ITEM_CATEGORIES.ARMOR) {
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3L19 6V12C19 16.5 15.8 19.8 12 21C8.2 19.8 5 16.5 5 12V6L12 3Z" stroke="${rarityColor || '#60a5fa'}" stroke-width="2" fill="rgba(96,165,250,0.16)"/></svg>`;
   }
-  if (item?.category === ITEM_CATEGORIES.CORE) {
-    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polygon points="12,3 20,12 12,21 4,12" stroke="#c084fc" stroke-width="2" fill="rgba(192,132,252,0.18)"/><circle cx="12" cy="12" r="2.8" fill="#c084fc"/></svg>`;
+  if (key === 'core' || item?.category === ITEM_CATEGORIES.CORE) {
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polygon points="12,3 20,12 12,21 4,12" stroke="${rarityColor || '#c084fc'}" stroke-width="2" fill="rgba(192,132,252,0.18)"/><circle cx="12" cy="12" r="2.8" fill="${rarityColor || '#c084fc'}"/></svg>`;
   }
   if (grp === WAREHOUSE_GROUPS.WEAPON) {
-    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 18L17 5M14 5H19V10M7 15L10 18" stroke="#f97316" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 18L17 5M14 5H19V10M7 15L10 18" stroke="${rarityColor || '#f97316'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   }
   if (grp === WAREHOUSE_GROUPS.TACTICAL) {
-    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="#10b981" stroke-width="1.8" stroke-dasharray="3 2"/><circle cx="12" cy="12" r="3" stroke="#34d399" stroke-width="1.8"/><path d="M12 12L17.5 6.5" stroke="#34d399" stroke-width="2" stroke-linecap="round"/></svg>`;
-  }
-  if (item?.category === ITEM_CATEGORIES.OUTFIT) {
-    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 4L12 7L16 4L20 8L17 11V20H7V11L4 8L8 4Z" stroke="#f472b6" stroke-width="1.8" fill="rgba(244,114,182,0.16)" stroke-linejoin="round"/></svg>`;
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="${rarityColor || '#10b981'}" stroke-width="1.8" stroke-dasharray="3 2"/><circle cx="12" cy="12" r="3" stroke="${rarityColor || '#34d399'}" stroke-width="1.8"/><path d="M12 12L17.5 6.5" stroke="${rarityColor || '#34d399'}" stroke-width="2" stroke-linecap="round"/></svg>`;
   }
   return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="3" stroke="#fbbf24" stroke-width="1.8" fill="rgba(251,191,36,0.15)"/><path d="M12 9V15M9 12H15" stroke="#fbbf24" stroke-width="2" stroke-linecap="round"/></svg>`;
 }
@@ -640,16 +725,19 @@ export class InventorySystem {
   listItems({
     category = null,
     warehouseGroup = null,
+    rarity = null, // 'all' | 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary'
     equipStatus = null, // 'all' | 'idle' | 'equipped'
     tag = null,
     enhanceableOnly = false,
   } = {}) {
     const out = [];
     for (const item of this._items.values()) {
+      const itemRarity = inferItemRarity(item);
       if (category && item.category !== category) continue;
       if (warehouseGroup && warehouseGroup !== WAREHOUSE_GROUPS.ALL) {
         if (classifyItemWarehouseGroup(item) !== warehouseGroup) continue;
       }
+      if (rarity && rarity !== 'all' && itemRarity !== rarity) continue;
       if (tag && !(item.tags || []).includes(tag)) continue;
       if (enhanceableOnly && item.category === ITEM_CATEGORIES.CONSUMABLE) continue;
       if (equipStatus === 'equipped' || equipStatus === 'idle') {
@@ -657,9 +745,13 @@ export class InventorySystem {
         if (equipStatus === 'equipped' && !worn) continue;
         if (equipStatus === 'idle' && worn) continue;
       }
-      out.push(deepClone(item));
+      out.push({ ...deepClone(item), rarity: itemRarity });
     }
-    return out.sort((a, b) => (b.level || 0) - (a.level || 0) || (b.updatedAt || 0) - (a.updatedAt || 0));
+    return out.sort((a, b) => {
+      const rDiff = (ITEM_RARITY_MAP[b.rarity]?.rank || 1) - (ITEM_RARITY_MAP[a.rarity]?.rank || 1);
+      if (rDiff !== 0) return rDiff;
+      return (b.level || 0) - (a.level || 0) || (b.updatedAt || 0) - (a.updatedAt || 0);
+    });
   }
 
   getIdleUnenhancedItems() {
@@ -668,31 +760,272 @@ export class InventorySystem {
       if (item.category === ITEM_CATEGORIES.CONSUMABLE) continue;
       if ((Number(item.level) || 0) > 0) continue;
       if (this.getWearersOfItem(item.id).length > 0) continue;
-      list.push(deepClone(item));
+      list.push({ ...deepClone(item), rarity: inferItemRarity(item) });
     }
     return list;
   }
 
-  async cleanupIdleUnenhancedItems() {
-    const targets = this.getIdleUnenhancedItems();
-    if (targets.length === 0) return { removedCount: 0, removedNames: [] };
+  /**
+   * Filter idle (unequipped, non-consumable) items matching selected rarities for batch disassembly.
+   */
+  getIdleItemsByRarity({
+    rarities = [ITEM_RARITIES.COMMON, ITEM_RARITIES.UNCOMMON],
+    includeEnhanced = false,
+  } = {}) {
+    const allowed = new Set((Array.isArray(rarities) ? rarities : [rarities]).map((r) => normalizeRarity(r)));
+    const list = [];
+    for (const item of this._items.values()) {
+      if (item.category === ITEM_CATEGORIES.CONSUMABLE) continue;
+      if (!includeEnhanced && (Number(item.level) || 0) > 0) continue;
+      if (this.getWearersOfItem(item.id).length > 0) continue;
+      const r = inferItemRarity(item);
+      if (!allowed.has(r)) continue;
+      list.push({ ...deepClone(item), rarity: r });
+    }
+    return list;
+  }
+
+  previewBatchDisassemble({
+    rarities = [ITEM_RARITIES.COMMON, ITEM_RARITIES.UNCOMMON],
+    includeEnhanced = false,
+    dropMultiplier = 1.0,
+  } = {}) {
+    const targets = this.getIdleItemsByRarity({ rarities, includeEnhanced });
+    const totals = { steel: 0, bauxite: 0, silver: 0 };
     for (const t of targets) {
+      const y = getDisassembleYieldByRarity(t, { dropMultiplier });
+      totals.steel += y.steel;
+      totals.bauxite += y.bauxite;
+      totals.silver += y.silver;
+    }
+    return { count: targets.length, items: targets, yield: totals };
+  }
+
+  async disassembleItemsByRarity({
+    rarities = [ITEM_RARITIES.COMMON, ITEM_RARITIES.UNCOMMON],
+    includeEnhanced = false,
+    resources = null,
+    dropMultiplier = null,
+  } = {}) {
+    const mult =
+      dropMultiplier !== null && dropMultiplier !== undefined
+        ? dropMultiplier
+        : resources && typeof resources.getDropMultiplier === 'function'
+        ? resources.getDropMultiplier()
+        : 1.0;
+    const preview = this.previewBatchDisassemble({ rarities, includeEnhanced, dropMultiplier: mult });
+    if (preview.count === 0) {
+      return { removedCount: 0, removedNames: [], yield: { steel: 0, bauxite: 0, silver: 0 } };
+    }
+    for (const t of preview.items) {
       this._items.delete(t.id);
     }
     await this.persist();
+    if (resources) {
+      if (preview.yield.steel > 0) await resources.add('steel', preview.yield.steel, { reason: `批量拆解 ${preview.count} 件闲置装备` });
+      if (preview.yield.bauxite > 0) await resources.add('bauxite', preview.yield.bauxite, { reason: `批量拆解 ${preview.count} 件闲置装备` });
+      if (preview.yield.silver > 0) await resources.add('silver', preview.yield.silver, { reason: `批量拆解 ${preview.count} 件闲置装备` });
+    }
+    const payload = {
+      removedCount: preview.count,
+      removedNames: preview.items.map((t) => t.name),
+      yield: preview.yield,
+    };
+    this._emit('inventory:cleaned', payload);
+    return payload;
+  }
+
+  async cleanupIdleUnenhancedItems({ resources = null } = {}) {
+    const targets = this.getIdleUnenhancedItems();
+    if (targets.length === 0) return { removedCount: 0, removedNames: [], yield: { steel: 0, bauxite: 0, silver: 0 } };
+    const mult = resources && typeof resources.getDropMultiplier === 'function' ? resources.getDropMultiplier() : 1.0;
+    const totals = { steel: 0, bauxite: 0, silver: 0 };
+    for (const t of targets) {
+      const y = getDisassembleYieldByRarity(t, { dropMultiplier: mult });
+      totals.steel += y.steel;
+      totals.bauxite += y.bauxite;
+      totals.silver += y.silver;
+      this._items.delete(t.id);
+    }
+    await this.persist();
+    if (resources) {
+      if (totals.steel > 0) await resources.add('steel', totals.steel, { reason: `批量拆解 ${targets.length} 件闲置装备` });
+      if (totals.bauxite > 0) await resources.add('bauxite', totals.bauxite, { reason: `批量拆解 ${targets.length} 件闲置装备` });
+      if (totals.silver > 0) await resources.add('silver', totals.silver, { reason: `批量拆解 ${targets.length} 件闲置装备` });
+    }
     this._emit('inventory:cleaned', {
       removedCount: targets.length,
       removedNames: targets.map((t) => t.name),
+      yield: totals,
     });
     return {
       removedCount: targets.length,
       removedNames: targets.map((t) => t.name),
+      yield: totals,
     };
+  }
+
+  /**
+   * Roll & create a high-rarity equipment or outfit drop crate from sortie salvage / combat victories.
+   */
+  async rollLootDropItem({
+    tier = 'encounter', // 'resource' | 'encounter' | 'elite' | 'boss'
+    difficulty = 'low',
+    dropMultiplier = 1.0,
+    rng = Math.random,
+  } = {}) {
+    const mult = Math.max(0.5, Number(dropMultiplier) || 1.0);
+    const diffBoost = difficulty === 'high' ? 0.22 : difficulty === 'medium' ? 0.1 : 0;
+    const multBoost = Math.min(0.28, Math.max(0, mult - 1) * 0.12);
+    const roll = rng() + diffBoost + multBoost;
+
+    let rarity = ITEM_RARITIES.UNCOMMON;
+    if (tier === 'boss') {
+      rarity = roll >= 0.72 ? ITEM_RARITIES.LEGENDARY : roll >= 0.35 ? ITEM_RARITIES.EPIC : ITEM_RARITIES.RARE;
+    } else if (tier === 'elite') {
+      rarity = roll >= 0.88 ? ITEM_RARITIES.LEGENDARY : roll >= 0.52 ? ITEM_RARITIES.EPIC : roll >= 0.18 ? ITEM_RARITIES.RARE : ITEM_RARITIES.UNCOMMON;
+    } else if (tier === 'encounter') {
+      rarity = roll >= 0.94 ? ITEM_RARITIES.LEGENDARY : roll >= 0.72 ? ITEM_RARITIES.EPIC : roll >= 0.38 ? ITEM_RARITIES.RARE : ITEM_RARITIES.UNCOMMON;
+    } else {
+      rarity = roll >= 0.86 ? ITEM_RARITIES.EPIC : roll >= 0.5 ? ITEM_RARITIES.RARE : roll >= 0.2 ? ITEM_RARITIES.UNCOMMON : ITEM_RARITIES.COMMON;
+    }
+
+    const rDef = ITEM_RARITY_MAP[rarity] || ITEM_RARITY_MAP.uncommon;
+    const scale = rDef.statScale || 1.0;
+
+    const pool = [
+      {
+        name: '高初速穿甲双联主炮',
+        category: ITEM_CATEGORIES.EXTENSION,
+        subGroup: 'weapon',
+        subCategory: 'main_gun',
+        iconKey: 'main_gun',
+        tags: ['主战武器', '主炮', '战利品'],
+        bonuses: [
+          { stat: 'firepower', layer: 'baseAdd', value: Math.round(14 * scale) },
+          { stat: 'aa', layer: 'baseAdd', value: Math.round(6 * scale) },
+        ],
+      },
+      {
+        name: '五联装酸素鱼雷发射管',
+        category: ITEM_CATEGORIES.EXTENSION,
+        subGroup: 'weapon',
+        subCategory: 'torpedo',
+        iconKey: 'torpedo',
+        tags: ['主战武器', '鱼雷', '战利品'],
+        bonuses: [
+          { stat: 'torpedo', layer: 'baseAdd', value: Math.round(16 * scale) },
+          { stat: 'evasion', layer: 'baseAdd', value: Math.round(5 * scale) },
+        ],
+      },
+      {
+        name: '精锐舰载俯冲轰炸机队',
+        category: ITEM_CATEGORIES.EXTENSION,
+        subGroup: 'weapon',
+        subCategory: 'aircraft',
+        iconKey: 'aircraft',
+        tags: ['主战武器', '舰载机', '战利品'],
+        bonuses: [
+          { stat: 'firepower', layer: 'baseAdd', value: Math.round(12 * scale) },
+          { stat: 'recon', layer: 'baseAdd', value: Math.round(10 * scale) },
+          { stat: 'aa', layer: 'baseAdd', value: Math.round(8 * scale) },
+        ],
+      },
+      {
+        name: '深水脉冲反潜声呐阵列',
+        category: ITEM_CATEGORIES.EXTENSION,
+        subGroup: 'tactical',
+        subCategory: 'sonar',
+        iconKey: 'sonar',
+        tags: ['战术辅助', '声呐', '反潜'],
+        bonuses: [
+          { stat: 'asw', layer: 'baseAdd', value: Math.round(15 * scale) },
+          { stat: 'recon', layer: 'baseAdd', value: Math.round(8 * scale) },
+          ...(rDef.rank >= 3 ? [{ stat: 'checkBonus', layer: 'flatFinal', value: rDef.rank >= 5 ? 2 : 1 }] : []),
+        ],
+      },
+      {
+        name: '相控阵对空搜索雷达',
+        category: ITEM_CATEGORIES.EXTENSION,
+        subGroup: 'tactical',
+        subCategory: 'radar',
+        iconKey: 'radar',
+        tags: ['战术辅助', '雷达', '防空'],
+        bonuses: [
+          { stat: 'aa', layer: 'baseAdd', value: Math.round(14 * scale) },
+          { stat: 'recon', layer: 'baseAdd', value: Math.round(11 * scale) },
+          ...(rDef.rank >= 3 ? [{ stat: 'checkBonus', layer: 'flatFinal', value: rDef.rank >= 5 ? 2 : 1 }] : []),
+        ],
+      },
+      {
+        name: '高出力舰用燃气轮机',
+        category: ITEM_CATEGORIES.ENGINE,
+        subGroup: 'core',
+        subCategory: 'engine',
+        iconKey: 'engine',
+        tags: ['核心必装', '引擎'],
+        bonuses: [
+          { stat: 'evasion', layer: 'baseAdd', value: Math.round(14 * scale) },
+          { stat: 'asw', layer: 'baseAdd', value: Math.round(6 * scale) },
+        ],
+      },
+      {
+        name: '多层陶瓷复合舰体装甲',
+        category: ITEM_CATEGORIES.ARMOR,
+        subGroup: 'core',
+        subCategory: 'armor',
+        iconKey: 'armor',
+        tags: ['核心必装', '装甲'],
+        bonuses: [
+          { stat: 'armor', layer: 'baseAdd', value: Math.round(12 * scale) },
+          { stat: 'maxHp', layer: 'baseAdd', value: Math.round(12 * scale) },
+        ],
+      },
+      {
+        name: '星辉海风盛装礼服箱',
+        category: ITEM_CATEGORIES.OUTFIT,
+        subGroup: 'outfit',
+        subCategory: 'outfit',
+        iconKey: rDef.rank >= 5 ? 'outfit_oath' : 'outfit_dress',
+        outfitStyle: rDef.rank >= 5 ? '誓约花嫁' : rDef.rank >= 4 ? '优雅礼服' : '海滨泳装',
+        tags: ['服装', '战利品服装箱'],
+        bonuses: [
+          { stat: 'evasion', layer: 'baseAdd', value: Math.round(8 * scale) },
+          { stat: 'recon', layer: 'baseAdd', value: Math.round(8 * scale) },
+          ...(rDef.rank >= 4 ? [{ stat: 'checkBonus', layer: 'flatFinal', value: 1 }] : []),
+        ],
+      },
+    ];
+
+    const picked = pool[Math.floor(rng() * pool.length)];
+    const prefix =
+      rarity === ITEM_RARITIES.LEGENDARY
+        ? '【传说】'
+        : rarity === ITEM_RARITIES.EPIC
+        ? '【史诗】'
+        : rarity === ITEM_RARITIES.RARE
+        ? '【精锐】'
+        : '';
+
+    return this.createItem({
+      name: `${prefix}${picked.name}`,
+      category: picked.category,
+      subGroup: picked.subGroup,
+      subCategory: picked.subCategory,
+      iconKey: picked.iconKey,
+      outfitStyle: picked.outfitStyle || '',
+      rarity,
+      tags: [...picked.tags, rDef.shortLabel],
+      description: `海域缴获的${rDef.label}级${picked.category === ITEM_CATEGORIES.OUTFIT ? '舰娘服装' : '战术装备'}。`,
+      bonuses: picked.bonuses,
+      quantity: 1,
+      level: 0,
+    });
   }
 
   getItem(itemId) {
     const item = this._items.get(String(itemId));
-    return item ? deepClone(item) : null;
+    return item ? { ...deepClone(item), rarity: inferItemRarity(item) } : null;
   }
 
   async createItem(def = {}) {
@@ -719,11 +1052,14 @@ export class InventorySystem {
     const baseBonuses = sanitizeBonuses(def.bonuses);
     const level = Math.max(0, Math.min(MAX_ENHANCE_LEVEL, Math.floor(Number(def.level) || 0)));
 
-    const item = {
+    const draft = {
       id,
       name,
       category,
       ...(def.subGroup ? { subGroup: String(def.subGroup) } : {}),
+      ...(def.subCategory ? { subCategory: String(def.subCategory) } : {}),
+      ...(def.iconKey ? { iconKey: String(def.iconKey) } : {}),
+      ...(def.outfitStyle ? { outfitStyle: String(def.outfitStyle).trim() } : {}),
       tags: Array.isArray(def.tags)
         ? def.tags.map((t) => String(t).trim()).filter(Boolean)
         : String(def.tags || '')
@@ -738,11 +1074,12 @@ export class InventorySystem {
       createdAt: now,
       updatedAt: now,
     };
+    draft.rarity = def.rarity ? normalizeRarity(def.rarity) : inferItemRarity(draft);
 
-    this._items.set(id, item);
+    this._items.set(id, draft);
     await this.persist();
-    this._emit('inventory:item-created', { item: deepClone(item) });
-    return deepClone(item);
+    this._emit('inventory:item-created', { item: deepClone(draft) });
+    return deepClone(draft);
   }
 
   async updateItem(itemId, patch = {}) {
@@ -771,6 +1108,16 @@ export class InventorySystem {
       ...existing,
       name: patch.name !== undefined ? String(patch.name).trim() || existing.name : existing.name,
       category: nextCategory,
+      subGroup: patch.subGroup !== undefined ? String(patch.subGroup) : existing.subGroup,
+      subCategory: patch.subCategory !== undefined ? String(patch.subCategory) : existing.subCategory,
+      iconKey: patch.iconKey !== undefined ? String(patch.iconKey) : existing.iconKey,
+      outfitStyle: patch.outfitStyle !== undefined ? String(patch.outfitStyle).trim() : existing.outfitStyle || '',
+      rarity:
+        patch.rarity !== undefined
+          ? normalizeRarity(patch.rarity)
+          : existing.rarity
+          ? normalizeRarity(existing.rarity)
+          : inferItemRarity({ ...existing, bonuses: nextBonuses, level: nextLevel }),
       tags:
         patch.tags !== undefined
           ? Array.isArray(patch.tags)
@@ -1225,12 +1572,15 @@ export class InventorySystem {
         if (it && it.id) {
           const baseBonuses = sanitizeBonuses(it.baseBonuses || it.bonuses || []);
           const level = Math.max(0, Math.min(MAX_ENHANCE_LEVEL, Math.floor(Number(it.level) || 0)));
-          this._items.set(String(it.id), {
+          const bonuses = computeEnhancedBonuses(baseBonuses, level);
+          const merged = {
             ...deepClone(it),
             level,
             baseBonuses,
-            bonuses: computeEnhancedBonuses(baseBonuses, level),
-          });
+            bonuses,
+          };
+          merged.rarity = it.rarity ? normalizeRarity(it.rarity) : inferItemRarity(merged);
+          this._items.set(String(it.id), merged);
         }
       }
     }

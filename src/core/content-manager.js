@@ -18,7 +18,8 @@
 
 import { clamp } from './calc-engine.js';
 import { NODE_TYPES } from './route-generator.js';
-import { ITEM_CATEGORY_LABELS, STARTER_PACK_EQUIPMENT_16 } from './inventory-system.js';
+import { ITEM_CATEGORIES, ITEM_CATEGORY_LABELS, STARTER_PACK_EQUIPMENT_16 } from './inventory-system.js';
+import { inferItemRarity, normalizeRarity } from './stat-rules.js';
 import { LOG_CATEGORIES } from './log-system.js';
 
 const STORAGE_NS = 'core-content-studio';
@@ -239,6 +240,7 @@ function createDefaultContentState() {
     customEnemies: [],
     customDialogues: [],
     customGifts: [],
+    customEquipment: [],
     encounteredEnemyNames: ['前哨巡逻编队'],
     clearedRouteIds: [],
     updatedAt: Date.now(),
@@ -483,12 +485,113 @@ export class ContentManager {
   }
 
   // ------------------------------------------------------------
+  // 3B. Custom Equipment & Outfit Templates CRUD + Issue to Warehouse
+  // ------------------------------------------------------------
+
+  listCustomEquipment() {
+    return deepClone(this._state.customEquipment || []);
+  }
+
+  async saveCustomEquipmentTemplate(tpl = {}) {
+    const name = String(tpl.name || '').trim();
+    if (!name) throw new Error('装备/服装名称不能为空');
+    const category = Object.values(ITEM_CATEGORIES).includes(tpl.category)
+      ? tpl.category
+      : ITEM_CATEGORIES.EXTENSION;
+    const bonuses = Array.isArray(tpl.bonuses)
+      ? tpl.bonuses
+          .filter((b) => b && b.stat && Number.isFinite(Number(b.value)) && Number(b.value) !== 0)
+          .map((b) => ({
+            stat: String(b.stat).trim(),
+            layer: b.layer || (b.stat === 'checkBonus' ? 'flatFinal' : 'baseAdd'),
+            value: Number(b.value),
+          }))
+      : [];
+    const now = Date.now();
+    const record = {
+      id: String(tpl.id || `eq_tpl_${now.toString(36)}_${Math.random().toString(36).slice(2, 5)}`).trim(),
+      name,
+      category,
+      subGroup: String(tpl.subGroup || (category === ITEM_CATEGORIES.OUTFIT ? 'outfit' : 'weapon')),
+      subCategory: String(tpl.subCategory || category),
+      rarity: tpl.rarity ? normalizeRarity(tpl.rarity) : inferItemRarity({ name, bonuses }),
+      iconKey: String(tpl.iconKey || tpl.subCategory || category),
+      outfitStyle: category === ITEM_CATEGORIES.OUTFIT ? String(tpl.outfitStyle || '').trim() : '',
+      description: String(tpl.description || '').trim(),
+      tags: Array.isArray(tpl.tags)
+        ? tpl.tags.map((t) => String(t).trim()).filter(Boolean)
+        : String(tpl.tags || '')
+            .split(/[,，\s]+/)
+            .map((t) => t.trim())
+            .filter(Boolean),
+      bonuses,
+      custom: true,
+      updatedAt: now,
+    };
+
+    if (!Array.isArray(this._state.customEquipment)) this._state.customEquipment = [];
+    const idx = this._state.customEquipment.findIndex((e) => e.id === record.id);
+    if (idx >= 0) this._state.customEquipment[idx] = record;
+    else this._state.customEquipment.unshift(record);
+
+    await this.persist();
+    this._emit('content:updated', { type: 'equipment-saved', id: record.id });
+    return deepClone(record);
+  }
+
+  async deleteCustomEquipmentTemplate(tplId) {
+    const list = this._state.customEquipment || [];
+    const prev = list.length;
+    this._state.customEquipment = list.filter((e) => e.id !== String(tplId));
+    if (this._state.customEquipment.length !== prev) {
+      await this.persist();
+      this._emit('content:updated', { type: 'equipment-deleted', id: tplId });
+      return true;
+    }
+    return false;
+  }
+
+  async issueEquipmentToWarehouse(templateId, quantity = 1) {
+    if (!this._inventory) throw new Error('仓库系统未就绪');
+    const tpl = (this._state.customEquipment || []).find((e) => e.id === String(templateId));
+    if (!tpl) throw new Error('未找到对应的自定义装备/服装模板');
+    const count = Math.max(1, Math.min(10, Math.floor(Number(quantity) || 1)));
+    const created = [];
+    for (let i = 0; i < count; i++) {
+      const inst = await this._inventory.createItem({
+        name: tpl.name,
+        category: tpl.category,
+        subGroup: tpl.subGroup,
+        subCategory: tpl.subCategory,
+        rarity: tpl.rarity,
+        iconKey: tpl.iconKey,
+        outfitStyle: tpl.outfitStyle || '',
+        tags: [...(tpl.tags || []), '自定义'],
+        description: tpl.description || '',
+        bonuses: deepClone(tpl.bonuses || []),
+        quantity: 1,
+        level: 0,
+      });
+      created.push(inst);
+    }
+    if (this._logs) {
+      this._logs.add({
+        category: LOG_CATEGORIES.EQUIPMENT,
+        title: `工坊发放自定义${tpl.category === ITEM_CATEGORIES.OUTFIT ? '服装' : '装备'}「${tpl.name}」×${count}`,
+        detail: `品级：${tpl.rarity} · 已入库`,
+      });
+    }
+    return created;
+  }
+
+  // ------------------------------------------------------------
   // 4. Full-Spectrum Compendium Aggregation
   // ------------------------------------------------------------
 
   getCompendiumReport() {
     const chars = this._entities?.list({ kind: 'character' }) || [];
     const items = this._inventory?.listItems() || [];
+    const customEqs = this.listCustomEquipment();
     const routes = this._routeGenerator?.listAllRoutes() || [];
     const allEnemies = [...deepClone(BUILTIN_ENEMY_ARCHIVE), ...this.listCustomEnemies()];
     const encounteredSet = new Set(this._state.encounteredEnemyNames || []);
@@ -525,7 +628,12 @@ export class ContentManager {
       id: it.id,
       name: it.name,
       category: it.category,
+      subGroup: it.subGroup || '',
+      subCategory: it.subCategory || it.category,
       categoryLabel: ITEM_CATEGORY_LABELS[it.category] || it.category,
+      rarity: inferItemRarity(it),
+      iconKey: it.iconKey || '',
+      outfitStyle: it.outfitStyle || '',
       level: it.level || 0,
       quantity: it.quantity || 0,
       description: it.description || '',
@@ -578,6 +686,7 @@ export class ContentManager {
       stats,
       shipgirls,
       equipment,
+      customEquipment: customEqs,
       enemies,
       routes: routeEntries,
     };
@@ -613,6 +722,7 @@ export class ContentManager {
         customEnemies: this.listCustomEnemies(),
         customDialogues: this.listCustomDialogues(),
         customGifts: this.listCustomGifts(),
+        customEquipment: this.listCustomEquipment(),
         oaths: this._interaction ? this._interaction.getAllOaths() : {},
       },
     };
@@ -633,6 +743,7 @@ export class ContentManager {
       enemies: 0,
       dialogues: 0,
       gifts: 0,
+      customEquipment: 0,
     };
 
     // 1. Characters
@@ -697,11 +808,12 @@ export class ContentManager {
       }
     }
 
-    // 5. Custom Enemies, Dialogues, Gifts
+    // 5. Custom Enemies, Dialogues, Gifts, Equipment Templates
     if (isReplace) {
       this._state.customEnemies = [];
       this._state.customDialogues = [];
       this._state.customGifts = [];
+      this._state.customEquipment = [];
     }
     if (Array.isArray(p.customEnemies)) {
       for (const e of p.customEnemies) {
@@ -724,6 +836,14 @@ export class ContentManager {
         if (g && g.name) {
           await this.createCustomGift(g);
           counts.gifts += 1;
+        }
+      }
+    }
+    if (Array.isArray(p.customEquipment)) {
+      for (const eq of p.customEquipment) {
+        if (eq && eq.name) {
+          await this.saveCustomEquipmentTemplate(eq);
+          counts.customEquipment += 1;
         }
       }
     }
@@ -891,6 +1011,7 @@ export class ContentManager {
       customEnemies: Array.isArray(snapshot.customEnemies) ? deepClone(snapshot.customEnemies) : [],
       customDialogues: Array.isArray(snapshot.customDialogues) ? deepClone(snapshot.customDialogues) : [],
       customGifts: Array.isArray(snapshot.customGifts) ? deepClone(snapshot.customGifts) : [],
+      customEquipment: Array.isArray(snapshot.customEquipment) ? deepClone(snapshot.customEquipment) : [],
       encounteredEnemyNames: Array.isArray(snapshot.encounteredEnemyNames)
         ? snapshot.encounteredEnemyNames.map(String)
         : def.encounteredEnemyNames,

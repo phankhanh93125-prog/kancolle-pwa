@@ -4514,5 +4514,328 @@ body.is-immersive-battle .bottom-bar {
   accent-color: var(--accent);
 }
 
+/* ============================================================
+   v16: Title Cover Screen & New Journey Preferences
+   ============================================================ */
+
+body.is-title-screen .app-footer,
+body.is-title-screen .module-nav-strip {
+  display: none !important;
+}
+
+.title-cover-root {
+  min-height: calc(100dvh - 84px);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 16px calc(20px + var(--safe-bottom));
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+.title-cover-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  padding: 24px 16px 14px;
+  border-radius: var(--radius-lg, 18px);
+  background: linear-gradient(180deg, var(--bg-surface-elevated), var(--bg-surface));
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+}
+
+.title-crest {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+}
+
+.title-main-heading {
+  margin: 2px 0 0;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--text-primary);
+}
+
+.title-sub-copy {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.title-action-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.title-cta-primary,
+.title-cta-secondary {
+  width: 100%;
+  min-height: 62px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.title-cta-primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  color: #061317;
+  border: 1px solid transparent;
+  box-shadow: 0 8px 22px rgba(20, 184, 166, 0.28);
+}
+
+.title-cta-secondary {
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+}
+
+.title-cta-primary:active,
+.title-cta-secondary:active {
+  transform: scale(0.985);
+}
+
+.title-cta-label {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.title-cta-meta {
+  font-size: 12px;
+  line-height: 1.35;
+  opacity: 0.88;
+}
+
+.title-footer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+
+.nj-option-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.nj-option-card {
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.nj-option-card.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.nj-option-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.nj-option-desc {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   v16: Universal 5-Tier Rarity (White -> Green -> Blue -> Purple -> Orange)
+   ============================================================ */
+
+.is-rarity-common {
+  border-color: rgba(148, 163, 184, 0.55) !important;
+  border-left: 3px solid #cbd5e1 !important;
+}
+
+.is-rarity-uncommon {
+  border-color: rgba(34, 197, 94, 0.55) !important;
+  border-left: 3px solid #22c55e !important;
+}
+
+.is-rarity-rare {
+  border-color: rgba(59, 130, 246, 0.62) !important;
+  border-left: 3px solid #3b82f6 !important;
+}
+
+.is-rarity-epic {
+  border-color: rgba(168, 85, 247, 0.68) !important;
+  border-left: 3px solid #a855f7 !important;
+}
+
+.is-rarity-legendary {
+  border-color: rgba(249, 115, 22, 0.78) !important;
+  border-left: 3px solid #f97316 !important;
+  box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.22);
+}
+
+.rarity-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.rarity-pill.is-rarity-common {
+  background: rgba(148, 163, 184, 0.2);
+  color: var(--text-primary);
+  border-color: rgba(148, 163, 184, 0.55);
+  border-left: 1px solid rgba(148, 163, 184, 0.55) !important;
+}
+
+.rarity-pill.is-rarity-uncommon {
+  background: rgba(34, 197, 94, 0.18);
+  color: #16a34a;
+  border-color: rgba(34, 197, 94, 0.55);
+  border-left: 1px solid rgba(34, 197, 94, 0.55) !important;
+}
+
+.rarity-pill.is-rarity-rare {
+  background: rgba(59, 130, 246, 0.18);
+  color: #2563eb;
+  border-color: rgba(59, 130, 246, 0.6);
+  border-left: 1px solid rgba(59, 130, 246, 0.6) !important;
+}
+
+.rarity-pill.is-rarity-epic {
+  background: rgba(168, 85, 247, 0.18);
+  color: #9333ea;
+  border-color: rgba(168, 85, 247, 0.62);
+  border-left: 1px solid rgba(168, 85, 247, 0.62) !important;
+}
+
+.rarity-pill.is-rarity-legendary {
+  background: rgba(249, 115, 22, 0.2);
+  color: #ea580c;
+  border-color: rgba(249, 115, 22, 0.72);
+  border-left: 1px solid rgba(249, 115, 22, 0.72) !important;
+}
+
+:root[data-theme-mode='dark'] .rarity-pill.is-rarity-uncommon { color: #4ade80; }
+:root[data-theme-mode='dark'] .rarity-pill.is-rarity-rare { color: #60a5fa; }
+:root[data-theme-mode='dark'] .rarity-pill.is-rarity-epic { color: #c084fc; }
+:root[data-theme-mode='dark'] .rarity-pill.is-rarity-legendary { color: #fb923c; }
+
+.rarity-picker-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.rarity-pick-btn {
+  min-height: 40px;
+  padding: 6px 4px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border-strong);
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.rarity-pick-btn.is-active {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* ============================================================
+   v16: Equipment & Outfit Visual Editor Controls
+   ============================================================ */
+
+.eq-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.eq-icon-btn {
+  min-height: 52px;
+  padding: 6px 4px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.eq-icon-btn.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.eq-stat-8grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.eq-stat-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.eq-stat-cell input {
+  width: 68px;
+  min-height: 32px;
+  padding: 4px 6px;
+  text-align: right;
+}
+
+
 
 

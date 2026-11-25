@@ -1127,3 +1127,158 @@ export function computeOpeningTorpedoOutcome({
   };
 }
 
+// ============================================================
+// Universal Five-Tier Rarity System (White -> Green -> Blue -> Purple -> Orange)
+// Applies uniformly to ALL Equipment Modules AND Shipgirl Outfits
+// ============================================================
+
+export const ITEM_RARITIES = Object.freeze({
+  COMMON: 'common',
+  UNCOMMON: 'uncommon',
+  RARE: 'rare',
+  EPIC: 'epic',
+  LEGENDARY: 'legendary',
+});
+
+export const ITEM_RARITY_DEFS = Object.freeze([
+  {
+    id: ITEM_RARITIES.COMMON,
+    rank: 1,
+    label: '白·普通',
+    shortLabel: '普通',
+    color: '#cbd5e1',
+    borderColor: '#94a3b8',
+    bgTint: 'rgba(148, 163, 184, 0.14)',
+    statScale: 1.0,
+    disassembleBase: { steel: 28, bauxite: 14, silver: 45 },
+  },
+  {
+    id: ITEM_RARITIES.UNCOMMON,
+    rank: 2,
+    label: '绿·精良',
+    shortLabel: '精良',
+    color: '#4ade80',
+    borderColor: '#22c55e',
+    bgTint: 'rgba(34, 197, 94, 0.14)',
+    statScale: 1.18,
+    disassembleBase: { steel: 58, bauxite: 30, silver: 95 },
+  },
+  {
+    id: ITEM_RARITIES.RARE,
+    rank: 3,
+    label: '蓝·稀有',
+    shortLabel: '稀有',
+    color: '#60a5fa',
+    borderColor: '#3b82f6',
+    bgTint: 'rgba(59, 130, 246, 0.16)',
+    statScale: 1.38,
+    disassembleBase: { steel: 110, bauxite: 60, silver: 185 },
+  },
+  {
+    id: ITEM_RARITIES.EPIC,
+    rank: 4,
+    label: '紫·史诗',
+    shortLabel: '史诗',
+    color: '#c084fc',
+    borderColor: '#a855f7',
+    bgTint: 'rgba(168, 85, 247, 0.18)',
+    statScale: 1.62,
+    disassembleBase: { steel: 210, bauxite: 120, silver: 340 },
+  },
+  {
+    id: ITEM_RARITIES.LEGENDARY,
+    rank: 5,
+    label: '橙·传说',
+    shortLabel: '传说',
+    color: '#fb923c',
+    borderColor: '#f97316',
+    bgTint: 'rgba(249, 115, 22, 0.2)',
+    statScale: 1.9,
+    disassembleBase: { steel: 380, bauxite: 220, silver: 620 },
+  },
+]);
+
+export const ITEM_RARITY_MAP = Object.freeze(
+  Object.fromEntries(ITEM_RARITY_DEFS.map((r) => [r.id, r]))
+);
+
+export const ITEM_RARITY_ORDER = Object.freeze(ITEM_RARITY_DEFS.map((r) => r.id));
+
+export function normalizeRarity(rarity) {
+  const key = String(rarity || '').trim().toLowerCase();
+  if (ITEM_RARITY_MAP[key]) return key;
+  if (key === 'white' || key === '普通' || key === '白') return ITEM_RARITIES.COMMON;
+  if (key === 'green' || key === '精良' || key === '绿') return ITEM_RARITIES.UNCOMMON;
+  if (key === 'blue' || key === '稀有' || key === '蓝') return ITEM_RARITIES.RARE;
+  if (key === 'purple' || key === '史诗' || key === '紫') return ITEM_RARITIES.EPIC;
+  if (key === 'orange' || key === 'gold' || key === '传说' || key === '橙') return ITEM_RARITIES.LEGENDARY;
+  return ITEM_RARITIES.COMMON;
+}
+
+/**
+ * Losslessly infer an item or outfit's rarity tier for legacy IndexedDB saves
+ * based on total stat bonus power, checkBonus, and enhance level.
+ */
+export function inferItemRarity(item = {}) {
+  if (!item || typeof item !== 'object') return ITEM_RARITIES.COMMON;
+  if (item.rarity && ITEM_RARITY_MAP[String(item.rarity).toLowerCase()]) {
+    return String(item.rarity).toLowerCase();
+  }
+  const bonuses = Array.isArray(item.baseBonuses) && item.baseBonuses.length > 0
+    ? item.baseBonuses
+    : Array.isArray(item.bonuses)
+    ? item.bonuses
+    : [];
+  let powerScore = 0;
+  for (const b of bonuses) {
+    const val = Math.abs(Number(b?.value) || 0);
+    if (b?.stat === 'checkBonus') powerScore += val * 12;
+    else if (b?.layer === 'percentAdd' || b?.layer === 'percentMult') powerScore += val * 120;
+    else powerScore += val;
+  }
+  const lv = Math.max(0, Math.floor(Number(item.level) || 0));
+  const nameText = `${item.name || ''} ${(item.tags || []).join(' ')}`;
+  if (/(传说|旗舰|花嫁|誓约|超重|实验型|原型|终极)/.test(nameText)) powerScore += 18;
+  else if (/(史诗|精密|精锐|夜战|盛装|礼服|涡轮)/.test(nameText)) powerScore += 10;
+
+  const combined = powerScore + lv * 3.5;
+  if (combined >= 52 || lv >= 9) return ITEM_RARITIES.LEGENDARY;
+  if (combined >= 38 || lv >= 6) return ITEM_RARITIES.EPIC;
+  if (combined >= 26 || lv >= 4) return ITEM_RARITIES.RARE;
+  if (combined >= 16 || lv >= 2) return ITEM_RARITIES.UNCOMMON;
+  return ITEM_RARITIES.COMMON;
+}
+
+/**
+ * Compute steel, bauxite, and silver yield when disassembling an idle equipment or outfit item.
+ */
+export function getDisassembleYieldByRarity(item = {}, { dropMultiplier = 1.0 } = {}) {
+  const rarityId = inferItemRarity(item);
+  const def = ITEM_RARITY_MAP[rarityId] || ITEM_RARITY_MAP.common;
+  const lv = Math.max(0, Math.floor(Number(item?.level) || 0));
+  const lvScale = 1 + lv * 0.25;
+  const mult = clampResourceDropMultiplier(dropMultiplier);
+  return {
+    steel: Math.max(10, Math.round(def.disassembleBase.steel * lvScale * mult)),
+    bauxite: Math.max(5, Math.round(def.disassembleBase.bauxite * lvScale * mult)),
+    silver: Math.max(20, Math.round(def.disassembleBase.silver * lvScale * mult)),
+  };
+}
+
+// ============================================================
+// Resource & Drop Multiplier Settings (1.0x / 2.0x / 3.0x + Custom Slider)
+// ============================================================
+
+export const RESOURCE_DROP_MULTIPLIER_PRESETS = Object.freeze([
+  { id: 'standard', label: '1.0x 常规', multiplier: 1.0, desc: '标准丰度产出与装备掉落率' },
+  { id: 'abundant', label: '2.0x 丰饶', multiplier: 2.0, desc: '双倍资源产出、离线恢复与高阶掉落权重提升' },
+  { id: 'chill', label: '3.0x 畅玩', multiplier: 3.0, desc: '三倍资源涌流与超高紫/橙装备箱掉落体验' },
+]);
+
+export function clampResourceDropMultiplier(val) {
+  const num = Number(val);
+  if (!Number.isFinite(num)) return 1.0;
+  return Number(clamp(Math.round(num * 10) / 10, 0.5, 5.0).toFixed(1));
+}
+
+

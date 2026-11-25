@@ -1,4 +1,4 @@
-const CACHE_NAME = 'modular-pwa-base-v15';
+const CACHE_NAME = 'modular-pwa-base-v16';
 
 const CORE_ASSETS = [
   './',
@@ -38,6 +38,7 @@ const CORE_ASSETS = [
   './src/core/personality-pool.js',
   './src/core/dialogue-engine.js',
   './src/modules/index.js',
+  './src/modules/title-screen.js',
   './src/modules/port-hub.js',
   './src/modules/port-facilities.js',
   './src/modules/battle-screen.js',
