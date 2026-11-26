@@ -88,6 +88,7 @@ export class ExpeditionSystem {
     resources,
     commander,
     statRules = null,
+    routeGenerator = null,
     logs = null,
     formation = null,
     bus = null,
@@ -99,6 +100,7 @@ export class ExpeditionSystem {
     this._resources = resources;
     this._commander = commander;
     this._statRules = statRules;
+    this._routeGenerator = routeGenerator;
     this._logs = logs;
     this._formation = formation;
     this._bus = bus;
@@ -111,6 +113,10 @@ export class ExpeditionSystem {
 
   setFormation(formation) {
     this._formation = formation;
+  }
+
+  setRouteGenerator(rg) {
+    this._routeGenerator = rg;
   }
 
   _emit(event, payload) {
@@ -282,13 +288,17 @@ export class ExpeditionSystem {
     const dispatchMult = this._commander ? this._commander.getExpeditionRewardMultiplier() : 1.0;
     const affMult = this._commander ? this._commander.getAffinityGainMultiplier() : 1.0;
     const shipCountBonus = 1 + Math.max(0, (run.characterIds.length - 1) * 0.08);
-    const totalMult = dispatchMult * shipCountBonus;
+    const seaControlMult =
+      this._routeGenerator && typeof this._routeGenerator.getExpeditionYieldMultiplier === 'function'
+        ? this._routeGenerator.getExpeditionYieldMultiplier()
+        : 1.0;
+    const totalMult = dispatchMult * shipCountBonus * seaControlMult;
 
     const grantedRewards = {};
     for (const [resId, baseAmt] of Object.entries(run.rewards || {})) {
       const amount =
         resId === 'gold'
-          ? Math.max(1, Math.round(baseAmt * (1 + Math.max(0, dispatchMult - 1) * 0.4)))
+          ? Math.max(1, Math.round(baseAmt * (1 + Math.max(0, dispatchMult * seaControlMult - 1) * 0.4)))
           : Math.max(1, Math.round(baseAmt * totalMult));
       await this._resources.add(resId, amount, { reason: `远征完成：${run.missionName}` });
       grantedRewards[resId] = amount;

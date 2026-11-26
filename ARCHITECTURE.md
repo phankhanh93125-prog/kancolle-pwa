@@ -158,11 +158,8 @@
 - **全自动 JSON 字段自适应转换器与港区小剧场完整修复（v22：`src/core/content-manager.js`、`src/core/personality-pool.js`、`src/core/dialogue-engine.js`、`src/core/story-pack-engine.js`、`src/modules/port-hub.js`、`src/modules/compendium-studio.js`）**：
   - **智能字段自适应 Normalizer**：粘贴或上传 `.json`（兼容完整包对象、裸数组 `[...]`、单条目对象 `{...}` 及 Markdown 代码块）时自动识别并转换常见变体字段——涵盖性格与台词分类别名（`personalities`/`personalityPool`/`personas`/`archetypes` 及 `secretary_idle`/`idle`/`daily`、`secretary_night`/`night`、`combat_skill`/`skill` 等 10 类映射）、副特质（`traits`/`subTraits`/`quirks`）、剧情与事件包（`events`/`storyPacks`/`stories`/`chapters`、`scenes`/`nodes`/`steps`/`dialogues`、`speaker`/`name`/`character`、`text`/`content`/`line`、`choices`/`options`/`branches`、`nextText`/`reply` 与 `nextNodeId`/`nextSceneId`）、舰娘与装备服装及中英文品级自动规范化，并返回逐类统计汇总提示或明确报错。
   - **港区小剧场与动态性格台词联动修复**：修复 `port-hub.js` 未 `await` 异步 `renderNodeView` 导致的剧场无法渲染问题；中央主舞台常驻可一键点播的「选择剧场事件 / 播放剧情」快捷面板（导入包置顶优先），原生支持多幕连续 `scenes` 自动串联推进与单幕 `choices + nextText` 反馈结算、好感/士气/资源发放及「结束剧场 · 返回港区」；秘书舰日常交谈与战斗/休整台词实时从内置及新导入的 `personalities` / `traits` 词库按时段与状态抽取。
-
-
-
-
-
-
-
-
+- **现代磨砂战术浮窗、装备驱动战斗指令、分舰种槽位扩建、装备升阶与海域制海权进度（v23：`src/core/ui-kit.js`、`src/core/stat-rules.js`、`src/core/inventory-system.js`、`src/core/tactical-combat.js`、`src/core/route-generator.js`、`src/core/expedition-system.js`、`src/core/port-buildings.js`、`src/modules/battle-screen.js`、`src/modules/sortie-console.js`、`src/modules/character-console.js`、`src/modules/supply-workshop.js`、`src/modules/compendium-studio.js`、`src/modules/port-facilities.js`、`src/modules/port-hub.js`、`index.html`、`styles/main.css`）**：
+  - **现代磨砂战术浮窗 + 底部抽屉 + 顶部 2s Toast + 精简 4 键底部导航**：全站零原生 `alert()/confirm()`，引入 `uiKit.openTacticalModal` 居中半透明磨砂切角微光战术浮窗（应用于舰娘详情卡、船坞入渠维修、装备强化升阶详情、批量拆解、荣誉勋章、存档保险箱与主题皮肤）与 `openBottomSheet` 磨砂底部滑出抽屉（选装换装实时红绿八维数值差值对比、扩建/改型槽位）；底部导航精简为「剧场港区 / 出征海图 / 舰队编成 / 仓库图鉴」4 枚宽敞按键，仓库与图鉴顶部双标签无缝切换；3×4 编队盘下方新增实时评估条（阶梯单步油弹、全队总侦查、全队总防空）。
+  - **装备驱动型战斗指令 + 3×4 实时瞄准线与命中/衰减预览**：每舰始终保留「常规射击」「机动规避 / 调整站位」通用基础指令，其余专属技能（`主炮齐射 / 鱼雷突击 / 舰载机空袭 / 防空警戒网 / 雷达校射扫描 / 声呐深弹反潜`）严格由当前实装装备解锁，未装配时置灰并标明解锁需求；3×4 战斗沙盘实时绘制行动舰娘至锁定敌舰的 SVG 瞄准矢量线与准星，并在指令条上方展示单行命中率与跨排衰减预览（舰载机空袭无视排数衰减，防空警戒网保护自身及邻格队友）。
+  - **分舰种槽位上限与材料扩建 + 装备 +1~+10 强化与白→橙品级升阶**：在三大核心槽位之外实行分舰种扩建上限（`DD/SS: 2`、`CL/CA: 3`、`BB/CV: 4`），扩建与改型消耗钢材/铝材/银条并实时校验库存；仓库拆解多余装备可获得持久化「拆解余料（`salvageParts`）」，装备强化至满级 `+10` 后可消耗材料与拆解余料执行品级升阶（`白→绿→蓝→紫→橙`），突破基础属性底板并开启新一轮强化上限。
+  - **海域制海权进度（`0%~100%`）与港区荣誉勋章闭环**：三大海域（`1-1 近海防卫区`、`2-1 外海破交航道`、`3-1 深海要塞核心区`）追踪制海权压制进度，击破海域 Boss 推进压制，达 `100%` 解锁下一高危海域并永久提升远征与巡航产出；新增 8 枚港区荣誉勋章浮窗，达成里程碑自动解锁并永久提升指挥官「独立运气」，直接提高高阶橙装掉率与 D20 检定收益；所有新增状态均提供无损默认值，完全兼容历史 IndexedDB 存档。

@@ -19,17 +19,23 @@
 import {
   ITEM_RARITIES,
   ITEM_RARITY_MAP,
+  ITEM_RARITY_ORDER,
   KNOWN_EQUIPMENT_TYPES,
   KNOWN_EQUIPMENT_TYPE_DEFS,
   KNOWN_EQUIPMENT_TYPE_MAP,
   NAVAL_EIGHT_STAT_DEFS,
   NAVAL_EIGHT_STAT_MAP,
   getDisassembleYieldByRarity,
+  getEquipmentPromoteCost,
+  getShipClassSlotCap,
+  getSlotChangeTypeCost,
+  getSlotExpansionCost,
   inferEquipmentTypeId,
   inferItemRarity,
   normalizeEquipmentTypeId,
   normalizeRarity,
   normalizeStatKey,
+  resolveShipClass,
 } from './stat-rules.js';
 
 const STORAGE_NS = 'core-inventory';
@@ -607,6 +613,8 @@ export class InventorySystem {
     this._customSlotsByCharacter = {};
     /** @type {Record<string, Record<string, string>>} characterId -> { slotId: itemId } */
     this._equipped = {};
+    /** @type {number} Salvage parts accumulated from disassembling surplus equipment for rarity promotion */
+    this._salvageParts = 0;
     this._hydrated = false;
 
     if (this._bus) {
@@ -614,6 +622,32 @@ export class InventorySystem {
         this.syncAllCharacters();
       });
     }
+  }
+
+  getSalvageParts() {
+    return Math.max(0, Math.floor(Number(this._salvageParts) || 0));
+  }
+
+  async addSalvageParts(amount) {
+    const add = Math.max(0, Math.floor(Number(amount) || 0));
+    if (add <= 0) return this.getSalvageParts();
+    this._salvageParts = this.getSalvageParts() + add;
+    await this.persist();
+    this._emit('inventory:salvage-changed', { salvageParts: this._salvageParts, delta: add });
+    return this._salvageParts;
+  }
+
+  getSalvagePartsYield(item) {
+    const rId = inferItemRarity(item);
+    const baseByRarity = {
+      common: 2,
+      uncommon: 4,
+      rare: 8,
+      epic: 16,
+      legendary: 30,
+    };
+    const lv = Math.max(0, Math.floor(Number(item?.level) || 0));
+    return (baseByRarity[rId] || 2) + Math.floor(lv / 2);
   }
 
   setCommander(commander) {
@@ -713,15 +747,58 @@ export class InventorySystem {
   }
 
   /**
-   * Expand a new typed equipment slot on a shipgirl chosen from KNOWN_EQUIPMENT_TYPES.
+   * Return ship-class custom expandable slot cap info and escalating material costs for a shipgirl:
+   *   - DD / SS : max 2
+   *   - CL / CA : max 3
+   *   - BB / CV : max 4
    */
-  async addExpandedSlot(characterId, equipmentTypeId) {
+  getCharacterSlotCapInfo(characterId) {
+    const cid = String(characterId || '');
+    const entity = this._entities?.get(cid);
+    const shipType = entity?.meta?.shipType || '';
+    const shipClass = resolveShipClass(shipType);
+    const max = getShipClassSlotCap(shipType);
+    const used = Array.isArray(this._customSlotsByCharacter[cid]) ? this._customSlotsByCharacter[cid].length : 0;
+    return {
+      characterId: cid,
+      shipClass,
+      shipType: shipType || shipClass,
+      used,
+      max,
+      canExpand: used < max,
+      expansionCost: getSlotExpansionCost(used),
+      changeCost: getSlotChangeTypeCost(Math.max(1, used)),
+    };
+  }
+
+  /**
+   * Expand a new typed equipment slot on a shipgirl chosen from KNOWN_EQUIPMENT_TYPES.
+   * Enforces ship-class slot cap and optional steel/bauxite/silver material expenditure.
+   */
+  async addExpandedSlot(characterId, equipmentTypeId, { resources = null, skipCost = false } = {}) {
     const cid = String(characterId || '').trim();
     if (!cid) throw new Error('角色 ID 不能为空');
     const typeId = normalizeEquipmentTypeId(equipmentTypeId, null);
     if (!typeId || !KNOWN_EQUIPMENT_TYPE_MAP[typeId]) {
       throw new Error('请选择有效的已知装备类型');
     }
+    const capInfo = this.getCharacterSlotCapInfo(cid);
+    if (!skipCost && !capInfo.canExpand) {
+      throw new Error(`该舰种（${capInfo.shipClass}）自定义槽位已达上限（${capInfo.used}/${capInfo.max}）`);
+    }
+
+    let paidCost = null;
+    if (resources && !skipCost) {
+      const cost = capInfo.expansionCost;
+      const spend = await resources.spendBatch(cost, {
+        reason: `扩建「${this._entities?.get(cid)?.name || cid}」第 ${capInfo.used + 1} 个装备槽位`,
+      });
+      if (!spend.ok) {
+        throw new Error(spend.reason || '扩建所需钢材/铝材/银条不足');
+      }
+      paidCost = cost;
+    }
+
     const typeDef = KNOWN_EQUIPMENT_TYPE_MAP[typeId];
 
     if (!Array.isArray(this._customSlotsByCharacter[cid])) {
@@ -734,23 +811,31 @@ export class InventorySystem {
     });
     this._customSlotsByCharacter[cid].push(slot);
     await this.persist();
-    this._emit('inventory:slot-added', { characterId: cid, slot: deepClone(slot) });
+    const payload = {
+      characterId: cid,
+      slot: deepClone(slot),
+      cost: paidCost,
+      used: this._customSlotsByCharacter[cid].length,
+      max: capInfo.max,
+    };
+    this._emit('inventory:slot-added', payload);
+    this._emit('inventory:slot-expanded', payload);
     return deepClone(slot);
   }
 
   /**
    * Backward-compatible wrapper: maps any label/type string to its matching Known Equipment Type.
    */
-  async addCharacterCustomSlot(characterId, labelOrTypeId) {
+  async addCharacterCustomSlot(characterId, labelOrTypeId, opts = {}) {
     const typeId = normalizeEquipmentTypeId(labelOrTypeId, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
-    return this.addExpandedSlot(characterId, typeId);
+    return this.addExpandedSlot(characterId, typeId, { skipCost: true, ...opts });
   }
 
   /**
    * Change an existing expanded slot to another Known Equipment Type.
-   * Automatically returns any incompatible equipped item back to warehouse cleanly.
+   * Consumes steel/bauxite/silver when `resources` is provided, and returns any incompatible item to warehouse.
    */
-  async changeExpandedSlotType(characterId, slotId, nextEquipmentTypeId) {
+  async changeExpandedSlotType(characterId, slotId, nextEquipmentTypeId, { resources = null, skipCost = false } = {}) {
     const cid = String(characterId || '').trim();
     const typeId = normalizeEquipmentTypeId(nextEquipmentTypeId, null);
     if (!typeId || !KNOWN_EQUIPMENT_TYPE_MAP[typeId]) {
@@ -760,6 +845,19 @@ export class InventorySystem {
     const idx = list.findIndex((s) => s.id === slotId);
     if (idx < 0 || !list[idx]?.custom) {
       throw new Error('仅支持变更已扩建的装备槽位类型');
+    }
+
+    let paidCost = null;
+    if (resources && !skipCost) {
+      const capInfo = this.getCharacterSlotCapInfo(cid);
+      const cost = capInfo.changeCost;
+      const spend = await resources.spendBatch(cost, {
+        reason: `变更「${this._entities?.get(cid)?.name || cid}」槽位类型`,
+      });
+      if (!spend.ok) {
+        throw new Error(spend.reason || '变更槽位类型所需材料不足');
+      }
+      paidCost = cost;
     }
 
     const updatedSlot = this._normalizeExpandedSlot({
@@ -787,13 +885,14 @@ export class InventorySystem {
       equipmentType: updatedSlot.equipmentType,
       label: updatedSlot.label,
       unequippedItem,
+      cost: paidCost,
     });
-    return { slot: deepClone(updatedSlot), unequippedItem };
+    return { slot: deepClone(updatedSlot), unequippedItem, cost: paidCost };
   }
 
-  async renameCharacterCustomSlot(characterId, slotId, newLabelOrTypeId) {
+  async renameCharacterCustomSlot(characterId, slotId, newLabelOrTypeId, opts = {}) {
     const typeId = normalizeEquipmentTypeId(newLabelOrTypeId, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
-    const res = await this.changeExpandedSlotType(characterId, slotId, typeId);
+    const res = await this.changeExpandedSlotType(characterId, slotId, typeId, { skipCost: true, ...opts });
     return res.slot;
   }
 
@@ -951,14 +1050,55 @@ export class InventorySystem {
     dropMultiplier = 1.0,
   } = {}) {
     const targets = this.getIdleItemsByRarity({ rarities, includeEnhanced });
-    const totals = { steel: 0, bauxite: 0, silver: 0 };
+    const totals = { steel: 0, bauxite: 0, silver: 0, salvageParts: 0 };
     for (const t of targets) {
       const y = getDisassembleYieldByRarity(t, { dropMultiplier });
       totals.steel += y.steel;
       totals.bauxite += y.bauxite;
       totals.silver += y.silver;
+      totals.salvageParts += this.getSalvagePartsYield(t);
     }
     return { count: targets.length, items: targets, yield: totals };
+  }
+
+  async disassembleSingleItem(itemId, { resources = null } = {}) {
+    const id = String(itemId || '');
+    const existing = this._items.get(id);
+    if (!existing) throw new Error('目标物品不存在');
+    const mult = resources && typeof resources.getDropMultiplier === 'function' ? resources.getDropMultiplier() : 1.0;
+    const baseYield =
+      existing.category === ITEM_CATEGORIES.CONSUMABLE
+        ? { steel: 0, bauxite: 0, silver: 25 }
+        : getDisassembleYieldByRarity(existing, { dropMultiplier: mult });
+    const partsYield = existing.category === ITEM_CATEGORIES.CONSUMABLE ? 0 : this.getSalvagePartsYield(existing);
+    const snapshot = deepClone(existing);
+
+    for (const [charId, slotMap] of Object.entries(this._equipped)) {
+      let changed = false;
+      for (const [slotId, eqId] of Object.entries(slotMap)) {
+        if (eqId === id) {
+          delete slotMap[slotId];
+          changed = true;
+        }
+      }
+      if (changed) this.syncCharacterModifiers(charId);
+    }
+
+    this._items.delete(id);
+    if (partsYield > 0) {
+      this._salvageParts = this.getSalvageParts() + partsYield;
+    }
+    await this.persist();
+
+    if (resources) {
+      if (baseYield.steel > 0) await resources.add('steel', baseYield.steel, { reason: `拆解装备「${snapshot.name}」` });
+      if (baseYield.bauxite > 0) await resources.add('bauxite', baseYield.bauxite, { reason: `拆解装备「${snapshot.name}」` });
+      if (baseYield.silver > 0) await resources.add('silver', baseYield.silver, { reason: `拆解装备「${snapshot.name}」` });
+    }
+    const yieldObj = { ...baseYield, salvageParts: partsYield };
+    this._emit('inventory:item-deleted', { itemId: id, yield: yieldObj });
+    this._emit('inventory:salvage-changed', { salvageParts: this._salvageParts, delta: partsYield });
+    return { item: snapshot, yield: yieldObj, salvagePartsTotal: this._salvageParts };
   }
 
   async disassembleItemsByRarity({
@@ -975,10 +1115,13 @@ export class InventorySystem {
         : 1.0;
     const preview = this.previewBatchDisassemble({ rarities, includeEnhanced, dropMultiplier: mult });
     if (preview.count === 0) {
-      return { removedCount: 0, removedNames: [], yield: { steel: 0, bauxite: 0, silver: 0 } };
+      return { removedCount: 0, removedNames: [], yield: { steel: 0, bauxite: 0, silver: 0, salvageParts: 0 } };
     }
     for (const t of preview.items) {
       this._items.delete(t.id);
+    }
+    if (preview.yield.salvageParts > 0) {
+      this._salvageParts = this.getSalvageParts() + preview.yield.salvageParts;
     }
     await this.persist();
     if (resources) {
@@ -990,23 +1133,29 @@ export class InventorySystem {
       removedCount: preview.count,
       removedNames: preview.items.map((t) => t.name),
       yield: preview.yield,
+      salvagePartsTotal: this._salvageParts,
     };
     this._emit('inventory:cleaned', payload);
+    this._emit('inventory:salvage-changed', { salvageParts: this._salvageParts, delta: preview.yield.salvageParts });
     return payload;
   }
 
   async cleanupIdleUnenhancedItems({ resources = null } = {}) {
     const targets = this.getIdleUnenhancedItems();
-    if (targets.length === 0) return { removedCount: 0, removedNames: [], yield: { steel: 0, bauxite: 0, silver: 0 } };
+    if (targets.length === 0) {
+      return { removedCount: 0, removedNames: [], yield: { steel: 0, bauxite: 0, silver: 0, salvageParts: 0 } };
+    }
     const mult = resources && typeof resources.getDropMultiplier === 'function' ? resources.getDropMultiplier() : 1.0;
-    const totals = { steel: 0, bauxite: 0, silver: 0 };
+    const totals = { steel: 0, bauxite: 0, silver: 0, salvageParts: 0 };
     for (const t of targets) {
       const y = getDisassembleYieldByRarity(t, { dropMultiplier: mult });
       totals.steel += y.steel;
       totals.bauxite += y.bauxite;
       totals.silver += y.silver;
+      totals.salvageParts += this.getSalvagePartsYield(t);
       this._items.delete(t.id);
     }
+    this._salvageParts = this.getSalvageParts() + totals.salvageParts;
     await this.persist();
     if (resources) {
       if (totals.steel > 0) await resources.add('steel', totals.steel, { reason: `批量拆解 ${targets.length} 件闲置装备` });
@@ -1027,17 +1176,25 @@ export class InventorySystem {
 
   /**
    * Roll & create a high-rarity equipment or outfit drop crate from sortie salvage / combat victories.
+   * Commander permanent Luck directly boosts Legendary (橙装) drop odds.
    */
   async rollLootDropItem({
     tier = 'encounter', // 'resource' | 'encounter' | 'elite' | 'boss'
     difficulty = 'low',
     dropMultiplier = 1.0,
+    luckBonus = null,
     rng = Math.random,
   } = {}) {
     const mult = Math.max(0.5, Number(dropMultiplier) || 1.0);
     const diffBoost = difficulty === 'high' ? 0.22 : difficulty === 'medium' ? 0.1 : 0;
     const multBoost = Math.min(0.28, Math.max(0, mult - 1) * 0.12);
-    const roll = rng() + diffBoost + multBoost;
+    const cmdLuckBoost =
+      luckBonus !== null && luckBonus !== undefined
+        ? Number(luckBonus) || 0
+        : this._commander && typeof this._commander.getLuckEffects === 'function'
+        ? Math.max(0, Math.min(0.32, (this._commander.getLuckEffects().rareDropBonus || 0) * 0.85))
+        : 0;
+    const roll = rng() + diffBoost + multBoost + cmdLuckBoost;
 
     let rarity = ITEM_RARITIES.UNCOMMON;
     if (tier === 'boss') {
@@ -1361,6 +1518,88 @@ export class InventorySystem {
     return payload;
   }
 
+  /**
+   * Promote a +10 max-enhanced equipment/outfit item to the next rarity tier
+   * (common -> uncommon -> rare -> epic -> legendary), elevating its base bonuses cleanly
+   * and resetting enhance level to +0 to unlock another +1..+10 growth ceiling.
+   */
+  async promoteItemRarity(itemId, { resources = null, discount = 0 } = {}) {
+    const existing = this._items.get(String(itemId));
+    if (!existing) throw new Error(`物品 "${itemId}" 不存在`);
+    if (existing.category === ITEM_CATEGORIES.CONSUMABLE) {
+      throw new Error('消耗品不支持品级升阶');
+    }
+    const curLevel = Math.max(0, Math.floor(Number(existing.level) || 0));
+    if (curLevel < MAX_ENHANCE_LEVEL) {
+      throw new Error(`需先强化至满级 +${MAX_ENHANCE_LEVEL} 方可升阶（当前 +${curLevel}）`);
+    }
+    const curRarity = inferItemRarity(existing);
+    const plan = getEquipmentPromoteCost(existing, { discount });
+    if (!plan) {
+      throw new Error(`「${existing.name}」已是最高传说（橙）品级，无法继续升阶`);
+    }
+
+    const curParts = this.getSalvageParts();
+    if (curParts < plan.salvageParts) {
+      throw new Error(`装备拆解余料不足：需要 ${plan.salvageParts}，当前拥有 ${curParts}（拆解多余装备可获取）`);
+    }
+
+    if (resources) {
+      const spend = await resources.spendBatch(plan.resources, {
+        reason: `装备品级升阶「${existing.name}」`,
+      });
+      if (!spend.ok) {
+        throw new Error(spend.reason || '升阶所需钢材/铝材/银条不足');
+      }
+    }
+
+    this._salvageParts = Math.max(0, curParts - plan.salvageParts);
+
+    // Elevate base bonuses to slightly exceed previous +10 effective values so promotion is strictly an upgrade
+    const curEffective = Array.isArray(existing.bonuses) && existing.bonuses.length > 0
+      ? existing.bonuses
+      : existing.baseBonuses || [];
+    const promotedBase = curEffective.map((b) => {
+      if (b.stat === 'checkBonus') {
+        return { ...b, value: Math.max(1, Math.round(Number(b.value) || 0) + (plan.toRarity === ITEM_RARITIES.LEGENDARY ? 1 : 0)) };
+      }
+      if (b.layer === 'percentAdd' || b.layer === 'percentMult') {
+        return { ...b, value: Number(((Number(b.value) || 0) * 1.12).toFixed(4)) };
+      }
+      const curVal = Number(b.value) || 0;
+      const boosted = curVal >= 0 ? Math.max(curVal + 2, Math.round(curVal * 1.08)) : curVal;
+      return { ...b, value: boosted };
+    });
+
+    existing.rarity = plan.toRarity;
+    existing.level = 0;
+    existing.baseBonuses = deepClone(promotedBase);
+    existing.bonuses = deepClone(promotedBase);
+    existing.updatedAt = Date.now();
+
+    const affectedCharacters = [];
+    for (const [charId, slotMap] of Object.entries(this._equipped)) {
+      if (Object.values(slotMap).includes(existing.id)) {
+        this.syncCharacterModifiers(charId);
+        affectedCharacters.push(charId);
+      }
+    }
+
+    await this.persist();
+    const payload = {
+      item: deepClone(existing),
+      fromRarity: curRarity,
+      toRarity: plan.toRarity,
+      salvageSpent: plan.salvageParts,
+      salvagePartsRemaining: this._salvageParts,
+      affectedCharacters,
+      timestamp: Date.now(),
+    };
+    this._emit('inventory:promoted', payload);
+    this._emit('inventory:salvage-changed', { salvageParts: this._salvageParts, delta: -plan.salvageParts });
+    return payload;
+  }
+
   getWearersOfItem(itemId) {
     const wearers = [];
     for (const [charId, slotMap] of Object.entries(this._equipped)) {
@@ -1536,6 +1775,55 @@ export class InventorySystem {
       dynamicStats,
       checkBonus: eqInfo.checkBonus,
       coreAmplifier: eqInfo.coreAmplifier,
+    };
+  }
+
+  /**
+   * Compute live 8-stat delta (`delta > 0` green up / `delta < 0` red down) if `candidateItemId`
+   * were equipped into `slotId` on `characterId` replacing whatever currently occupies `slotId`.
+   */
+  previewEquipStatDiff(characterId, slotId, candidateItemId) {
+    const cid = String(characterId || '');
+    const curEquipped = this.getCharacterEquipment(cid);
+    const currentItem = curEquipped[slotId] || null;
+    const candidateItem = candidateItemId ? this.getItem(candidateItemId) : null;
+
+    const sumItemStats = (item) => {
+      const map = {};
+      if (!item) return map;
+      for (const b of item.bonuses || []) {
+        if (!b?.stat || b.stat === 'checkBonus') continue;
+        const val = this._resolveSlotBonusValue(slotId, b);
+        if (b.layer === 'percentAdd' || b.layer === 'percentMult') continue;
+        map[b.stat] = (map[b.stat] || 0) + Math.round(Number(val) || 0);
+      }
+      return map;
+    };
+
+    const curMap = sumItemStats(currentItem);
+    const nextMap = sumItemStats(candidateItem);
+    const diffs = [];
+    for (const def of NAVAL_EIGHT_STAT_DEFS) {
+      const before = curMap[def.key] || 0;
+      const after = nextMap[def.key] || 0;
+      const delta = after - before;
+      if (delta !== 0) {
+        diffs.push({
+          key: def.key,
+          label: def.label,
+          shortLabel: def.shortLabel,
+          before,
+          after,
+          delta,
+        });
+      }
+    }
+    return {
+      slotId,
+      currentItemId: currentItem?.id || null,
+      candidateItemId: candidateItem?.id || null,
+      diffs,
+      hasChanges: diffs.length > 0,
     };
   }
 
@@ -1911,16 +2199,18 @@ export class InventorySystem {
 
   serialize() {
     return {
-      version: 4,
+      version: 5,
       customSlotsByCharacter: deepClone(this._customSlotsByCharacter),
       items: Array.from(this._items.values()).map((it) => deepClone(it)),
       equipped: deepClone(this._equipped),
+      salvageParts: this.getSalvageParts(),
     };
   }
 
   deserialize(snapshot, { persist = true } = {}) {
     if (!snapshot || typeof snapshot !== 'object') return;
     this._items.clear();
+    this._salvageParts = Math.max(0, Math.floor(Number(snapshot.salvageParts) || 0));
     if (Array.isArray(snapshot.items)) {
       for (const it of snapshot.items) {
         if (it && it.id) {

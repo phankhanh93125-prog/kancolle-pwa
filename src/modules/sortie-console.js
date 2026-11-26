@@ -1057,12 +1057,20 @@ async function finalizeBattleOutcome(session) {
     const affMult = commander ? commander.getAffinityGainMultiplier() : 1.0;
     const rewardFactor = session.status === 'victory' ? 1.0 : session.status === 'day_ended' ? 0.55 : 0;
 
+    const { routeGenerator } = sortieState.context;
     const lootBonus = Math.max(0.8, Number(session.lootBonus) || 1.0);
+    const patrolYieldMult =
+      routeGenerator && typeof routeGenerator.getPatrolYieldMultiplier === 'function'
+        ? routeGenerator.getPatrolYieldMultiplier(run.difficulty || node.difficulty || 'low')
+        : 1.0;
     const dropMult = typeof resources.getDropMultiplier === 'function' ? resources.getDropMultiplier() : 1.0;
     const droppedItems = [];
+    let seaControlNote = '';
     if (rewardFactor > 0) {
       for (const [rk, rawVal] of Object.entries(node.loot || {})) {
-        const val = Math.round((Number(rawVal) || 0) * rewardFactor * lootBonus * (1 + Math.max(-0.2, luckDropBonus)));
+        const val = Math.round(
+          (Number(rawVal) || 0) * rewardFactor * lootBonus * patrolYieldMult * (1 + Math.max(-0.2, luckDropBonus))
+        );
         if (val <= 0) continue;
         await resources.add(rk, val, { reason: `节点 ${node.code}·${node.name} 战利品` });
         run.loot[rk] = (run.loot[rk] || 0) + val;
@@ -1092,6 +1100,25 @@ async function finalizeBattleOutcome(session) {
             dropMultiplier: dropMult,
           });
           if (item2) droppedItems.push(item2);
+        }
+      }
+
+      // Advance Sea Control (0% -> 100%) on BOSS flagship victory!
+      if (
+        session.status === 'victory' &&
+        node.type === NODE_TYPES.BOSS &&
+        routeGenerator &&
+        typeof routeGenerator.recordBossVictory === 'function'
+      ) {
+        const scRes = await routeGenerator.recordBossVictory(run.difficulty || node.difficulty || 'low', {
+          isNight: Boolean(session.victoryInNight || session.phase === 'night'),
+        });
+        if (scRes) {
+          seaControlNote = scRes.newlyUnlockedZone
+            ? ` · ★ 「${scRes.zoneName}」制海权达成 100%！已解锁高危海域「${scRes.newlyUnlockedZone.name}」并永久提升巡逻/远征收益！`
+            : scRes.newlyControlled
+            ? ` · ★ 「${scRes.zoneName}」制海权压制达成 100%！永久巡逻/远征收益提升生效！`
+            : ` · 「${scRes.zoneName}」制海权推进至 ${scRes.after}%`;
         }
       }
 
@@ -1125,7 +1152,7 @@ async function finalizeBattleOutcome(session) {
       title: `[${char?.name || ''}等] 节点 ${node.code}·${node.name} ${
         session.status === 'victory' ? '交战胜利' : session.status === 'day_ended' ? '昼战收兵' : '迂回通过'
       }`,
-      detail: rewardFactor > 0 ? `战利品：${lootText}${dropCrateText}` : '全队无伤绕过敌方封锁',
+      detail: rewardFactor > 0 ? `战利品：${lootText}${dropCrateText}${seaControlNote}` : '全队无伤绕过敌方封锁',
     });
     bus.emit('sortie:node-resolved', {
       routeId: run.routeId,
@@ -1146,13 +1173,13 @@ async function finalizeBattleOutcome(session) {
       tone: session.status === 'victory' ? 'ok' : 'warn',
       summary:
         rewardFactor > 0
-          ? `获得战利品：${lootText}${dropCrateText}。${run.completed ? '已击破本海域全部目标，可凯旋返航！' : '可返回分岔海图继续推进或直达船坞整备。'}`
+          ? `获得战利品：${lootText}${dropCrateText}${seaControlNote}。${run.completed ? '已击破本海域全部目标，可凯旋返航！' : '可返回分岔海图继续推进或直达船坞整备。'}`
           : '全队保持完整耐久绕过封锁，可继续推进海图。',
       continueLabel: run.completed ? '返回海图并凯旋返航' : '继续分岔雷达海图航行',
     };
 
     uiKit.showToast(
-      session.status === 'victory' ? `战斗胜利！${lootText}${dropCrateText}` : `节点 ${node.code} 战斗已结算`,
+      session.status === 'victory' ? `战斗胜利！${lootText}${dropCrateText}${seaControlNote}` : `节点 ${node.code} 战斗已结算`,
       'ok'
     );
   } else if (session.status === 'defeated') {
@@ -2499,6 +2526,64 @@ async function renderSortieConsole() {
     }
     root.appendChild(reportsWrap);
   } else {
+    // Sea Control Progression Panel (0% ~ 100% per Sea Zone -> unlocks next high-risk zone & permanently boosts yields)
+    const seaOverview =
+      typeof routeGenerator.getSeaControlOverview === 'function'
+        ? routeGenerator.getSeaControlOverview()
+        : { zones: [], controlledCount: 0, totalZones: 3, totalExpeditionBonusPct: 0, totalPatrolBonusPct: 0 };
+
+    if (!routeGenerator.isSeaZoneUnlocked(sortieState.selectedDifficulty)) {
+      sortieState.selectedDifficulty = 'low';
+    }
+
+    const seaCard = document.createElement('section');
+    seaCard.className = 'surface-card lab-stack-sm';
+    seaCard.id = 'sortie-sea-control-card';
+    seaCard.innerHTML = `
+      <div class="section-header-row" style="margin-bottom:0;">
+        <h2 class="section-title">海域制海权压制进度</h2>
+        <span class="status-badge ${seaOverview.controlledCount > 0 ? 'badge-ok' : 'badge-muted'}">
+          制霸 ${seaOverview.controlledCount}/${seaOverview.totalZones} · 远征收益 +${seaOverview.totalExpeditionBonusPct}%
+        </span>
+      </div>
+      <p class="muted-text" style="font-size:11.5px; margin:0;">
+        每次击破海域终点旗舰推进制海权（+35%），达到 <strong>100%</strong> 解锁下一片高危海域并永久提升该海域巡逻与远征收益。
+      </p>
+      <div class="sea-control-list">
+        ${seaOverview.zones
+          .map(
+            (z) => `
+          <div class="sea-zone-row ${z.controlled ? 'is-controlled' : z.unlocked ? 'is-unlocked' : 'is-locked'}" data-sea-zone="${z.id}">
+            <div class="lab-slot-head">
+              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                <span class="status-badge ${z.controlled ? 'badge-ok' : z.unlocked ? 'badge-warn' : 'badge-muted'}">${escapeHtml(z.code)}</span>
+                <strong>${escapeHtml(z.name)}</strong>
+                <span class="muted-text" style="font-size:11px;">(${escapeHtml(z.difficultyLabel)})</span>
+              </div>
+              <span class="status-badge ${z.controlled ? 'badge-ok' : z.unlocked ? 'badge-muted' : 'badge-danger'}">
+                ${z.controlled ? '100% 制海达成' : z.unlocked ? `压制 ${z.progress}%` : '未解锁'}
+              </span>
+            </div>
+            <div class="uikit-progress-track" style="height:7px;">
+              <div class="uikit-progress-fill" data-tone="${z.controlled ? 'ok' : 'accent'}" style="width:${z.progress}%"></div>
+            </div>
+            <div class="cc-stat-sub">
+              ${
+                z.controlled
+                  ? `已永久激活：本海域巡逻收益 +${z.patrolYieldBonusPct}% · 全站远征收益 +${z.expeditionYieldBonusPct}%（击破旗舰 ${z.clearedCount} 次）`
+                  : z.unlocked
+                  ? `击破终点旗舰推进制海权（达成 100% 永久激活巡逻/远征收益 +${z.patrolYieldBonusPct}%）`
+                  : escapeHtml(z.unlockHint)
+              }
+            </div>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+    `;
+    root.appendChild(seaCard);
+
     // Procedural Route Generator & Enemy Strength Scaling Card
     const curMult = clampEnemyStrengthMultiplier(sortieState.enemyStrengthMultiplier);
     const curLootBonusPct = Math.round(Math.max(0, curMult - 1) * 35);
@@ -2512,13 +2597,15 @@ async function renderSortieConsole() {
       </div>
       <div class="cc-btn-3col" id="sortie-diff-chips">
         ${Object.values(SEA_DIFFICULTIES)
-          .map(
-            (d) => `
-          <button type="button" class="${sortieState.selectedDifficulty === d.id ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" data-sortie-diff="${d.id}">
-            ${escapeHtml(d.label)}
+          .map((d) => {
+            const zInfo = seaOverview.zones.find((z) => z.id === d.id);
+            const unlocked = zInfo ? zInfo.unlocked : true;
+            return `
+          <button type="button" class="${sortieState.selectedDifficulty === d.id ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" data-sortie-diff="${d.id}" ${unlocked ? '' : 'disabled'} title="${escapeHtml(zInfo?.unlockHint || '')}">
+            ${unlocked ? escapeHtml(d.label) : `🔒 ${escapeHtml(d.label)}`}
           </button>
-        `
-          )
+        `;
+          })
           .join('')}
       </div>
 
@@ -2552,7 +2639,12 @@ async function renderSortieConsole() {
 
     genCard.querySelectorAll('[data-sortie-diff]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        sortieState.selectedDifficulty = btn.getAttribute('data-sortie-diff');
+        const nextDiff = btn.getAttribute('data-sortie-diff');
+        if (!routeGenerator.isSeaZoneUnlocked(nextDiff)) {
+          uiKit.showToast('需先将前置海域制海权推进至 100% 方可解锁该高危海域！', 'warn');
+          return;
+        }
+        sortieState.selectedDifficulty = nextDiff;
         renderSortieConsole();
       });
     });

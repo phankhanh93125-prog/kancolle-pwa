@@ -326,10 +326,11 @@ export function getActiveCharacterId(storage = null) {
 }
 
 /**
- * Directly jump from any avatar (Dormitory, Port Hub flagship stage, Formation sheet, etc.)
- * straight to a shipgirl's refined Character Card with zero intermediate modals.
+ * Open a shipgirl's details in a sleek Centered Frosted-Glass Tactical Modal over the Central Main Stage,
+ * with live 8-stat breakdown, ship-class slot cap (`used/max`), and slide-up Bottom Sheets for equip/slot expansion.
+ * Pass `{ fullScreen: true }` to mount the full `character-console` module directly.
  */
-export function openCharacterCardById(characterId, context = {}) {
+export function openCharacterCardById(characterId, context = {}, { fullScreen = false } = {}) {
   const cid = String(characterId || '');
   if (!cid) return;
   consoleState.activeCharacterId = cid;
@@ -339,16 +340,248 @@ export function openCharacterCardById(characterId, context = {}) {
     context.rootStorage.namespace(CHAR_STORAGE_NS).set('activeCharacterId', cid);
   }
 
-  // Close any open UIKit bottom sheets or shell drawer cleanly
+  if (context.bus) {
+    const entity = context.entities?.get(cid);
+    context.bus.emit('character:selected', { characterId: cid, name: entity?.name || '' });
+  }
+
+  const activeId = context.modules?.getActiveId ? context.modules.getActiveId() : null;
+  const shouldOpenFloating =
+    !fullScreen &&
+    activeId !== 'character-console' &&
+    context.uiKit &&
+    typeof context.uiKit.openTacticalModal === 'function' &&
+    context.entities &&
+    context.inventory &&
+    context.statRules;
+
+  if (shouldOpenFloating) {
+    const {
+      entities,
+      inventory,
+      resources,
+      statRules,
+      assets,
+      buildings,
+      interaction,
+      personalityPool,
+      rootStorage,
+      modules,
+      uiKit,
+    } = context;
+    const targetChar = entities.get(cid);
+    if (!targetChar) return;
+
+    uiKit.openTacticalModal({
+      title: `舰娘战术档案 · ${targetChar.name}`,
+      subtitle: `${targetChar.meta?.shipType || '驱逐舰'} · 点槽位滑出底部抽屉换装或扩建`,
+      wide: true,
+      renderContent: (body, closeModal) => {
+        const renderDetailBody = async () => {
+          const ch = entities.get(cid);
+          if (!ch) {
+            closeModal();
+            return;
+          }
+          const prog = statRules.ensureShipProgression(ch);
+          const breakdown = inventory.getCharacterStatBreakdown(ch.id);
+          const seaworthy = inventory.checkSeaworthiness(ch.id);
+          const slots = inventory.getCharacterSlots(ch.id);
+          const equippedMap = inventory.getCharacterEquipment(ch.id);
+          const capInfo = inventory.getCharacterSlotCapInfo(ch.id);
+          const shipClass = resolveShipClass(ch.meta?.shipType);
+          const combo = personalityPool ? personalityPool.ensurePersonalityOnEntity(ch) : ch.meta?.personalityCombo || null;
+          const isSec = interaction?.getSecretaryId?.() === ch.id;
+          const inDorm = buildings?.isInDormitory?.(ch.id) || false;
+          const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(ch.id, 'maxHp', { round: 'round' }).final));
+          const curHp = Math.min(effMaxHp, Math.round(Number(ch.stats.hp ?? effMaxHp)));
+          let avatarUrl = '';
+          if (assets) {
+            const av = await assets.getAssetUrl(ch.meta?.avatarAssetId || null, {
+              fallbackSeed: ch.id,
+              fallbackLabel: ch.name.slice(0, 6),
+            });
+            avatarUrl = av.url;
+          }
+
+          body.innerHTML = `
+            <div class="module-stack" id="tactical-ship-detail-body">
+              <div class="cc-hero-row">
+                ${avatarUrl ? `<img class="cc-avatar" src="${avatarUrl}" alt="${escapeHtml(ch.name)}">` : ''}
+                <div class="cc-hero-info">
+                  <div class="cc-hero-name-row">
+                    <span class="ship-class-ico">${getShipClassSvg(shipClass, { size: 20 })}</span>
+                    <h3 class="cc-hero-name">${escapeHtml(ch.name)}</h3>
+                    <span class="status-badge ship-lv-badge">Lv.${prog.level}</span>
+                    <span class="status-badge ${seaworthy.seaworthy ? 'badge-ok' : 'badge-danger'}">${seaworthy.seaworthy ? '适航' : '未适航'}</span>
+                  </div>
+                  <div class="cc-badge-row">
+                    <span class="status-badge badge-muted">${escapeHtml(ch.meta?.shipType || shipClass)}</span>
+                    ${combo ? `<span class="status-badge badge-warn">${escapeHtml(combo.comboLabel)}</span>` : ''}
+                    <span class="status-badge badge-muted">HP ${curHp}/${effMaxHp} · 士气 ${Math.round(Number(ch.stats.morale ?? 70))} · 好感 ${Math.round(Number(ch.stats.affinity ?? 0))}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="tm-stat-8-grid">
+                ${breakdown.standardStats
+                  .map(
+                    (st) => `
+                  <div class="tm-stat-cell">
+                    <span class="tm-stat-k">${escapeHtml(st.shortLabel)}</span>
+                    <strong class="tm-stat-v">${st.total}${st.bonus > 0 ? `<small class="stat-diff-inline-up">+${st.bonus}</small>` : ''}</strong>
+                  </div>
+                `
+                  )
+                  .join('')}
+              </div>
+
+              <div class="lab-btn-grid">
+                <button type="button" id="btn-tm-auto-equip" class="btn-primary uikit-touch-target">一键最优配装</button>
+                <button type="button" id="btn-tm-expand-slot" class="btn-secondary uikit-touch-target" ${capInfo.canExpand ? '' : 'disabled'}>
+                  ${capInfo.canExpand ? `+ 扩建槽位 (${capInfo.used}/${capInfo.max})` : `槽位已满 (${capInfo.used}/${capInfo.max})`}
+                </button>
+                <button type="button" id="btn-tm-toggle-dorm" class="btn-secondary uikit-touch-target">
+                  ${inDorm ? '移出宿舍' : '入住宿舍'}
+                </button>
+                <button type="button" id="btn-tm-set-sec" class="btn-secondary uikit-touch-target" ${isSec ? 'disabled' : ''}>
+                  ${isSec ? '★ 当前秘书舰' : '设为秘书舰'}
+                </button>
+              </div>
+
+              <div class="lab-stack-sm">
+                <div class="section-header-row" style="margin-bottom:0;">
+                  <strong style="font-size:13px;">装备与扩展槽位（${capInfo.shipClass} 扩建上限 ${capInfo.used}/${capInfo.max}）</strong>
+                  <span class="muted-text" style="font-size:11px;">点选槽位唤出底部抽屉</span>
+                </div>
+                ${slots
+                  .map((s) => {
+                    const item = equippedMap[s.id];
+                    const rId = item ? inferItemRarity(item) : null;
+                    const rDef = rId ? ITEM_RARITY_MAP[rId] : null;
+                    return `
+                  <div class="cc-slot-card ${rId ? `is-rarity-${rId}` : ''}" style="padding:9px 10px;">
+                    <div class="lab-slot-head">
+                      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                        <span class="status-badge ${s.required ? (item ? 'badge-ok' : 'badge-danger') : s.custom ? 'badge-ok' : 'badge-muted'}">
+                          ${escapeHtml(s.label)}
+                        </span>
+                        ${rDef ? `<span class="rarity-pill is-rarity-${rId}">${escapeHtml(rDef.shortLabel)}</span>` : ''}
+                        <strong style="font-size:12.5px;">${item ? escapeHtml(formatItemTitle(item)) : '空槽'}</strong>
+                      </div>
+                      <div style="display:flex; gap:5px;">
+                        <button type="button" class="btn-secondary" style="min-height:34px; padding:0 10px; font-size:12px;" data-tm-pick-slot="${escapeHtml(s.id)}">${item ? '更换' : '装入'}</button>
+                        ${s.custom ? `<button type="button" class="btn-secondary" style="min-height:34px; padding:0 8px; font-size:11.5px;" data-tm-change-slot="${escapeHtml(s.id)}">改型</button>` : ''}
+                        ${item ? `<button type="button" class="btn-danger" style="min-height:34px; padding:0 8px; font-size:11.5px;" data-tm-unequip-slot="${escapeHtml(s.id)}">卸下</button>` : ''}
+                      </div>
+                    </div>
+                  </div>
+                `;
+                  })
+                  .join('')}
+              </div>
+
+              <button type="button" id="btn-tm-open-full-cc" class="btn-secondary uikit-touch-target">
+                进入全屏精修角色台（编辑白值/性格/检定/日志）
+              </button>
+            </div>
+          `;
+
+          body.querySelector('#btn-tm-auto-equip')?.addEventListener('click', async () => {
+            const res = await inventory.autoEquipCharacter(ch.id, { includeOutfit: true });
+            if (rootStorage) await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: ch.id });
+            uiKit.showToast(
+              res.equippedCount > 0 ? `已为「${ch.name}」自动配装 ${res.equippedCount} 件最优装备` : '当前槽位已是最优配装',
+              res.equippedCount > 0 ? 'ok' : 'info'
+            );
+            await renderDetailBody();
+          });
+
+          body.querySelector('#btn-tm-expand-slot')?.addEventListener('click', () => {
+            openAddCustomSlotSheet(ch, {
+              contextOverride: context,
+              onUpdated: () => renderDetailBody(),
+            });
+          });
+
+          body.querySelector('#btn-tm-toggle-dorm')?.addEventListener('click', async () => {
+            if (!buildings) return;
+            try {
+              if (buildings.isInDormitory(ch.id)) {
+                await buildings.removeDormResident(ch.id);
+                uiKit.showToast(`「${ch.name}」已移出宿舍`, 'info');
+              } else {
+                await buildings.assignDormResident(ch.id);
+                uiKit.showToast(`「${ch.name}」已入住港区宿舍`, 'ok');
+              }
+              await renderDetailBody();
+            } catch (err) {
+              uiKit.showToast(err instanceof Error ? err.message : '宿舍操作失败', 'warn');
+            }
+          });
+
+          body.querySelector('#btn-tm-set-sec')?.addEventListener('click', async () => {
+            if (!interaction) return;
+            await interaction.setSecretary(ch.id);
+            uiKit.showToast(`已指派「${ch.name}」担任秘书舰！`, 'ok');
+            await renderDetailBody();
+          });
+
+          body.querySelectorAll('[data-tm-pick-slot]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const sid = btn.getAttribute('data-tm-pick-slot');
+              const slotObj = inventory.getCharacterSlot(ch.id, sid);
+              if (slotObj) {
+                openSlotEquipPickerSheet(ch, slotObj, {
+                  contextOverride: context,
+                  onUpdated: () => renderDetailBody(),
+                });
+              }
+            });
+          });
+
+          body.querySelectorAll('[data-tm-change-slot]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const sid = btn.getAttribute('data-tm-change-slot');
+              const slotObj = inventory.getCharacterSlot(ch.id, sid);
+              if (slotObj) {
+                openRenameCustomSlotSheet(ch, slotObj, {
+                  contextOverride: context,
+                  onUpdated: () => renderDetailBody(),
+                });
+              }
+            });
+          });
+
+          body.querySelectorAll('[data-tm-unequip-slot]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+              const sid = btn.getAttribute('data-tm-unequip-slot');
+              await inventory.unequipSlot(ch.id, sid);
+              if (rootStorage) await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: ch.id });
+              uiKit.showToast('已卸下该槽位装备', 'info');
+              await renderDetailBody();
+            });
+          });
+
+          body.querySelector('#btn-tm-open-full-cc')?.addEventListener('click', () => {
+            closeModal();
+            if (modules && modules.has('character-console')) {
+              modules.mount('character-console');
+            }
+          });
+        };
+
+        renderDetailBody();
+      },
+    });
+    return;
+  }
+
+  // Fallback / Full-screen mode
   if (typeof document !== 'undefined') {
     document.querySelectorAll('.uikit-sheet-backdrop').forEach((el) => el.remove());
     const shellBackdrop = document.getElementById('sheet-backdrop');
     if (shellBackdrop) shellBackdrop.hidden = true;
-  }
-
-  if (context.bus) {
-    const entity = context.entities?.get(cid);
-    context.bus.emit('character:selected', { characterId: cid, name: entity?.name || '' });
   }
 
   if (context.modules && context.modules.has('character-console')) {
@@ -602,71 +835,135 @@ function buildEquipmentTypePickerMarkup(inventory, { currentTypeId = null } = {}
     .join('');
 }
 
-function openAddCustomSlotSheet(char) {
-  if (!char) return;
-  const { inventory, uiKit, logs } = consoleState.context;
+function buildSlotCostCompareHtml(cost = {}, resources = null) {
+  const keys = [
+    { id: 'steel', label: '钢材' },
+    { id: 'bauxite', label: '铝材' },
+    { id: 'silver', label: '银条' },
+  ];
+  return keys
+    .filter((k) => Number(cost[k.id]) > 0)
+    .map((k) => {
+      const need = Math.round(Number(cost[k.id]) || 0);
+      const have = Math.floor(Number(resources?.get(k.id)?.amount ?? 0));
+      const ok = have >= need;
+      return `<span class="status-badge ${ok ? 'badge-ok' : 'badge-danger'}">${k.label} ${need}/${have}</span>`;
+    })
+    .join('');
+}
 
-  uiKit.openModal({
-    title: `为「${char.name}」扩建装备槽位`,
-    subtitle: '从已知装备类型中选择一种进行扩建（留空不影响适航，可随时变更类型或拆除）',
+function openAddCustomSlotSheet(char, { contextOverride = null, onUpdated = null } = {}) {
+  if (!char) return;
+  const ctx = contextOverride || consoleState.context;
+  if (!ctx) return;
+  const { inventory, resources, uiKit, logs } = ctx;
+  const capInfo = inventory.getCharacterSlotCapInfo(char.id);
+  const cost = capInfo.expansionCost;
+  const afford = resources ? resources.canAfford(cost) : { ok: true };
+  const blocked = !capInfo.canExpand || !afford.ok;
+
+  uiKit.openBottomSheet({
+    title: `扩建「${char.name}」装备槽位（${capInfo.used}/${capInfo.max}）`,
+    subtitle: `${capInfo.shipClass} 舰种最多可扩建 ${capInfo.max} 个专属槽位（核心三槽之外）`,
     renderContent: (body, close) => {
       body.innerHTML = `
         <div class="module-stack" id="cc-expand-slot-picker">
-          <p class="muted-text" style="font-size:12px; margin:0;">
-            点击下方任意装备类型即可立即扩建对应专属槽位，穿戴时将精准匹配同类型装备（与「装备/服装编辑器」类型完全同步）。
-          </p>
+          <div class="surface-card lab-stack-sm" style="padding:10px;">
+            <div class="lab-slot-head">
+              <strong style="font-size:12.5px;">本次扩建所需材料（需求 / 当前库存）</strong>
+              <span class="status-badge ${capInfo.canExpand ? 'badge-ok' : 'badge-danger'}">
+                已扩建 ${capInfo.used} / ${capInfo.max}
+              </span>
+            </div>
+            <div class="cc-badge-row">${buildSlotCostCompareHtml(cost, resources)}</div>
+            ${
+              !capInfo.canExpand
+                ? `<div class="seaworthy-alert" style="margin:0;">该舰种（${escapeHtml(capInfo.shipClass)}）自定义槽位已达上限（${capInfo.used}/${capInfo.max}），可先拆除或变更已有槽位类型。</div>`
+                : !afford.ok
+                ? '<div class="seaworthy-alert" style="margin:0;">扩建材料不足，请先通过出征、远征或拆解多余装备补充钢材/铝材/银条。</div>'
+                : '<span class="muted-text" style="font-size:11.5px;">点击下方任意装备类型即可立即消耗材料完成扩建，穿戴时精准匹配同类型装备。</span>'
+            }
+          </div>
           ${buildEquipmentTypePickerMarkup(inventory)}
         </div>
       `;
 
       body.querySelectorAll('[data-pick-eq-type]').forEach((btn) => {
+        if (blocked) {
+          btn.disabled = true;
+          btn.classList.add('is-disabled-card');
+          return;
+        }
         btn.addEventListener('click', async () => {
           const typeId = btn.getAttribute('data-pick-eq-type');
           try {
-            const slot = await inventory.addExpandedSlot(char.id, typeId);
-            logs.add({
-              category: LOG_CATEGORIES.EQUIPMENT,
-              actorId: char.id,
-              actorName: char.name,
-              title: `[${char.name}] 扩建装备槽位「${slot.label}」`,
-              detail: `专属装备类型：${slot.typeLabel || slot.label}（${slot.group || '扩展'}）`,
-            });
-            uiKit.showToast(`已为「${char.name}」扩建「${slot.label}」`, 'ok');
+            const slot = await inventory.addExpandedSlot(char.id, typeId, { resources });
+            if (logs) {
+              logs.add({
+                category: LOG_CATEGORIES.EQUIPMENT,
+                actorId: char.id,
+                actorName: char.name,
+                title: `[${char.name}] 扩建装备槽位「${slot.label}」`,
+                detail: `消耗 钢${cost.steel}/铝${cost.bauxite}/银${cost.silver} · 进度 ${capInfo.used + 1}/${capInfo.max}`,
+              });
+            }
+            uiKit.showToast(`已为「${char.name}」扩建「${slot.label}」（${capInfo.used + 1}/${capInfo.max}）`, 'ok');
             close();
-            await renderConsole();
+            if (typeof onUpdated === 'function') await onUpdated();
+            else await renderConsole();
           } catch (err) {
             uiKit.showToast(err instanceof Error ? err.message : '扩建槽位失败', 'warn');
           }
         });
       });
     },
+    actions: [{ id: 'close', label: '关闭', tone: 'secondary' }],
   });
 }
 
-function openRenameCustomSlotSheet(char, slot) {
-  const { inventory, uiKit } = consoleState.context;
+function openRenameCustomSlotSheet(char, slot, { contextOverride = null, onUpdated = null } = {}) {
+  const ctx = contextOverride || consoleState.context;
+  if (!ctx) return;
+  const { inventory, resources, entities, rootStorage, uiKit } = ctx;
   const currentTypeId = slot.equipmentType || inferEquipmentTypeId(slot, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+  const capInfo = inventory.getCharacterSlotCapInfo(char.id);
+  const cost = capInfo.changeCost;
+  const afford = resources ? resources.canAfford(cost) : { ok: true };
 
-  uiKit.openModal({
-    title: `变更扩建槽位类型 · ${slot.label}`,
-    subtitle: '切换为其他已知装备类型；若原槽位内装备不兼容新类型，将自动安全退回仓库',
+  uiKit.openBottomSheet({
+    title: `变更槽位类型 · ${slot.label}`,
+    subtitle: '切换为其他已知装备类型；原槽位不兼容装备将自动安全退回仓库',
     renderContent: (body, close) => {
       body.innerHTML = `
         <div class="module-stack" id="cc-change-slot-type-picker">
+          <div class="surface-card lab-stack-sm" style="padding:10px;">
+            <strong style="font-size:12.5px;">变更槽位类型所需材料（需求 / 当前库存）</strong>
+            <div class="cc-badge-row">${buildSlotCostCompareHtml(cost, resources)}</div>
+            ${!afford.ok ? '<div class="seaworthy-alert" style="margin:0;">改造材料不足，无法变更槽位类型。</div>' : ''}
+          </div>
           ${buildEquipmentTypePickerMarkup(inventory, { currentTypeId })}
         </div>
       `;
 
       body.querySelectorAll('[data-pick-eq-type]').forEach((btn) => {
+        const nextTypeId = btn.getAttribute('data-pick-eq-type');
+        if (!afford.ok && nextTypeId !== currentTypeId) {
+          btn.disabled = true;
+          btn.classList.add('is-disabled-card');
+          return;
+        }
         btn.addEventListener('click', async () => {
-          const nextTypeId = btn.getAttribute('data-pick-eq-type');
           if (nextTypeId === currentTypeId) {
             close();
             return;
           }
           try {
-            const res = await inventory.changeExpandedSlotType(char.id, slot.id, nextTypeId);
-            await saveRosterNow();
+            const res = await inventory.changeExpandedSlotType(char.id, slot.id, nextTypeId, { resources });
+            if (rootStorage && entities) {
+              await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
+            } else {
+              await saveRosterNow();
+            }
             uiKit.showToast(
               res.unequippedItem
                 ? `槽位已变更为「${res.slot.label}」，原装备「${res.unequippedItem.name}」已退回仓库`
@@ -674,18 +971,22 @@ function openRenameCustomSlotSheet(char, slot) {
               'ok'
             );
             close();
-            await renderConsole();
+            if (typeof onUpdated === 'function') await onUpdated();
+            else await renderConsole();
           } catch (err) {
             uiKit.showToast(err instanceof Error ? err.message : '变更槽位类型失败', 'warn');
           }
         });
       });
     },
+    actions: [{ id: 'close', label: '关闭', tone: 'secondary' }],
   });
 }
 
-function openSlotEquipPickerSheet(char, slot) {
-  const { inventory, uiKit } = consoleState.context;
+function openSlotEquipPickerSheet(char, slot, { contextOverride = null, onUpdated = null } = {}) {
+  const ctx = contextOverride || consoleState.context;
+  if (!ctx) return;
+  const { inventory, entities, rootStorage, uiKit } = ctx;
   const compatibleItems = inventory.getSlotCompatibleItems(char.id, slot.id);
   const slotTypeId = slot.equipmentType || (slot.id === 'outfit' ? 'outfit' : inferEquipmentTypeId(slot, KNOWN_EQUIPMENT_TYPES.MAIN_GUN));
   const slotTypeLabel = slotTypeId === 'outfit' ? '服装' : KNOWN_EQUIPMENT_TYPE_MAP[slotTypeId]?.label || slot.label;
@@ -696,7 +997,7 @@ function openSlotEquipPickerSheet(char, slot) {
   let sheetHandle = null;
 
   if (compatibleItems.length === 0) {
-    wrap.innerHTML = `<p class="muted-text">仓库中暂无【${escapeHtml(slotTypeLabel)}】类型的可用装备，请前往「仓库与工坊 → + 新建装备/服装」制作或通过出征掉落获取。</p>`;
+    wrap.innerHTML = `<p class="muted-text">仓库中暂无【${escapeHtml(slotTypeLabel)}】类型的可用装备，请前往「仓库图鉴 → + 新建装备/服装」制作或通过出征掉落获取。</p>`;
   } else {
     const list = document.createElement('div');
     list.className = 'lab-stack-sm';
@@ -706,6 +1007,26 @@ function openSlotEquipPickerSheet(char, slot) {
       const wearers = inventory.getWearersOfItem(item.id);
       const rarityId = inferItemRarity(item);
       const rDef = ITEM_RARITY_MAP[rarityId] || ITEM_RARITY_MAP.common;
+      const diffRes =
+        !isHere && typeof inventory.previewEquipStatDiff === 'function'
+          ? inventory.previewEquipStatDiff(char.id, slot.id, item.id)
+          : { diffs: [] };
+
+      const diffHtml =
+        diffRes.diffs.length > 0
+          ? `<div class="stat-diff-row">
+              ${diffRes.diffs
+                .map(
+                  (d) =>
+                    `<span class="stat-diff-pill ${d.delta > 0 ? 'is-up' : 'is-down'}">${escapeHtml(d.shortLabel)} ${
+                      d.delta > 0 ? `+${d.delta}` : d.delta
+                    }</span>`
+                )
+                .join('')}
+            </div>`
+          : isHere
+          ? '<span class="muted-text" style="font-size:11px;">当前槽位已穿戴此装备</span>'
+          : '<span class="muted-text" style="font-size:11px;">八维属性无增减变化</span>';
 
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -721,14 +1042,20 @@ function openSlotEquipPickerSheet(char, slot) {
         <span class="lab-choice-sub">${
           item.bonuses?.length ? escapeHtml(item.bonuses.map(formatBonusChip).join(' · ')) : '无属性词条'
         }</span>
+        ${diffHtml}
       `;
       btn.addEventListener('click', async () => {
         try {
           await inventory.equipItem(char.id, slot.id, item.id);
-          await saveRosterNow();
+          if (rootStorage && entities) {
+            await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
+          } else {
+            await saveRosterNow();
+          }
           if (sheetHandle) sheetHandle.close();
           uiKit.showToast(`已将「${item.name}」装入「${slot.label}」`, 'ok');
-          await renderConsole();
+          if (typeof onUpdated === 'function') await onUpdated();
+          else await renderConsole();
         } catch (err) {
           uiKit.showToast(err instanceof Error ? err.message : '装入失败', 'error');
         }
@@ -741,10 +1068,10 @@ function openSlotEquipPickerSheet(char, slot) {
   sheetHandle = uiKit.openBottomSheet({
     title: `为「${slot.label}」选择【${slotTypeLabel}】装备`,
     subtitle: slot.required
-      ? `核心固定必装槽位 · 已精准筛选仓库中「${slotTypeLabel}」类部件（${compatibleItems.length} 件）`
+      ? `核心固定槽位 · 绿升/红降实时对比八维差值（${compatibleItems.length} 件）`
       : slot.custom
-      ? `扩建专属类型槽位 · 已精准筛选仓库中「${slotTypeLabel}」类装备（${compatibleItems.length} 件）`
-      : `可选服装槽位 · 仓库可用服装（${compatibleItems.length} 件）`,
+      ? `扩建专属槽位 · 绿升/红降实时对比八维差值（${compatibleItems.length} 件）`
+      : `舰娘服装槽位 · 绿升/红降实时对比八维差值（${compatibleItems.length} 件）`,
     content: wrap,
     actions: [{ id: 'close', label: '关闭', tone: 'secondary' }],
   });
@@ -1703,6 +2030,7 @@ function createSlotsSection(char, { compact = false } = {}) {
   const slots = inventory.getCharacterSlots(char.id);
   const equippedMap = inventory.getCharacterEquipment(char.id);
   const seaworthyInfo = inventory.checkSeaworthiness(char.id);
+  const capInfo = inventory.getCharacterSlotCapInfo(char.id);
 
   const card = document.createElement('section');
   card.className = 'surface-card lab-stack-sm';
@@ -1710,15 +2038,20 @@ function createSlotsSection(char, { compact = false } = {}) {
 
   card.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">核心槽位与扩建装备槽位</h2>
-      <button type="button" id="${compact ? 'btn-cc-add-custom-slot-ov' : 'btn-cc-add-custom-slot'}" class="btn-primary uikit-touch-target" style="padding:6px 12px;font-size:12.5px;">+ 扩建装备槽位</button>
+      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+        <h2 class="section-title">核心槽位与扩建槽位</h2>
+        <span class="status-badge ${capInfo.canExpand ? 'badge-ok' : 'badge-warn'}">${escapeHtml(capInfo.shipClass)} 扩建 ${capInfo.used}/${capInfo.max}</span>
+      </div>
+      <button type="button" id="${compact ? 'btn-cc-add-custom-slot-ov' : 'btn-cc-add-custom-slot'}" class="btn-primary uikit-touch-target" style="padding:6px 12px;font-size:12.5px;" ${capInfo.canExpand ? '' : 'disabled'}>
+        ${capInfo.canExpand ? '+ 扩建装备槽位' : `已达上限 ${capInfo.used}/${capInfo.max}`}
+      </button>
     </div>
     <div class="lab-btn-grid">
       <button type="button" id="${compact ? 'btn-cc-auto-equip-ov' : 'btn-cc-auto-equip'}" class="btn-primary uikit-touch-target">一键最优配装</button>
       <button type="button" id="${compact ? 'btn-cc-unequip-all-ov' : 'btn-cc-unequip-all'}" class="btn-secondary uikit-touch-target">一键卸下全部</button>
     </div>
     <p class="muted-text" style="font-size:12px;">
-      「引擎 / 装甲 / 核心」为固定必装核心槽（${seaworthyInfo.seaworthy ? '已适航' : '未适航，缺少必装项'}）；可随时从已知装备类型中扩建专属类型槽位（主炮/鱼雷/舰载机/雷达/声呐/防空/核心系），穿戴时自动精准匹配同类型装备。
+      「引擎 / 装甲 / 核心」为固定必装核心槽（${seaworthyInfo.seaworthy ? '已适航' : '未适航，缺少必装项'}）；按舰种上限（DD/SS 2槽 · CL/CA 3槽 · BB/CV 4槽）消耗钢/铝/银扩建专属槽位，穿戴装备解锁对应战斗指令。
     </p>
     <div class="lab-stack-sm" data-slots-list></div>
   `;

@@ -49,6 +49,65 @@ function deepClone(v) {
   return JSON.parse(JSON.stringify(v ?? null));
 }
 
+export const PORT_MEDAL_DEFS = Object.freeze([
+  {
+    id: 'first_slot_expand',
+    title: '船体改装先驱',
+    desc: '首次完成任意舰娘自定义装备槽位扩建',
+    luckBonus: 2,
+    category: '整备',
+  },
+  {
+    id: 'max_enhance_10',
+    title: '精工锻造大师',
+    desc: '将任意装备强化至满级 +10',
+    luckBonus: 2,
+    category: '工坊',
+  },
+  {
+    id: 'first_promote_rarity',
+    title: '军工升阶突破',
+    desc: '首次将满级装备升阶至更高品级',
+    luckBonus: 3,
+    category: '工坊',
+  },
+  {
+    id: 'night_boss_kill',
+    title: '夜战斩首勋章',
+    desc: '在夜战阶段成功击破海域终点旗舰',
+    luckBonus: 3,
+    category: '战绩',
+  },
+  {
+    id: 'sea_control_low',
+    title: '近海制海勋章',
+    desc: '近海防卫区（1-1）制海权压制达到 100%',
+    luckBonus: 2,
+    category: '制海',
+  },
+  {
+    id: 'sea_control_medium',
+    title: '外海制霸勋章',
+    desc: '外海破交航道（2-1）制海权压制达到 100%',
+    luckBonus: 3,
+    category: '制海',
+  },
+  {
+    id: 'sea_control_high',
+    title: '深海压制大十字勋章',
+    desc: '深海要塞核心区（3-1）制海权压制达到 100%',
+    luckBonus: 5,
+    category: '制海',
+  },
+  {
+    id: 'full_fleet_6',
+    title: '联合舰队司令官',
+    desc: '成功编成 6 舰以上联合舰队阵型',
+    luckBonus: 2,
+    category: '编成',
+  },
+]);
+
 function createDefaultBuildingsState() {
   return {
     dormitory: {
@@ -69,6 +128,10 @@ function createDefaultBuildingsState() {
       constructedCount: 0,
     },
     customBuildings: [],
+    medals: {
+      unlockedIds: [],
+      unlockedAt: {},
+    },
     updatedAt: Date.now(),
   };
 }
@@ -113,6 +176,35 @@ export class PortBuildingsSystem {
     if (this._bus) {
       this._bus.on('character:deleted', ({ characterId }) => {
         this._cleanupDeletedCharacter(characterId);
+      });
+      this._bus.on('inventory:slot-expanded', () => {
+        this.unlockMedal('first_slot_expand');
+      });
+      this._bus.on('inventory:enhanced', (ev) => {
+        if ((Number(ev?.nextLevel) || 0) >= 10) {
+          this.unlockMedal('max_enhance_10');
+        }
+      });
+      this._bus.on('inventory:promoted', () => {
+        this.unlockMedal('first_promote_rarity');
+      });
+      this._bus.on('sortie:boss-defeated', (ev) => {
+        if (ev?.isNight) {
+          this.unlockMedal('night_boss_kill');
+        }
+      });
+      this._bus.on('sea-control:updated', (ev) => {
+        if (ev?.controlled) {
+          if (ev.difficulty === 'low') this.unlockMedal('sea_control_low');
+          if (ev.difficulty === 'medium') this.unlockMedal('sea_control_medium');
+          if (ev.difficulty === 'high') this.unlockMedal('sea_control_high');
+        }
+      });
+      this._bus.on('formation:changed', (ev) => {
+        const count = Number(ev?.count ?? ev?.memberIds?.length ?? 0);
+        if (count >= 6) {
+          this.unlockMedal('full_fleet_6');
+        }
       });
     }
   }
@@ -1004,9 +1096,74 @@ export class PortBuildingsSystem {
     }
   }
 
+  // ------------------------------------------------------------
+  // Port Honor Medals & Stage Directives (Permanent Commander Luck Growth)
+  // ------------------------------------------------------------
+
+  getMedalsOverview() {
+    const raw = this._state.medals || { unlockedIds: [], unlockedAt: {} };
+    const unlockedSet = new Set(Array.isArray(raw.unlockedIds) ? raw.unlockedIds : []);
+    let totalLuckGained = 0;
+    const medals = PORT_MEDAL_DEFS.map((def) => {
+      const unlocked = unlockedSet.has(def.id);
+      if (unlocked) totalLuckGained += def.luckBonus;
+      return {
+        ...def,
+        unlocked,
+        unlockedAt: unlocked ? raw.unlockedAt?.[def.id] || null : null,
+      };
+    });
+    return {
+      medals,
+      unlockedCount: medals.filter((m) => m.unlocked).length,
+      totalCount: medals.length,
+      totalLuckGained,
+    };
+  }
+
+  async unlockMedal(medalId) {
+    const def = PORT_MEDAL_DEFS.find((m) => m.id === String(medalId));
+    if (!def) return null;
+    if (!this._state.medals || typeof this._state.medals !== 'object') {
+      this._state.medals = { unlockedIds: [], unlockedAt: {} };
+    }
+    if (!Array.isArray(this._state.medals.unlockedIds)) {
+      this._state.medals.unlockedIds = [];
+    }
+    if (!this._state.medals.unlockedAt || typeof this._state.medals.unlockedAt !== 'object') {
+      this._state.medals.unlockedAt = {};
+    }
+    if (this._state.medals.unlockedIds.includes(def.id)) {
+      return null;
+    }
+
+    this._state.medals.unlockedIds.push(def.id);
+    this._state.medals.unlockedAt[def.id] = Date.now();
+    await this.persist();
+
+    if (this._commander && typeof this._commander.adjustLuck === 'function') {
+      await this._commander.adjustLuck(def.luckBonus, `点亮荣誉勋章「${def.title}」`);
+    }
+    if (this._logs) {
+      this._logs.add({
+        category: LOG_CATEGORIES.SYSTEM,
+        title: `点亮荣誉勋章「${def.title}」`,
+        detail: `${def.desc} · 指挥官运气永久 +${def.luckBonus}`,
+      });
+    }
+    const payload = {
+      medal: { ...def, unlocked: true, unlockedAt: this._state.medals.unlockedAt[def.id] },
+      luckBonus: def.luckBonus,
+      overview: this.getMedalsOverview(),
+    };
+    this._emit('medal:unlocked', payload);
+    this._emit('buildings:updated', { reason: 'medal-unlocked', medalId: def.id });
+    return payload;
+  }
+
   serialize() {
     return {
-      version: 1,
+      version: 2,
       ...deepClone(this._state),
     };
   }
@@ -1026,6 +1183,15 @@ export class PortBuildingsSystem {
         queue: Array.isArray(snapshot.dockyard?.queue) ? deepClone(snapshot.dockyard.queue) : [],
       },
       customBuildings: Array.isArray(snapshot.customBuildings) ? deepClone(snapshot.customBuildings) : [],
+      medals: {
+        unlockedIds: Array.isArray(snapshot.medals?.unlockedIds)
+          ? Array.from(new Set(snapshot.medals.unlockedIds.map(String)))
+          : [],
+        unlockedAt:
+          snapshot.medals?.unlockedAt && typeof snapshot.medals.unlockedAt === 'object'
+            ? deepClone(snapshot.medals.unlockedAt)
+            : {},
+      },
       updatedAt: Number(snapshot.updatedAt) || Date.now(),
     };
     this._syncDockTasksToEntitySystem();

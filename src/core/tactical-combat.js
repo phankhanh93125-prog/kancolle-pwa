@@ -26,6 +26,7 @@ import {
   computeOpeningAirstrikeOutcome,
   computeOpeningTorpedoOutcome,
   computeRangeRowCombatModifiers,
+  getGearDrivenTacticalActions,
   getSameRowAndAdjacentAura,
   getShipClassProfile,
   getShipClassTacticalActions,
@@ -1303,13 +1304,21 @@ export class TacticalCombatEngine {
     return slot.member || null;
   }
 
-  getAvailableActionsForCurrentActor() {
-    const actor = this.getCurrentActor();
-    if (!actor || !this._session) return [];
-    return getShipClassTacticalActions(actor.shipType, {
-      includeUniversal: true,
+  getAvailableActionsForActor(actor = null) {
+    const target = actor || this.getCurrentActor();
+    if (!target || !this._session) return [];
+    const equippedMap =
+      this._inventory && typeof this._inventory.getCharacterEquipment === 'function'
+        ? this._inventory.getCharacterEquipment(target.id)
+        : {};
+    return getGearDrivenTacticalActions(equippedMap, {
       phase: this._session.phase,
+      shipType: target.shipType,
     });
+  }
+
+  getAvailableActionsForCurrentActor() {
+    return this.getAvailableActionsForActor(this.getCurrentActor());
   }
 
   /**
@@ -1322,7 +1331,10 @@ export class TacticalCombatEngine {
 
     // Decrement fleet & enemy round buffs
     if (session.smokeTurns > 0) session.smokeTurns -= 1;
-    if (session.aaAlertTurns > 0) session.aaAlertTurns -= 1;
+    if (session.aaAlertTurns > 0) {
+      session.aaAlertTurns -= 1;
+      if (session.aaAlertTurns === 0) session.aaShieldOrigin = null;
+    }
     if (session.evasionBuffTurns > 0) session.evasionBuffTurns -= 1;
     if (session.reconCritTurns > 0) session.reconCritTurns -= 1;
     if (session.guardTurns > 0) {
@@ -1348,6 +1360,7 @@ export class TacticalCombatEngine {
       session.status = 'defeated';
     } else if (aliveEnemies.length === 0) {
       session.status = 'victory';
+      if (session.phase === 'night') session.victoryInNight = true;
     } else if (session.phase === 'day' && session.round >= session.dayMaxRounds) {
       session.status = 'night_prompt';
       enteredNightPrompt = true;
@@ -1365,51 +1378,34 @@ export class TacticalCombatEngine {
   }
 
   /**
-   * Smart ship-class aware auto-delegate AI decision for the currently acting shipgirl.
+   * Smart gear-aware auto-delegate AI decision for the currently acting shipgirl.
+   * Strictly picks ONLY among currently unlocked gear-driven / basic commands!
    */
   pickAutoActionForActor(actor = null) {
     const session = this._session;
     const cur = actor || this.getCurrentActor();
-    if (!session || !cur) return 'tactical_shelling';
-    const cls = resolveShipClass(cur.shipType);
+    if (!session || !cur) return 'basic_fire';
+    const unlockedIds = new Set(
+      this.getAvailableActionsForActor(cur)
+        .filter((a) => a.unlocked)
+        .map((a) => a.id)
+    );
     const aliveEnemies = session.enemies.filter((e) => e.hp > 0);
     const hasSub = aliveEnemies.some((e) => e.role === 'sub' || e.shipClass === 'SS' || e.subThreat > 0);
     const hasAirIntent = aliveEnemies.some((e) => e.nextIntent?.id === 'airstrike');
     const anyUnscanned = aliveEnemies.some((e) => !e.scanned);
-    const fleet = this._getFleetCombatContext(session);
-    const hasLowHpAlly = fleet.members.some((m) => m.alive && m.hp / Math.max(1, m.maxHp) < 0.55);
 
-    if (cls === 'DD') {
-      if (hasSub) return 'depth_asw';
-      if (session.range === ENGAGEMENT_RANGES.LONG) return 'full_ahead';
-      if (hasLowHpAlly && session.smokeTurns <= 0) return 'smoke_screen';
-      return 'torpedo_strike';
-    }
-    if (cls === 'CL') {
-      if (hasAirIntent && session.aaAlertTurns <= 0) return 'aa_alert';
-      if (anyUnscanned && session.lockOnBonus <= 0) return 'radar_scan';
-      if (session.range === ENGAGEMENT_RANGES.CLOSE || session.phase === 'night') return 'torpedo_strike';
-      return 'tactical_shelling';
-    }
-    if (cls === 'CA') {
-      if (hasLowHpAlly && session.guardTurns <= 0) return 'vanguard_guard';
-      if (session.range === ENGAGEMENT_RANGES.LONG && session.phase === 'day' && session.round === 1) {
-        return 'full_ahead';
-      }
-      return 'heavy_shelling';
-    }
-    if (cls === 'BB') {
-      const target = aliveEnemies.find((e) => e.id === session.targetEnemyId) || aliveEnemies[0];
-      if (target && target.suppressedTurns <= 0 && target.nextIntent?.id === 'salvo') {
-        return 'fire_suppress';
-      }
-      return 'main_salvo';
-    }
-    if (cls === 'CV') {
-      if (anyUnscanned && session.reconCritTurns <= 0 && session.round === 1) return 'carrier_recon';
-      return 'carrier_airstrike';
-    }
-    return 'tactical_shelling';
+    if (hasSub && unlockedIds.has('depth_asw')) return 'depth_asw';
+    if (hasAirIntent && session.aaAlertTurns <= 0 && unlockedIds.has('aa_alert')) return 'aa_alert';
+    if (anyUnscanned && session.lockOnBonus <= 0 && unlockedIds.has('radar_scan')) return 'radar_scan';
+
+    if (session.phase === 'night' && unlockedIds.has('torpedo_strike')) return 'torpedo_strike';
+    if (session.range === ENGAGEMENT_RANGES.CLOSE && unlockedIds.has('torpedo_strike')) return 'torpedo_strike';
+    if (unlockedIds.has('carrier_airstrike')) return 'carrier_airstrike';
+    if (unlockedIds.has('main_salvo')) return 'main_salvo';
+    if (unlockedIds.has('torpedo_strike')) return 'torpedo_strike';
+    if (unlockedIds.has('depth_asw')) return 'depth_asw';
+    return 'basic_fire';
   }
 
   /**
@@ -1543,10 +1539,18 @@ export class TacticalCombatEngine {
 
       let auraAaNote = '';
       if (intent.id === 'airstrike') {
-        if (session.aaAlertTurns > 0) rawAtk *= 0.42;
+        if (session.aaAlertTurns > 0) {
+          const orig = session.aaShieldOrigin;
+          const inShieldNet =
+            orig &&
+            Math.abs((targetAlly.gridRow ?? 0) - orig.row) <= 1 &&
+            Math.abs((targetAlly.gridCol ?? 0) - orig.col) <= 1;
+          rawAtk *= inShieldNet ? 0.34 : 0.48;
+          if (inShieldNet) auraAaNote = '（防空警戒网邻格护盾 -66%）';
+        }
         if (escortAura.aaReduction > 0) {
           rawAtk *= 1 - escortAura.aaReduction;
-          auraAaNote = `（同排/邻格防空减伤 -${Math.round(escortAura.aaReduction * 100)}%）`;
+          auraAaNote = auraAaNote || `（同排/邻格防空减伤 -${Math.round(escortAura.aaReduction * 100)}%）`;
         }
         const aaRes = computeOpeningAirstrikeOutcome({
           attackerAirPower: Math.max(40, en.attackPower * 2.5),
@@ -1554,7 +1558,7 @@ export class TacticalCombatEngine {
           aaAlertActive: session.aaAlertTurns > 0,
           rng,
         });
-        rawAtk *= clamp(aaRes.passThrough + 0.18, 0.38, 1.05);
+        rawAtk *= clamp(aaRes.passThrough + 0.18, 0.36, 1.05);
       } else if (intent.id === 'torpedo_ambush' || intent.id === 'torpedo_salvo') {
         const aswFactor = clamp(1 - (freshFleet.effective?.asw || 40) * 0.0032, 0.52, 1.0);
         rawAtk *= aswFactor;
@@ -1670,7 +1674,7 @@ export class TacticalCombatEngine {
   }
 
   /**
-   * Execute one allied shipgirl's exclusive tactical action in unified initiative turn order.
+   * Execute one allied shipgirl's gear-driven or universal tactical action in unified initiative turn order.
    */
   async executeShipAction(actionId, { targetEnemyId = null, rng = Math.random, autoResolveEnemyTurns = false } = {}) {
     if (!this._session || this._session.status !== 'active') {
@@ -1696,6 +1700,15 @@ export class TacticalCombatEngine {
       return { ok: false, reason: `未知战术指令：${actionId}` };
     }
 
+    // Strict equipment-driven skill validation: specialized skills require wearing matching gear type
+    if (actionDef.requiredEquipmentType) {
+      const avail = this.getAvailableActionsForActor(actor);
+      const match = avail.find((a) => a.id === actionId);
+      if (match && !match.unlocked) {
+        return { ok: false, reason: `${actor.name} 当前未穿戴对应装备（${match.requiredHint || '需先装备对应武器'}）` };
+      }
+    }
+
     if (targetEnemyId) {
       this.setTargetEnemy(targetEnemyId);
     }
@@ -1704,6 +1717,7 @@ export class TacticalCombatEngine {
     const aliveEnemies = session.enemies.filter((e) => e.hp > 0);
     if (aliveEnemies.length === 0) {
       session.status = 'victory';
+      if (session.phase === 'night') session.victoryInNight = true;
       return { ok: false, reason: '敌方编队已被全部击破' };
     }
 
@@ -1750,6 +1764,7 @@ export class TacticalCombatEngine {
     });
 
     const isOffensiveAction =
+      actionId === 'basic_fire' ||
       actionId === 'torpedo_strike' ||
       actionId === 'depth_asw' ||
       actionId === 'main_salvo' ||
@@ -1770,7 +1785,7 @@ export class TacticalCombatEngine {
       dc = (session.enemy.scanDc || 13) + (seaMods.scanDcDelta || 0);
       if (classProfile.code === 'CL') extraMod += classProfile.combat.scanCheckBonus || 2;
       if (classProfile.code === 'CV') extraMod += 2;
-    } else if (actionId === 'evade_retreat' || actionId === 'full_ahead' || actionId === 'smoke_screen') {
+    } else if (actionId === 'evade_maneuver' || actionId === 'evade_retreat' || actionId === 'full_ahead' || actionId === 'smoke_screen') {
       dc = session.enemy.evadeDc || 13;
       extraMod += (seaMods.evadeBonus || 0);
     } else if (actionId === 'torpedo_strike') {
@@ -1778,7 +1793,7 @@ export class TacticalCombatEngine {
       extraMod += (cmdLuckFx.edgeCheckMod || 0) + (isNight ? 3 : 0);
     } else if (actionId === 'depth_asw') {
       dc = 12;
-      extraMod += targetEnemy.role === 'sub' || targetEnemy.shipClass === 'SS' || targetEnemy.subThreat > 0 ? 4 : 1;
+      extraMod += targetEnemy.role === 'sub' || targetEnemy.shipClass === 'SS' || targetEnemy.subThreat > 0 || (targetEnemy.stealth || 0) >= 22 ? 4 : 1;
     } else if (actionId === 'carrier_airstrike') {
       statVal = Math.round(actor.firepower * 0.65 + actor.recon * 0.55);
       dc = session.enemy.shellingDc || 13;
@@ -1803,7 +1818,7 @@ export class TacticalCombatEngine {
     const critChanceBonus =
       (session.reconCritTurns > 0 ? 0.2 : 0) +
       (session.range === ENGAGEMENT_RANGES.CLOSE && actionId === 'torpedo_strike' ? 0.15 : 0) +
-      (isNight && (actionId === 'torpedo_strike' || actionId === 'heavy_shelling' || actionId === 'tactical_shelling') ? 0.25 : 0) +
+      (isNight && (actionId === 'torpedo_strike' || actionId === 'heavy_shelling' || actionId === 'tactical_shelling' || actionId === 'main_salvo') ? 0.25 : 0) +
       (fleet.formationMods?.critBonus || 0);
     const isCrit = isCritRoll || (isSuccess && rng() < critChanceBonus);
 
@@ -1820,27 +1835,25 @@ export class TacticalCombatEngine {
     const nightDmgMult =
       isNight && actionId === 'torpedo_strike'
         ? 1.45
-        : isNight && (actionId === 'tactical_shelling' || actionId === 'heavy_shelling' || actionId === 'main_salvo')
+        : isNight && (actionId === 'tactical_shelling' || actionId === 'heavy_shelling' || actionId === 'main_salvo' || actionId === 'basic_fire')
         ? 1.25
         : isNight && actionId === 'carrier_airstrike'
-        ? 0.82
+        ? 0.86
         : 1.0;
 
     if (actionId === 'radar_scan' || actionId === 'carrier_recon') {
       scannedNow = true;
       for (const en of session.enemies) {
-        if (actionId === 'carrier_recon' || en.id === targetEnemy.id || isCrit) {
-          en.scanned = true;
-        }
+        en.scanned = true;
       }
-      session.lockOnBonus = Math.min(6, session.lockOnBonus + (isCrit ? 4 : 3));
-      if (actionId === 'carrier_recon') {
+      session.lockOnBonus = Math.min(8, session.lockOnBonus + (isCrit ? 5 : 4));
+      if (actionId === 'carrier_recon' || isCrit) {
         session.reconCritTurns = Math.max(session.reconCritTurns, 2);
         extraEvents.push('全队暴击率 +20%（2回合）');
       }
       outcomeTag = 'scan-ok';
-      this._emit('combat:scan', { success: true, label: actionId === 'carrier_recon' ? '舰载侦察 · 全域揭露' : '雷达锁定 +3' });
-      extraEvents.push(`敌方护甲/弱点/意图已揭露 · 全队锁定 +${session.lockOnBonus}`);
+      this._emit('combat:scan', { success: true, label: `雷达校射锁定 +${session.lockOnBonus}` });
+      extraEvents.push(`敌舰意图与弱点已全面揭露 · 全队命中锁定 +${session.lockOnBonus}`);
     } else if (actionId === 'smoke_screen') {
       session.smokeTurns = Math.max(session.smokeTurns, isCrit ? 3 : 2);
       outcomeTag = 'buff-smoke';
@@ -1848,9 +1861,10 @@ export class TacticalCombatEngine {
       this._emit('fx:play', { type: 'float-text', payload: { text: '烟幕展开 · 全队闪避UP', tone: 'ok' } });
     } else if (actionId === 'aa_alert') {
       session.aaAlertTurns = Math.max(session.aaAlertTurns, isCrit ? 3 : 2);
+      session.aaShieldOrigin = { row: actor.gridRow ?? 0, col: actor.gridCol ?? 0, actorId: actor.id };
       outcomeTag = 'buff-aa';
-      extraEvents.push(`全队防空警戒开启（${session.aaAlertTurns}回合 · 敌方空袭削减 60%）`);
-      this._emit('fx:play', { type: 'float-text', payload: { text: '防空警戒就绪', tone: 'ok' } });
+      extraEvents.push(`「${actor.name}」展开防空警戒网（${session.aaAlertTurns}回合 · 自身及邻格队友空袭减伤 -66%）`);
+      this._emit('fx:play', { type: 'float-text', payload: { text: '防空警戒网护盾开启', tone: 'ok' } });
     } else if (actionId === 'vanguard_guard') {
       session.guardActorId = actor.id;
       session.guardTurns = Math.max(session.guardTurns, isCrit ? 3 : 2);
@@ -1873,6 +1887,28 @@ export class TacticalCombatEngine {
           : '已处于【近距离】贴脸缠斗 · 闪避缓冲刷新至 2 回合'
       );
       this._emit('fx:play', { type: 'float-text', payload: { text: rangeChangedTo ? `突进 → ${rangeChangedTo}` : '近距闪避UP', tone: 'accent' } });
+    } else if (actionId === 'evade_maneuver') {
+      session.evasionBuffTurns = Math.max(session.evasionBuffTurns, 2);
+      if (session.range === ENGAGEMENT_RANGES.LONG) {
+        session.range = ENGAGEMENT_RANGES.MEDIUM;
+        rangeChangedTo = RANGE_META.medium.label;
+      } else if (session.range === ENGAGEMENT_RANGES.MEDIUM) {
+        session.range = ENGAGEMENT_RANGES.CLOSE;
+        rangeChangedTo = RANGE_META.close.label;
+      } else if (!session.enemy.forcedEngagement && isSuccess) {
+        session.status = 'bypassed';
+        outcomeTag = 'evade-bypass';
+        extraEvents.push('全队借近距机动成功甩开敌方防线，无伤脱离！');
+      }
+      if (session.status !== 'bypassed') {
+        outcomeTag = 'maneuver-evade';
+        extraEvents.push(
+          rangeChangedTo
+            ? `机动调整站位至【${rangeChangedTo}】并强化全队闪避减伤（2回合 -28%）`
+            : '执行高机动规避演练（2回合全队闪避减伤 -28%）'
+        );
+      }
+      this._emit('fx:play', { type: 'float-text', payload: { text: rangeChangedTo ? `调距 → ${rangeChangedTo}` : '机动规避 UP', tone: 'accent' } });
     } else if (actionId === 'evade_retreat') {
       if (!session.enemy.forcedEngagement && isSuccess) {
         session.status = 'bypassed';
@@ -1894,20 +1930,32 @@ export class TacticalCombatEngine {
       let critMult = 1.6;
       let weakBonus = 1.0;
 
-      if (actionId === 'torpedo_strike') {
-        armorPen = classProfile.code === 'DD' ? 0.6 : 0.45;
-        basePower = actor.torpedo * 0.72 + session.lockOnBonus * 2.5;
-        critMult = classProfile.code === 'DD' ? 2.05 : 1.75;
+      if (actionId === 'basic_fire') {
+        armorPen = 0.12;
+        basePower = actor.firepower * 0.52;
+        critMult = 1.45;
+        if (targetEnemy.weakness === 'shelling') weakBonus = 1.1;
+      } else if (actionId === 'torpedo_strike') {
+        armorPen = classProfile.code === 'DD' || classProfile.code === 'SS' ? 0.6 : 0.45;
+        basePower = actor.torpedo * 0.74 + session.lockOnBonus * 2.5;
+        critMult = classProfile.code === 'DD' || classProfile.code === 'SS' ? 2.05 : 1.8;
         if (targetEnemy.weakness === 'torpedo') weakBonus = 1.3;
       } else if (actionId === 'depth_asw') {
-        armorPen = 0.8;
-        basePower = actor.asw * 0.7;
-        const isSub = targetEnemy.role === 'sub' || targetEnemy.shipClass === 'SS' || targetEnemy.subThreat > 0;
-        weakBonus = isSub ? (classProfile.code === 'DD' ? 2.1 : 1.75) : 0.75;
-        if (isSub) extraEvents.push('深水炸弹命中潜艇弱点，造成巨额反潜克制！');
+        armorPen = 0.82;
+        basePower = actor.asw * 0.74;
+        const isSubOrStealth =
+          targetEnemy.role === 'sub' ||
+          targetEnemy.shipClass === 'SS' ||
+          targetEnemy.subThreat > 0 ||
+          (targetEnemy.stealth || 0) >= 22;
+        weakBonus = isSubOrStealth ? (classProfile.code === 'DD' ? 2.15 : 1.85) : 0.8;
+        if (isSubOrStealth) {
+          targetEnemy.stealth = Math.max(0, (targetEnemy.stealth || 0) - 15);
+          extraEvents.push('声呐深弹精准锁定水下/隐蔽目标，造成巨额反潜重创！');
+        }
       } else if (actionId === 'main_salvo') {
         armorPen = 0.5;
-        basePower = actor.firepower * 0.76;
+        basePower = actor.firepower * 0.78;
         critMult = 1.85;
         if (targetEnemy.weakness === 'shelling') weakBonus = 1.25;
       } else if (actionId === 'fire_suppress') {
@@ -1925,8 +1973,8 @@ export class TacticalCombatEngine {
         if (targetEnemy.weakness === 'shelling') weakBonus = 1.2;
       } else if (actionId === 'carrier_airstrike') {
         armorPen = 0.92;
-        basePower = (actor.firepower * 0.55 + actor.recon * 0.55) * 0.86;
-        const enemyAaMit = clamp(1 - ((targetEnemy.aa || 40) * 0.0045 + (targetEnemy.airThreat || 0) * 0.008), 0.52, 1.0);
+        basePower = (actor.firepower * 0.55 + actor.recon * 0.58) * 0.88;
+        const enemyAaMit = clamp(1 - ((targetEnemy.aa || 40) * 0.0042 + (targetEnemy.airThreat || 0) * 0.0075), 0.55, 1.0);
         basePower *= enemyAaMit;
         if (targetEnemy.weakness === 'aa') weakBonus = 1.3;
       }
@@ -1945,7 +1993,7 @@ export class TacticalCombatEngine {
       const enemyGuardian = session.enemies.find(
         (e) => e.hp > 0 && e.id !== targetEnemy.id && e.guardTurns > 0 && e.guardingEnemyId === targetEnemy.id
       );
-      if (enemyGuardian && actionId !== 'depth_asw') {
+      if (enemyGuardian && actionId !== 'depth_asw' && actionId !== 'carrier_airstrike') {
         const absorbDmg = Math.max(4, Math.round(damageDealt * 0.5));
         const passDmg = Math.max(3, damageDealt - absorbDmg);
         enemyGuardian.hp = Math.max(0, enemyGuardian.hp - absorbDmg);
@@ -1987,6 +2035,7 @@ export class TacticalCombatEngine {
 
     if (session.status === 'active' && remainingEnemies.length === 0) {
       session.status = 'victory';
+      if (session.phase === 'night') session.victoryInNight = true;
       outcomeTag = 'victory';
     } else if (session.status === 'active') {
       if (autoResolveEnemyTurns && this.isEnemyTurnPending()) {

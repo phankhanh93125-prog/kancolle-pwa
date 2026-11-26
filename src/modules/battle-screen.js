@@ -18,6 +18,7 @@ import {
   GRID_ROWS,
   GRID_ROW_LABELS,
   computeRangeRowCombatModifiers,
+  computeTacticalAimPreview,
   getShipClassProfile,
   getShipClassSvg,
   getTacticalGridSymbolSvg,
@@ -420,6 +421,7 @@ export function renderFullScreenBattleView({
 
     <div class="radar-side-grid is-ally-grid" id="bf-ally-grid">${allyRowsHtml}</div>
 
+    <svg id="bf-aim-svg" class="radar-aim-overlay" viewBox="0 0 360 280" preserveAspectRatio="none" aria-hidden="true"></svg>
     <svg id="bf-svg-canvas" class="radar-svg-overlay" viewBox="0 0 360 280" preserveAspectRatio="none" aria-hidden="true"></svg>
   `;
 
@@ -448,7 +450,7 @@ export function renderFullScreenBattleView({
   root.appendChild(sandbox);
 
   // ============================================================
-  // TIER 2 (MIDDLE): Tactical Command Bar + Auto-Delegate + 1x/2x Speed
+  // TIER 2 (MIDDLE): Gear-Driven Tactical Command Bar + Real-Time Aim Preview
   // ============================================================
   if (session.status === 'night_prompt') {
     const nightCard = document.createElement('section');
@@ -505,13 +507,20 @@ export function renderFullScreenBattleView({
     const actorProf = getShipClassProfile(currentActor.shipType);
     const actorCode = currentActor.slotCode || '01';
     const actorRowLabel = GRID_ROW_LABELS[currentActor.gridRow ?? 0] || '前排';
-    const previewMod = lockedEnemy
-      ? computeRangeRowCombatModifiers({
+    const primaryAttackAction =
+      (availableActions || []).find((a) => a.unlocked && a.kind === 'attack') ||
+      (availableActions || []).find((a) => a.unlocked) ||
+      { id: 'basic_fire', statKey: 'firepower' };
+    const aimPreview = lockedEnemy
+      ? computeTacticalAimPreview({
           engagementRange: session.range,
           attackerRow: currentActor.gridRow ?? 0,
           defenderRow: lockedEnemy.gridRow ?? 0,
-          actionId: availableActions?.[0]?.id || 'tactical_shelling',
+          actionId: primaryAttackAction.id,
           shipClass: actorProf.code,
+          attackerStat: Number(currentActor[primaryAttackAction.statKey] ?? currentActor.firepower ?? 55),
+          targetEvasion: Number(lockedEnemy.evasion ?? 55),
+          lockOnBonus: session.lockOnBonus || 0,
         })
       : null;
 
@@ -540,26 +549,39 @@ export function renderFullScreenBattleView({
       </div>
 
       ${
-        lockedEnemy && previewMod
-          ? `<div class="bf-target-preview-bar">
-              <span>锁定目标：<strong>E${escapeHtml(lockedEnemy.slotCode || '01')} ${escapeHtml(lockedEnemy.name)}</strong>（敌${escapeHtml(GRID_ROW_LABELS[lockedEnemy.gridRow ?? 0]?.[0] || '前')}）</span>
-              <span class="status-badge badge-${previewMod.tone === 'danger' ? 'danger' : previewMod.tone === 'warn' ? 'warn' : 'ok'}">
-                ${escapeHtml(previewMod.label)} x${previewMod.dmgMult.toFixed(2)}
-              </span>
+        lockedEnemy && aimPreview
+          ? `<div class="bf-target-preview-bar" id="bf-aim-preview-bar">
+              <div class="bf-aim-target-line">
+                <span>瞄准：<strong>E${escapeHtml(lockedEnemy.slotCode || '01')} ${escapeHtml(lockedEnemy.name)}</strong>（敌${escapeHtml(GRID_ROW_LABELS[lockedEnemy.gridRow ?? 0]?.[0] || '前')}）</span>
+                <span class="status-badge badge-${aimPreview.tone === 'danger' ? 'danger' : aimPreview.tone === 'warn' ? 'warn' : 'ok'}">
+                  ${escapeHtml(aimPreview.summaryText)}
+                </span>
+              </div>
             </div>`
           : ''
       }
 
       <div class="tactical-cmd-grid" id="bf-exclusive-cmds">
-        ${availableActions
-          .map(
-            (act) => `
-          <button type="button" class="tactical-cmd-btn is-tone-${escapeHtml(act.tone || 'shelling')}" data-battle-action="${escapeHtml(act.id)}" ${busy || autoRunning ? 'disabled' : ''}>
-            <span class="tactical-cmd-title">${escapeHtml(act.label)}</span>
-            <span class="tactical-cmd-sub">${escapeHtml(act.desc)}</span>
+        ${(availableActions || [])
+          .map((act) => {
+            const unlocked = act.unlocked !== false;
+            return `
+          <button
+            type="button"
+            class="tactical-cmd-btn is-tone-${escapeHtml(act.tone || 'shelling')} ${unlocked ? '' : 'is-gear-locked'}"
+            data-battle-action="${escapeHtml(act.id)}"
+            data-gear-unlocked="${unlocked ? 'true' : 'false'}"
+            ${!unlocked || busy || autoRunning ? 'disabled' : ''}
+            title="${escapeHtml(unlocked ? act.desc : act.requiredHint || '需装备对应武器')}"
+          >
+            <span class="tactical-cmd-title">
+              ${escapeHtml(act.label)}
+              ${!unlocked && act.requiredHint ? `<span class="tactical-lock-pill">${escapeHtml(act.requiredHint)}</span>` : ''}
+            </span>
+            <span class="tactical-cmd-sub">${escapeHtml(unlocked ? act.desc : `${act.requiredHint || '未装配对应装备'}（在角色卡扩建/穿戴解锁）`)}</span>
           </button>
-        `
-          )
+        `;
+          })
           .join('')}
       </div>
     `;
@@ -567,6 +589,7 @@ export function renderFullScreenBattleView({
     deck.querySelector('#btn-battle-auto-toggle').addEventListener('click', () => onToggleAuto());
     deck.querySelector('#btn-battle-speed-toggle').addEventListener('click', () => onToggleSpeed());
     deck.querySelectorAll('[data-battle-action]').forEach((btn) => {
+      if (btn.getAttribute('data-gear-unlocked') === 'false') return;
       btn.addEventListener('click', () => onExecuteAction(btn.getAttribute('data-battle-action')));
     });
     root.appendChild(deck);
@@ -739,5 +762,43 @@ export function renderFullScreenBattleView({
 
   root.appendChild(lowerZone);
   host.appendChild(root);
+
+  // Draw live tactical aiming line from acting ally cell -> locked enemy cell on 3x4 sandbox
+  const aimSvg = sandbox.querySelector('#bf-aim-svg');
+  if (aimSvg && currentActor && lockedEnemy && lockedEnemy.hp > 0 && session.status === 'active') {
+    const drawAim = () => {
+      if (!sandbox.isConnected) return;
+      const fromPt = measureCellCenterInSandbox(
+        sandbox,
+        `[data-ally-unit-id="${CSS.escape(currentActor.id)}"]`,
+        { x: 180, y: 222 }
+      );
+      const toPt = measureCellCenterInSandbox(
+        sandbox,
+        `[data-enemy-unit-id="${CSS.escape(lockedEnemy.id)}"]`,
+        { x: 180, y: 58 }
+      );
+      const midX = Number(((fromPt.x + toPt.x) / 2).toFixed(1));
+      const midY = Number(((fromPt.y + toPt.y) / 2 - 12).toFixed(1));
+      aimSvg.innerHTML = `
+        <g class="bf-aim-group">
+          <path d="M${fromPt.x},${fromPt.y} Q${midX},${midY} ${toPt.x},${toPt.y}" stroke="rgba(56, 189, 248, 0.82)" stroke-width="2" stroke-dasharray="6 4" fill="none" stroke-linecap="round"/>
+          <circle cx="${fromPt.x}" cy="${fromPt.y}" r="4.5" fill="rgba(56, 189, 248, 0.9)" stroke="#e0f2fe" stroke-width="1.2"/>
+          <circle cx="${toPt.x}" cy="${toPt.y}" r="12" fill="none" stroke="rgba(251, 113, 133, 0.9)" stroke-width="1.8" stroke-dasharray="4 3"/>
+          <circle cx="${toPt.x}" cy="${toPt.y}" r="4" fill="rgba(251, 113, 133, 0.85)"/>
+          <line x1="${toPt.x - 16}" y1="${toPt.y}" x2="${toPt.x - 8}" y2="${toPt.y}" stroke="#fb7185" stroke-width="1.6"/>
+          <line x1="${toPt.x + 8}" y1="${toPt.y}" x2="${toPt.x + 16}" y2="${toPt.y}" stroke="#fb7185" stroke-width="1.6"/>
+          <line x1="${toPt.x}" y1="${toPt.y - 16}" x2="${toPt.x}" y2="${toPt.y - 8}" stroke="#fb7185" stroke-width="1.6"/>
+          <line x1="${toPt.x}" y1="${toPt.y + 8}" x2="${toPt.x}" y2="${toPt.y + 16}" stroke="#fb7185" stroke-width="1.6"/>
+        </g>
+      `;
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(drawAim);
+    } else {
+      drawAim();
+    }
+  }
+
   return root;
 }

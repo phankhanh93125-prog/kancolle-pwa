@@ -160,7 +160,14 @@ const combat = new TacticalCombatEngine({
   formation,
   bus,
 });
+expeditions.setRouteGenerator(routeGenerator);
 const uiKit = createUIKit();
+
+bus.on('medal:unlocked', (ev) => {
+  if (ev?.medal) {
+    uiKit.showToast(`★ 点亮荣誉勋章「${ev.medal.title}」· 指挥官运气永久 +${ev.luckBonus}！`, 'ok', { duration: 2800 });
+  }
+});
 
 const els = {
   activeModuleName: document.getElementById('active-module-name'),
@@ -492,16 +499,18 @@ const BOTTOM_NAV_ORDER = [
   'port-hub',
   'sortie-console',
   'port-formation',
-  'port-dormitory',
-  'port-dockyard',
   'supply-workshop',
-  'compendium-studio',
 ];
 
 function syncBottomTabBar(activeId = null) {
   if (!els.bottomTabBar) return;
   const curId = activeId || moduleManager.getActive()?.id || 'port-hub';
-  const mappedId = curId === 'character-console' ? 'port-dormitory' : curId === 'port-expedition' ? 'port-hub' : curId;
+  const mappedId =
+    curId === 'compendium-studio'
+      ? 'supply-workshop'
+      : curId === 'port-dormitory' || curId === 'port-dockyard' || curId === 'port-expedition' || curId === 'character-console'
+      ? 'port-hub'
+      : curId;
   els.bottomTabBar.querySelectorAll('[data-bottom-nav]').forEach((btn) => {
     const targetId = btn.getAttribute('data-bottom-nav');
     const isAct = targetId === mappedId;
@@ -1016,6 +1025,7 @@ function captureFullWorldSnapshot() {
     contentManager: contentManager.serialize(),
     storyPacks: storyPacks.serialize(),
     personalityPool: personalityPool.serialize(),
+    seaControl: routeGenerator.serializeSeaControl(),
     theme: theme.serialize(),
     entities: entities.serialize(),
     inventory: inventory.serialize(),
@@ -1062,6 +1072,7 @@ async function restoreFullWorldSnapshot(rawData) {
   if (data.interaction) interaction.deserialize(data.interaction, { persist: true });
   if (data.contentManager) contentManager.deserialize(data.contentManager, { persist: true });
   if (data.storyPacks) storyPacks.deserialize(data.storyPacks, { persist: true });
+  if (data.seaControl) routeGenerator.deserializeSeaControl(data.seaControl, { persist: true });
   if (data.theme) theme.deserialize(data.theme, { persist: true });
 
   const active = moduleManager.getActive();
@@ -1081,8 +1092,9 @@ async function startNewJourney(prefs = {}) {
   const isAbundant = prefs.resourceMode === 'abundant';
   const keepCustomData = prefs.keepCustomData !== false;
 
-  // 1. Clear active sortie / combat / expeditions / interaction history
+  // 1. Clear active sortie / combat / expeditions / interaction history / sea control
   await clearActiveSortieState({ storage, combat });
+  routeGenerator.deserializeSeaControl({ version: 1, zones: {} }, { persist: true });
   expeditions.deserialize({ version: 1, completedCount: 0, activeRuns: [] }, { persist: true });
   interaction.deserialize(
     { version: 1, secretaryId: null, oaths: {}, lastInteraction: null, interactionHistory: [] },

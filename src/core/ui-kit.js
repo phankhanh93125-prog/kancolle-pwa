@@ -31,7 +31,7 @@ function appendContent(container, content) {
   }
 }
 
-export function showToast(message, type = 'info', { duration = 2600 } = {}) {
+export function showToast(message, type = 'info', { duration = 2000 } = {}) {
   let region = document.getElementById('toast-region');
   if (!region) {
     region = document.createElement('div');
@@ -55,38 +55,46 @@ export function showToast(message, type = 'info', { duration = 2600 } = {}) {
   item.className = `toast-item ${toneClass}`.trim();
   item.textContent = String(message ?? '');
   item.style.pointerEvents = 'auto';
-  item.addEventListener('click', () => item.remove());
+
+  let removed = false;
+  const removeSmooth = () => {
+    if (removed) return;
+    removed = true;
+    item.classList.add('is-leaving');
+    setTimeout(() => item.remove(), 220);
+  };
+
+  item.addEventListener('click', removeSmooth);
   region.appendChild(item);
 
-  const timer = setTimeout(() => {
-    item.remove();
-  }, Math.max(800, Number(duration) || 2600));
+  const timer = setTimeout(removeSmooth, Math.max(900, Number(duration) || 2000));
 
   return {
     dismiss() {
       clearTimeout(timer);
-      item.remove();
+      removeSmooth();
     },
   };
 }
 
 /**
- * Open a one-handed slide-up Bottom Sheet modal (stackable, safe-area aware, >=44px controls).
+ * Open a one-handed frosted-glass slide-up Bottom Sheet (for equipment picking, slot expansion, etc.).
  */
 export function openBottomSheet({
   title = '面板',
   subtitle = '',
   content = null,
+  renderContent = null,
   actions = [],
   dismissible = true,
   onClose = null,
 } = {}) {
   const backdrop = document.createElement('div');
-  backdrop.className = 'sheet-backdrop uikit-sheet-backdrop';
+  backdrop.className = 'sheet-backdrop uikit-sheet-backdrop is-frosted-sheet';
   backdrop.setAttribute('role', 'presentation');
 
   const dialog = document.createElement('section');
-  dialog.className = 'sheet-dialog uikit-sheet-dialog';
+  dialog.className = 'sheet-dialog uikit-sheet-dialog is-frosted-sheet';
   dialog.setAttribute('role', 'dialog');
   dialog.setAttribute('aria-modal', 'true');
 
@@ -130,7 +138,9 @@ export function openBottomSheet({
 
   const body = document.createElement('div');
   body.className = 'sheet-body';
-  appendContent(body, content);
+  if (typeof renderContent !== 'function') {
+    appendContent(body, content);
+  }
 
   dialog.appendChild(handle);
   dialog.appendChild(header);
@@ -147,7 +157,8 @@ export function openBottomSheet({
     if (closed) return;
     closed = true;
     document.removeEventListener('keydown', onKeyDown);
-    backdrop.remove();
+    backdrop.classList.add('is-closing');
+    setTimeout(() => backdrop.remove(), 170);
     if (typeof onClose === 'function') {
       onClose(reason);
     }
@@ -190,6 +201,10 @@ export function openBottomSheet({
   backdrop.appendChild(dialog);
   document.body.appendChild(backdrop);
 
+  if (typeof renderContent === 'function') {
+    renderContent(body, close);
+  }
+
   return {
     close,
     backdrop,
@@ -199,8 +214,141 @@ export function openBottomSheet({
 }
 
 /**
- * Open a scrollable mobile modal sheet supporting dynamic `renderContent(body, close)`.
- * Built on `openBottomSheet` so it stacks cleanly above all page content with full touch scrolling.
+ * Open a Centered Frosted-Glass Tactical Floating Modal (`backdrop-filter`, theme-accented chamfered glow border,
+ * tap-backdrop dismiss, smooth entrance/exit) while keeping the Central Main Stage softly visible underneath.
+ */
+export function openTacticalModal({
+  title = '战术面板',
+  subtitle = '',
+  renderContent = null,
+  content = null,
+  actions = [],
+  dismissible = true,
+  wide = false,
+  onClose = null,
+} = {}) {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'sheet-backdrop uikit-sheet-backdrop uikit-tactical-backdrop';
+  backdrop.setAttribute('role', 'presentation');
+
+  const dialog = document.createElement('section');
+  dialog.className = `uikit-tactical-modal ${wide ? 'is-wide' : ''}`.trim();
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+
+  const header = document.createElement('header');
+  header.className = 'uikit-tactical-header';
+
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'uikit-sheet-titles';
+
+  const titleEl = document.createElement('h2');
+  titleEl.className = 'sheet-title uikit-tactical-title';
+  titleEl.textContent = title;
+  titleWrap.appendChild(titleEl);
+
+  if (subtitle) {
+    const subEl = document.createElement('p');
+    subEl.className = 'uikit-sheet-subtitle';
+    subEl.textContent = subtitle;
+    titleWrap.appendChild(subEl);
+  }
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'btn-icon-close uikit-touch-target';
+  closeBtn.setAttribute('aria-label', '关闭战术浮窗');
+  closeBtn.innerHTML = `
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+      <path d="M18 6 6 18"/>
+      <path d="m6 6 12 12"/>
+    </svg>
+  `;
+
+  header.appendChild(titleWrap);
+  if (dismissible) {
+    header.appendChild(closeBtn);
+  }
+
+  const body = document.createElement('div');
+  body.className = 'sheet-body uikit-tactical-body';
+  if (typeof renderContent !== 'function') {
+    appendContent(body, content);
+  }
+
+  dialog.appendChild(header);
+  dialog.appendChild(body);
+
+  let closed = false;
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape' && dismissible) {
+      close('escape');
+    }
+  };
+
+  const close = (reason = 'close') => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKeyDown);
+    backdrop.classList.add('is-closing');
+    setTimeout(() => backdrop.remove(), 170);
+    if (typeof onClose === 'function') {
+      onClose(reason);
+    }
+  };
+
+  if (Array.isArray(actions) && actions.length > 0) {
+    const footer = document.createElement('div');
+    footer.className = 'uikit-sheet-footer uikit-tactical-footer';
+    footer.style.gridTemplateColumns = actions.length === 1 ? '1fr' : `repeat(${Math.min(actions.length, 2)}, 1fr)`;
+    for (const act of actions) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      const tone = act.tone === 'danger' ? 'btn-danger' : act.tone === 'secondary' ? 'btn-secondary' : 'btn-primary';
+      btn.className = `${tone} uikit-touch-target`;
+      btn.textContent = act.label || '确定';
+      if (act.id) btn.dataset.sheetAction = act.id;
+      btn.addEventListener('click', async () => {
+        if (typeof act.onClick === 'function') {
+          const ret = await act.onClick({ close, body });
+          if (ret !== false && act.closeOnClick !== false) {
+            close(act.id || 'action');
+          }
+        } else if (act.closeOnClick !== false) {
+          close(act.id || 'action');
+        }
+      });
+      footer.appendChild(btn);
+    }
+    dialog.appendChild(footer);
+  }
+
+  closeBtn.addEventListener('click', () => close('button'));
+  if (dismissible) {
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) close('backdrop');
+    });
+    document.addEventListener('keydown', onKeyDown);
+  }
+
+  backdrop.appendChild(dialog);
+  document.body.appendChild(backdrop);
+
+  if (typeof renderContent === 'function') {
+    renderContent(body, close);
+  }
+
+  return {
+    close,
+    backdrop,
+    dialog,
+    body,
+  };
+}
+
+/**
+ * Open a scrollable mobile modal supporting dynamic `renderContent(body, close)`.
+ * Defaults to centered frosted-glass tactical floating modal (or slide-up sheet when `variant: 'sheet'`).
  */
 export function openModal({
   title = '面板',
@@ -209,25 +357,37 @@ export function openModal({
   content = null,
   actions = [],
   dismissible = true,
+  variant = 'tactical',
+  wide = false,
   onClose = null,
 } = {}) {
-  const sheet = openBottomSheet({
+  if (variant === 'sheet') {
+    const sheet = openBottomSheet({
+      title,
+      subtitle,
+      content,
+      renderContent,
+      actions,
+      dismissible,
+      onClose,
+    });
+    sheet.dialog.classList.add('uikit-modal-dialog');
+    return sheet;
+  }
+  return openTacticalModal({
     title,
     subtitle,
-    content: typeof renderContent === 'function' ? null : content,
+    renderContent,
+    content,
     actions,
     dismissible,
+    wide,
     onClose,
   });
-  sheet.dialog.classList.add('uikit-modal-dialog');
-  if (typeof renderContent === 'function') {
-    renderContent(sheet.body, sheet.close);
-  }
-  return sheet;
 }
 
 /**
- * One-handed confirmation dialog built on Bottom Sheet.
+ * Modern Frosted-Glass Tactical Confirmation Dialog (replaces native browser confirm()).
  * @returns {Promise<boolean>}
  */
 export function confirmDialog({
@@ -249,7 +409,7 @@ export function confirmDialog({
     msgEl.className = 'uikit-confirm-message';
     msgEl.textContent = message;
 
-    openBottomSheet({
+    openTacticalModal({
       title,
       content: msgEl,
       dismissible: true,
@@ -581,6 +741,7 @@ export function createUIKit() {
   return {
     showToast,
     openBottomSheet,
+    openTacticalModal,
     openModal,
     confirmDialog,
     createProgressBar,

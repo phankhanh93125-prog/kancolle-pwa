@@ -32,6 +32,7 @@ import {
   openCharacterCardById,
   persistCharacterRoster,
 } from './character-console.js';
+import { openDockyardTacticalModal } from './port-facilities.js';
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -2147,7 +2148,58 @@ async function renderPortHub() {
     sectionElements.secretary = secCard;
   }
 
-  // 2. Commander Character Card Summary
+  // 2. Commander Character Card Summary + Honor Medals Button
+  const medalsInfo = buildings && typeof buildings.getMedalsOverview === 'function'
+    ? buildings.getMedalsOverview()
+    : { medals: [], unlockedCount: 0, totalCount: 0, totalLuckGained: 0 };
+
+  const openMedalsTacticalModal = () => {
+    const openFn = typeof uiKit.openTacticalModal === 'function' ? uiKit.openTacticalModal : uiKit.openModal;
+    openFn({
+      title: '港区荣誉勋章与阶段指令',
+      subtitle: '达成里程碑永久提升指挥官「独立运气」，直接提高高阶橙装掉率与 D20 关键检定收益',
+      renderContent: (body) => {
+        const ov = buildings.getMedalsOverview();
+        const curProfile = commander.getProfile();
+        body.innerHTML = `
+          <div class="module-stack">
+            <div class="surface-card lab-stack-sm" style="background:var(--surface-alt);">
+              <div class="section-header-row" style="margin-bottom:0;">
+                <strong style="font-size:14px;">已授予勋章 ${ov.unlockedCount} / ${ov.totalCount}</strong>
+                <span class="status-badge badge-ok">勋章累计运气 +${ov.totalLuckGained}</span>
+              </div>
+              <p class="muted-text" style="font-size:12px; margin:0;">
+                指挥官当前独立运气：<strong>${curProfile.luck === 0 ? '0' : formatSigned(curProfile.luck)}</strong>
+                （传说橙装掉率加成 +${Math.round((curProfile.effects?.rareDropBonus || 0) * 100)}%，D20 检定加值 ${formatSigned(curProfile.effects?.luckCheckBonus || 0)}）。
+              </p>
+            </div>
+            <div class="lab-stack-sm" id="medals-modal-list">
+              ${ov.medals
+                .map(
+                  (m) => `
+                <div class="medal-card ${m.unlocked ? 'is-unlocked' : 'is-locked'}" data-medal-id="${escapeHtml(m.id)}">
+                  <div class="medal-card-head">
+                    <div style="display:flex; align-items:center; gap:6px; min-width:0;">
+                      <span class="medal-star" aria-hidden="true">${m.unlocked ? '★' : '☆'}</span>
+                      <strong>${escapeHtml(m.title)}</strong>
+                      <span class="status-badge badge-muted">${escapeHtml(m.category)}</span>
+                    </div>
+                    <span class="status-badge ${m.unlocked ? 'badge-ok' : 'badge-warn'}">
+                      ${m.unlocked ? `已达成 · 运气 +${m.luckBonus}` : `奖励 运气 +${m.luckBonus}`}
+                    </span>
+                  </div>
+                  <p class="muted-text" style="font-size:12px; margin:4px 0 0;">${escapeHtml(m.desc)}</p>
+                </div>
+              `
+                )
+                .join('')}
+            </div>
+          </div>
+        `;
+      },
+    });
+  };
+
   const cmdCard = document.createElement('section');
   cmdCard.className = 'surface-card lab-stack-sm';
   cmdCard.id = 'port-commander-card';
@@ -2185,11 +2237,17 @@ async function renderPortHub() {
       ).join('')}
     </div>
 
-    <button type="button" id="btn-port-edit-commander" class="btn-secondary uikit-touch-target">
-      指挥官加点 / 资料编辑与调试
-    </button>
+    <div class="lab-btn-grid">
+      <button type="button" id="btn-port-edit-commander" class="btn-secondary uikit-touch-target">
+        加点 / 资料编辑
+      </button>
+      <button type="button" id="btn-port-open-medals" class="btn-primary uikit-touch-target">
+        荣誉勋章 (${medalsInfo.unlockedCount}/${medalsInfo.totalCount})
+      </button>
+    </div>
   `;
   cmdCard.querySelector('#btn-port-edit-commander').addEventListener('click', () => openCommanderSheet());
+  cmdCard.querySelector('#btn-port-open-medals').addEventListener('click', () => openMedalsTacticalModal());
   sectionElements.commander = cmdCard;
 
   // 3. Streamlined Port Operations Strip (Quick Sortie CTA + One-Tap Resupply)
@@ -2254,7 +2312,7 @@ async function renderPortHub() {
       <button type="button" class="port-building-tile is-featured" id="btn-open-sortie-hub" data-open-facility="sortie">
         <div class="port-building-head">
           <strong>出征海图</strong>
-          <span class="status-badge badge-ok">8~15节点</span>
+          <span class="status-badge badge-ok">制海进度</span>
         </div>
         <span class="port-building-sub">同台无缝切换海图 / 遭遇剧情 / 战斗</span>
       </button>
@@ -2280,7 +2338,7 @@ async function renderPortHub() {
           <strong>船坞整备 · Lv.${dock.level}</strong>
           <span class="status-badge ${dock.queue.length > 0 ? 'badge-warn' : 'badge-ok'}">${dock.queue.length}/${dock.capacity}渠位</span>
         </div>
-        <span class="port-building-sub">入渠维修队列 · 新舰随机性格建造</span>
+        <span class="port-building-sub">战术浮窗快速入渠维修 · 新舰建造</span>
       </button>
 
       <button type="button" class="port-building-tile" id="btn-open-expedition" data-open-facility="expedition">
@@ -2296,7 +2354,7 @@ async function renderPortHub() {
           <strong>仓库工坊</strong>
           <span class="status-badge badge-ok">${itemCount} 件</span>
         </div>
-        <span class="port-building-sub">紧凑分类装备仓储 · 强化与补给商店</span>
+        <span class="port-building-sub">强化+10与白→橙升阶 · 拆解余料</span>
       </button>
 
       <button type="button" class="port-building-tile" id="btn-open-compendium-hub" data-open-facility="compendium">
@@ -2312,7 +2370,7 @@ async function renderPortHub() {
           <strong>舰娘角色卡</strong>
           <span class="status-badge badge-muted">${charCount} 名</span>
         </div>
-        <span class="port-building-sub">八维属性 · 扩建专属类型槽位与最优配装</span>
+        <span class="port-building-sub">八维属性 · 分舰种槽位上限扩建</span>
       </button>
 
       ${customBlds
@@ -2343,7 +2401,7 @@ async function renderPortHub() {
     if (modules.has('port-dormitory')) modules.mount('port-dormitory', { transition: 'left' });
   });
   bldCard.querySelector('#btn-open-dockyard').addEventListener('click', () => {
-    if (modules.has('port-dockyard')) modules.mount('port-dockyard', { transition: 'left' });
+    openDockyardTacticalModal(portState.context);
   });
   bldCard.querySelector('#btn-open-expedition').addEventListener('click', () => {
     if (modules.has('port-expedition')) modules.mount('port-expedition', { transition: 'left' });
@@ -2435,6 +2493,7 @@ export default {
 
     portState.unsubs = [
       context.bus.on('port:open-commander', () => openCommanderSheet()),
+      context.bus.on('medal:unlocked', () => renderPortHub()),
       context.bus.on('story:theatre-updated', () => renderPortHub()),
       context.bus.on('story:packs-changed', () => renderPortHub()),
       context.bus.on('content:mod-imported', () => renderPortHub()),
@@ -2443,6 +2502,7 @@ export default {
       context.bus.on('inventory:equipped', () => renderPortHub()),
       context.bus.on('inventory:unequipped', () => renderPortHub()),
       context.bus.on('inventory:enhanced', () => renderPortHub()),
+      context.bus.on('inventory:promoted', () => renderPortHub()),
       context.bus.on('sortie:returned', () => renderPortHub()),
       context.bus.on('commander:updated', () => renderPortHub()),
       context.bus.on('formation:changed', () => renderPortHub()),

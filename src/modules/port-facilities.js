@@ -694,6 +694,21 @@ function createFormationModule() {
         ${rowsHtml.join('')}
       </div>
 
+      <div class="formation-live-eval-bar" id="formation-live-eval-bar" aria-label="编队实时评估条">
+        <div class="form-eval-item">
+          <span class="form-eval-k">阶梯单步消耗</span>
+          <strong class="form-eval-v">油 ${costInfo.fuel} / 弹 ${costInfo.ammo}</strong>
+        </div>
+        <div class="form-eval-item">
+          <span class="form-eval-k">全队总侦查</span>
+          <strong class="form-eval-v">${summary.effective.recon}</strong>
+        </div>
+        <div class="form-eval-item">
+          <span class="form-eval-k">全队总防空</span>
+          <strong class="form-eval-v">${summary.effective.aa}</strong>
+        </div>
+      </div>
+
       <div class="tac-board-hint ${selectedCell ? 'is-active' : ''}" id="formation-grid-hint">${escapeHtml(hintText)}</div>
 
       ${
@@ -1185,6 +1200,161 @@ function createExpeditionModule() {
       state.context = null;
     },
   };
+}
+
+/**
+ * Centered Frosted-Glass Floating Dockyard Repair & Construction Tactical Modal.
+ */
+export function openDockyardTacticalModal(context) {
+  if (!context) return null;
+  const { buildings, entities, resources, rootStorage, modules, uiKit } = context;
+  const openFn = typeof uiKit.openTacticalModal === 'function' ? uiKit.openTacticalModal : uiKit.openModal;
+
+  return openFn({
+    title: '船坞整备 · 入渠维修浮窗',
+    subtitle: '点击舰娘快速入渠维修、加速出渠或建造新舰，点击遮罩关闭',
+    renderContent: (body, close) => {
+      const renderInner = () => {
+        const dock = buildings.getDockyardState();
+        const chars = getAllCharacters(entities);
+        const inDockIds = new Set(dock.queue.map((q) => q.characterId));
+        const repairable = chars
+          .filter((c) => !inDockIds.has(c.id))
+          .sort((a, b) => {
+            const pa = buildings.computeDockRepairPlan(a.id);
+            const pb = buildings.computeDockRepairPlan(b.id);
+            return pb.missingHp - pa.missingHp;
+          });
+
+        body.innerHTML = `
+          <div class="module-stack">
+            <div class="surface-card lab-stack-sm" style="background:var(--surface-alt);">
+              <div class="section-header-row" style="margin-bottom:0;">
+                <strong style="font-size:13.5px;">维修渠位 · Lv.${dock.level}（${dock.queue.length}/${dock.capacity}）</strong>
+                <button type="button" id="btn-tm-dock-expand" class="btn-secondary uikit-touch-target" style="padding:0 10px; min-height:32px; font-size:12px;" ${dock.canExpand ? '' : 'disabled'}>
+                  ${dock.canExpand ? '扩建 +1 渠位' : '已满渠位'}
+                </button>
+              </div>
+              ${
+                dock.queue.length === 0
+                  ? '<p class="muted-text" style="font-size:12px; margin:0;">当前维修渠位空闲，可从下方选择受损舰娘入渠。</p>'
+                  : dock.queue
+                      .map(
+                        (job) => `
+                    <div class="lab-slot-card" style="padding:8px 10px;">
+                      <div class="lab-slot-head">
+                        <strong>${escapeHtml(job.characterName)}</strong>
+                        <span class="status-badge ${job.ready ? 'badge-ok' : 'badge-warn'}">
+                          ${job.ready ? '完工可出渠' : `剩余 ${formatDurationZh(job.remainingSec)}`}
+                        </span>
+                      </div>
+                      ${
+                        job.ready
+                          ? `<button type="button" class="btn-primary uikit-touch-target" style="min-height:36px;" data-tm-dock-complete="${escapeHtml(job.characterId)}">完成出渠</button>`
+                          : `<button type="button" class="btn-secondary uikit-touch-target" style="min-height:36px;" data-tm-dock-fast="${escapeHtml(job.characterId)}">快速修复（损管/40银）</button>`
+                      }
+                    </div>
+                  `
+                      )
+                      .join('')
+              }
+            </div>
+
+            <div class="surface-card lab-stack-sm">
+              <div class="section-header-row" style="margin-bottom:0;">
+                <strong style="font-size:13.5px;">舰队入渠列表（优先显示受损舰娘）</strong>
+                <span class="status-badge badge-muted">${repairable.length} 名</span>
+              </div>
+              <div class="lab-stack-sm">
+                ${repairable
+                  .map((c) => {
+                    const plan = buildings.computeDockRepairPlan(c.id);
+                    return `
+                    <div class="cc-slot-row" style="padding:8px 10px;">
+                      <div class="cc-slot-info">
+                        <span class="cc-slot-item-name">
+                          ${escapeHtml(c.name)}
+                          <span class="status-badge ${plan.missingHp > 0 ? 'badge-danger' : 'badge-ok'}" style="margin-left:4px;">
+                            ${plan.missingHp > 0 ? `损血 -${plan.missingHp}` : '满血'}
+                          </span>
+                        </span>
+                        <span class="cc-slot-label">耗时 ${plan.durationText} · ${escapeHtml(formatCostInline(plan.cost, resources))}</span>
+                      </div>
+                      <button type="button" class="${plan.missingHp > 0 ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" style="padding:0 12px; min-height:34px; font-size:12px;" data-tm-dock-start="${escapeHtml(c.id)}" ${dock.queue.length >= dock.capacity ? 'disabled' : ''}>
+                        ${plan.isMaintenanceOnly ? '保养入渠' : '立即入渠'}
+                      </button>
+                    </div>
+                  `;
+                  })
+                  .join('')}
+              </div>
+            </div>
+
+            <div class="lab-btn-grid">
+              <button type="button" id="btn-tm-dock-fullpage" class="btn-secondary uikit-touch-target">新舰建造 / 完整船坞页</button>
+              <button type="button" id="btn-tm-dock-close" class="btn-secondary uikit-touch-target">关闭浮窗</button>
+            </div>
+          </div>
+        `;
+
+        body.querySelector('#btn-tm-dock-expand')?.addEventListener('click', async () => {
+          try {
+            const next = await buildings.expandDockyard();
+            uiKit.showToast(`船坞已扩建至 Lv.${next.level}（${next.capacity} 渠位）`, 'ok');
+            renderInner();
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '扩建失败', 'warn');
+          }
+        });
+
+        body.querySelectorAll('[data-tm-dock-complete]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            try {
+              const res = await buildings.completeDockRepair(btn.getAttribute('data-tm-dock-complete'));
+              await persistCharacterRoster({ storage: rootStorage, entities });
+              uiKit.showToast(`「${res.characterName}」已满血出渠！`, 'ok');
+              renderInner();
+            } catch (err) {
+              uiKit.showToast(err instanceof Error ? err.message : '出渠失败', 'warn');
+            }
+          });
+        });
+
+        body.querySelectorAll('[data-tm-dock-fast]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            try {
+              const res = await buildings.completeDockRepair(btn.getAttribute('data-tm-dock-fast'), { fastRepair: true });
+              await persistCharacterRoster({ storage: rootStorage, entities });
+              uiKit.showToast(`「${res.characterName}」快速修复完成（${res.fastMethod}）`, 'ok');
+              renderInner();
+            } catch (err) {
+              uiKit.showToast(err instanceof Error ? err.message : '快速修复失败', 'warn');
+            }
+          });
+        });
+
+        body.querySelectorAll('[data-tm-dock-start]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            try {
+              const job = await buildings.startDockRepair(btn.getAttribute('data-tm-dock-start'));
+              uiKit.showToast(`「${job.characterName}」已入渠维修（${formatDurationZh(job.durationSec)}）`, 'ok');
+              renderInner();
+            } catch (err) {
+              uiKit.showToast(err instanceof Error ? err.message : '入渠失败', 'warn');
+            }
+          });
+        });
+
+        body.querySelector('#btn-tm-dock-fullpage')?.addEventListener('click', () => {
+          close();
+          if (modules?.has('port-dockyard')) modules.mount('port-dockyard', { transition: 'left' });
+        });
+        body.querySelector('#btn-tm-dock-close')?.addEventListener('click', () => close());
+      };
+
+      renderInner();
+    },
+  });
 }
 
 export const portDormitoryModule = createDormitoryModule();

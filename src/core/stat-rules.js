@@ -105,7 +105,87 @@ export const SHIP_CLASS_PROFILES = Object.freeze({
       visionRangeBonus: 1,
     },
   },
+  SS: {
+    code: 'SS',
+    name: '潜艇',
+    fullName: '潜艇',
+    color: '#22d3ee',
+    roleSummary: '极高雷击与水下隐蔽 · 开幕雷击奇袭 · 消耗极低但耐久脆弱',
+    growth: { maxHp: 1, firepower: 1, armor: 1, torpedo: 4, evasion: 3, recon: 2, aa: 0, asw: 1 },
+    stepCost: { fuel: 5, ammo: 6 },
+    combat: {
+      torpedoArmorPen: 0.65,
+      torpedoCritMult: 2.25,
+    },
+  },
 });
+
+/**
+ * Ship-class custom expandable equipment slot caps (outside 3 fixed core slots: engine/armor/core):
+ *   - DD / SS : max 2 expanded slots
+ *   - CL / CA : max 3 expanded slots
+ *   - BB / CV : max 4 expanded slots
+ */
+export const SHIP_CLASS_CUSTOM_SLOT_CAPS = Object.freeze({
+  DD: 2,
+  SS: 2,
+  CL: 3,
+  CA: 3,
+  BB: 4,
+  CV: 4,
+});
+
+export function getShipClassSlotCap(shipType = '') {
+  const code = resolveShipClass(shipType);
+  return SHIP_CLASS_CUSTOM_SLOT_CAPS[code] ?? 3;
+}
+
+/**
+ * Escalating material cost (steel / bauxite / silver) for expanding a shipgirl's N-th custom slot.
+ */
+export function getSlotExpansionCost(currentExpandedCount = 0) {
+  const n = Math.max(0, Math.floor(Number(currentExpandedCount) || 0));
+  return {
+    steel: 80 + n * 75,
+    bauxite: 50 + n * 45,
+    silver: 120 + n * 110,
+  };
+}
+
+/**
+ * Material cost (steel / bauxite / silver) for re-tooling an existing expanded slot's equipment type.
+ */
+export function getSlotChangeTypeCost(currentExpandedCount = 1) {
+  const n = Math.max(0, Math.floor(Number(currentExpandedCount) || 1) - 1);
+  return {
+    steel: 45 + n * 20,
+    bauxite: 30 + n * 15,
+    silver: 65 + n * 35,
+  };
+}
+
+/**
+ * Compute material + salvageParts cost for promoting a +10 max-enhanced item to the next rarity tier
+ * (White -> Green -> Blue -> Purple -> Orange).
+ */
+export function getEquipmentPromoteCost(item = {}, { discount = 0 } = {}) {
+  const rarityId = inferItemRarity(item);
+  const idx = ITEM_RARITY_ORDER.indexOf(rarityId);
+  if (idx < 0 || idx >= ITEM_RARITY_ORDER.length - 1) return null;
+  const nextRarityId = ITEM_RARITY_ORDER[idx + 1];
+  const tierScale = idx + 1; // 1 (common->uncommon) .. 4 (epic->legendary)
+  const factor = Math.max(0.55, 1 - clamp(Number(discount) || 0, 0, 0.45));
+  return {
+    fromRarity: rarityId,
+    toRarity: nextRarityId,
+    resources: {
+      steel: Math.max(40, Math.round((120 * tierScale) * factor)),
+      bauxite: Math.max(25, Math.round((80 * tierScale) * factor)),
+      silver: Math.max(80, Math.round((180 * tierScale) * factor)),
+    },
+    salvageParts: Math.max(2, tierScale * 4),
+  };
+}
 
 /**
  * 3~12 Fleet Staggered Resource Consumption Tiers:
@@ -127,7 +207,7 @@ export function getFleetSlotCostFactor(zeroBasedIndex) {
 }
 
 /**
- * Map any Chinese/English/custom shipType string to one of the 5 canonical class codes ('DD'|'CL'|'CA'|'BB'|'CV').
+ * Map any Chinese/English/custom shipType string to one of the canonical class codes ('DD'|'SS'|'CL'|'CA'|'BB'|'CV').
  */
 export function resolveShipClass(shipType = '') {
   const s = String(shipType || '').trim().toUpperCase();
@@ -135,8 +215,9 @@ export function resolveShipClass(shipType = '') {
   if (s.includes('航母') || s.includes('空母') || s.includes('CV') || s.includes('CARRIER')) return 'CV';
   if (s.includes('战列') || s.includes('战巡') || s.includes('BB') || s.includes('BATTLESHIP')) return 'BB';
   if (s.includes('重巡') || s.includes('CA') || s.includes('HEAVY')) return 'CA';
+  if (s.includes('潜艇') || s.includes('潜舰') || s === 'SS' || s.includes('SUB')) return 'SS';
   if (s.includes('轻巡') || s.includes('CL') || s.includes('工作') || s.includes('LIGHT')) return 'CL';
-  if (s.includes('驱逐') || s.includes('潜艇') || s.includes('DD') || s.includes('SS') || s.includes('DESTROYER')) return 'DD';
+  if (s.includes('驱逐') || s.includes('DD') || s.includes('DESTROYER')) return 'DD';
   return 'CL';
 }
 
@@ -146,33 +227,122 @@ export function getShipClassProfile(shipType = '') {
 }
 
 /**
- * Authoritative definitions for all Ship-Class Exclusive Tactical Commands + Universal Evade/Retreat.
+ * Authoritative definitions for Equipment-Driven Tactical Commands + Universal Basic Commands.
  */
 export const TACTICAL_ACTION_DEFS = Object.freeze({
+  basic_fire: {
+    id: 'basic_fire',
+    label: '常规射击',
+    shortLabel: '常规射击',
+    desc: '通用副炮/轻武器射击，未装配专项武器时始终可用',
+    statKey: 'firepower',
+    kind: 'attack',
+    visualStyle: 'shelling',
+    tone: 'shelling',
+    idealRanges: ['medium', 'close'],
+    cost: { fuel: 0, ammo: 4 },
+    universal: true,
+    requiredEquipmentType: null,
+  },
+  evade_maneuver: {
+    id: 'evade_maneuver',
+    label: '机动规避 / 调整站位',
+    shortLabel: '机动规避',
+    desc: '拉近或拉开交战距离并强化闪避减伤（非BOSS可尝试迂回脱离）',
+    statKey: 'evasion',
+    kind: 'maneuver',
+    visualStyle: 'evade',
+    tone: 'maneuver',
+    idealRanges: ['long', 'medium', 'close'],
+    cost: { fuel: 6, ammo: 0 },
+    universal: true,
+    requiredEquipmentType: null,
+  },
+  main_salvo: {
+    id: 'main_salvo',
+    label: '主炮齐射',
+    shortLabel: '主炮齐射',
+    desc: '高穿甲远程火力打击（无视 45% 护甲，远/中距全威）',
+    statKey: 'firepower',
+    kind: 'attack',
+    visualStyle: 'shelling',
+    tone: 'shelling',
+    idealRanges: ['long', 'medium'],
+    cost: { fuel: 0, ammo: 12 },
+    requiredEquipmentType: 'main_gun',
+    requiredHint: '需装备主炮',
+  },
   torpedo_strike: {
     id: 'torpedo_strike',
     label: '鱼雷突击',
     shortLabel: '鱼雷突击',
-    desc: '近/中距离高破甲暴击打击（近距额外 +30%）',
+    desc: '中近距离高爆发雷击（高破甲高暴击，近距额外 +30%）',
     statKey: 'torpedo',
     kind: 'attack',
     visualStyle: 'torpedo',
     tone: 'torpedo',
     idealRanges: ['close', 'medium'],
     cost: { fuel: 0, ammo: 10 },
+    requiredEquipmentType: 'torpedo',
+    requiredHint: '需装备鱼雷',
+  },
+  carrier_airstrike: {
+    id: 'carrier_airstrike',
+    label: '舰载机空袭',
+    shortLabel: '舰载机空袭',
+    desc: '无视前后排距离衰减的全图打击（受敌方防空削减）',
+    statKey: 'firepower',
+    kind: 'attack',
+    visualStyle: 'airstrike',
+    tone: 'airstrike',
+    idealRanges: ['long', 'medium', 'close'],
+    cost: { fuel: 4, ammo: 10 },
+    requiredEquipmentType: 'aircraft',
+    requiredHint: '需装备舰载机',
+  },
+  aa_alert: {
+    id: 'aa_alert',
+    label: '防空警戒网',
+    shortLabel: '防空警戒网',
+    desc: '2 回合内为自身及相邻格子队友提供高额防空减伤护盾',
+    statKey: 'aa',
+    kind: 'support',
+    visualStyle: 'aa',
+    tone: 'support',
+    idealRanges: ['long', 'medium', 'close'],
+    cost: { fuel: 0, ammo: 6 },
+    requiredEquipmentType: 'aa_gun',
+    requiredHint: '需装备防空',
+  },
+  radar_scan: {
+    id: 'radar_scan',
+    label: '雷达校射扫描',
+    shortLabel: '雷达扫描',
+    desc: '揭露敌舰意图弱点并大幅提升全队命中（锁定 +4）',
+    statKey: 'recon',
+    kind: 'recon',
+    visualStyle: 'scan',
+    tone: 'scan',
+    idealRanges: ['long', 'medium', 'close'],
+    cost: { fuel: 4, ammo: 0 },
+    requiredEquipmentType: 'radar',
+    requiredHint: '需装备雷达',
   },
   depth_asw: {
     id: 'depth_asw',
-    label: '深水反潜',
-    shortLabel: '深水反潜',
-    desc: '克制水下潜艇造成巨额克制伤害并压制伏击',
+    label: '声呐深弹反潜',
+    shortLabel: '声呐反潜',
+    desc: '锁定并重创水下潜艇/隐蔽目标，压制敌方先制伏击',
     statKey: 'asw',
     kind: 'attack',
     visualStyle: 'asw',
     tone: 'scan',
     idealRanges: ['close', 'medium'],
     cost: { fuel: 0, ammo: 6 },
+    requiredEquipmentType: 'sonar',
+    requiredHint: '需装备声呐',
   },
+  // Legacy action aliases preserved for 100% backward compatibility with existing scripts/tests
   smoke_screen: {
     id: 'smoke_screen',
     label: '释放烟幕',
@@ -209,30 +379,6 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     idealRanges: ['medium', 'close'],
     cost: { fuel: 0, ammo: 8 },
   },
-  aa_alert: {
-    id: 'aa_alert',
-    label: '防空警戒',
-    shortLabel: '防空警戒',
-    desc: '2 回合内大幅削减敌方空袭伤害并击落来袭敌机',
-    statKey: 'aa',
-    kind: 'support',
-    visualStyle: 'aa',
-    tone: 'support',
-    idealRanges: ['long', 'medium', 'close'],
-    cost: { fuel: 0, ammo: 6 },
-  },
-  radar_scan: {
-    id: 'radar_scan',
-    label: '雷达扫描',
-    shortLabel: '雷达扫描',
-    desc: '揭露敌舰完整护甲/弱点/意图，全队锁定命中 +3',
-    statKey: 'recon',
-    kind: 'recon',
-    visualStyle: 'scan',
-    tone: 'scan',
-    idealRanges: ['long', 'medium', 'close'],
-    cost: { fuel: 4, ammo: 0 },
-  },
   heavy_shelling: {
     id: 'heavy_shelling',
     label: '重炮射击',
@@ -257,18 +403,6 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     idealRanges: ['long', 'medium', 'close'],
     cost: { fuel: 4, ammo: 0 },
   },
-  main_salvo: {
-    id: 'main_salvo',
-    label: '主炮齐射',
-    shortLabel: '主炮齐射',
-    desc: '无视 45% 护甲的高额远程战列齐射（远/中距最佳）',
-    statKey: 'firepower',
-    kind: 'attack',
-    visualStyle: 'shelling',
-    tone: 'shelling',
-    idealRanges: ['long', 'medium'],
-    cost: { fuel: 0, ammo: 14 },
-  },
   fire_suppress: {
     id: 'fire_suppress',
     label: '火力压制',
@@ -281,23 +415,11 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     idealRanges: ['long', 'medium'],
     cost: { fuel: 0, ammo: 12 },
   },
-  carrier_airstrike: {
-    id: 'carrier_airstrike',
-    label: '舰载机空袭',
-    shortLabel: '舰载机空袭',
-    desc: '远程无视前排护甲精确轰炸（受敌方防空削减）',
-    statKey: 'firepower',
-    kind: 'attack',
-    visualStyle: 'airstrike',
-    tone: 'airstrike',
-    idealRanges: ['long', 'medium'],
-    cost: { fuel: 4, ammo: 10 },
-  },
   carrier_recon: {
     id: 'carrier_recon',
     label: '舰载侦察',
     shortLabel: '舰载侦察',
-    desc: '大范围揭露全部敌舰情报告并提升全队暴击 +20%',
+    desc: '大范围揭露全部敌舰情报并提升全队暴击 +20%',
     statKey: 'recon',
     kind: 'recon',
     visualStyle: 'scan',
@@ -320,8 +442,20 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
   },
 });
 
+export const GEAR_DRIVEN_ACTION_ORDER = Object.freeze([
+  'main_salvo',
+  'torpedo_strike',
+  'carrier_airstrike',
+  'aa_alert',
+  'radar_scan',
+  'depth_asw',
+  'basic_fire',
+  'evade_maneuver',
+]);
+
 export const SHIP_CLASS_EXCLUSIVE_ACTIONS = Object.freeze({
   DD: ['torpedo_strike', 'depth_asw', 'smoke_screen', 'full_ahead'],
+  SS: ['torpedo_strike', 'evade_maneuver'],
   CL: ['tactical_shelling', 'torpedo_strike', 'aa_alert', 'radar_scan'],
   CA: ['heavy_shelling', 'vanguard_guard', 'full_ahead'],
   BB: ['main_salvo', 'fire_suppress'],
@@ -329,36 +463,68 @@ export const SHIP_CLASS_EXCLUSIVE_ACTIONS = Object.freeze({
 });
 
 /**
- * Return the ordered list of tactical action definitions for a shipgirl's class,
- * plus the universal 'evade_retreat' option.
+ * Build the Equipment-Driven Tactical Command list for a shipgirl based strictly on her currently equipped items:
+ *   - Universal basic commands (`basic_fire`, `evade_maneuver`) are ALWAYS unlocked.
+ *   - Specialized commands (`main_salvo`, `torpedo_strike`, `carrier_airstrike`, `aa_alert`, `radar_scan`, `depth_asw`)
+ *     are unlocked ONLY when the shipgirl currently wears an equipment item of the matching Known Equipment Type.
+ *     Locked commands are returned with `unlocked: false` & `requiredHint` (e.g. `需装备鱼雷`) so the UI clearly renders them disabled.
  */
-export function getShipClassTacticalActions(shipType = '', { includeUniversal = true, phase = 'day' } = {}) {
+export function getGearDrivenTacticalActions(equippedItems = [], { phase = 'day' } = {}) {
+  const wornTypes = new Set();
+  const list = Array.isArray(equippedItems) ? equippedItems : Object.values(equippedItems || {});
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    if (item.category === 'consumable' || item.category === 'outfit') continue;
+    const eqType = inferEquipmentTypeId(item, null);
+    if (eqType) wornTypes.add(eqType);
+  }
+
+  const actions = GEAR_DRIVEN_ACTION_ORDER.map((id) => {
+    const base = TACTICAL_ACTION_DEFS[id];
+    const reqType = base.requiredEquipmentType || null;
+    const unlocked = !reqType || wornTypes.has(reqType);
+    let label = base.label;
+    let desc = base.desc;
+    if (phase === 'night' && id === 'torpedo_strike') {
+      label = '夜战鱼雷突击';
+      desc = '夜战核心爆发！中近距雷击伤害 +45%、暴击率大幅提升';
+    } else if (phase === 'night' && id === 'carrier_airstrike') {
+      label = '夜间舰载空袭';
+      desc = '无视前后排距离衰减的夜间航空突击（威力略降）';
+    }
+    return {
+      ...base,
+      label,
+      desc,
+      unlocked,
+      requiredTypeId: reqType,
+      requiredHint: unlocked ? null : base.requiredHint || '需装备对应武器',
+    };
+  });
+
+  // Sort unlocked specialized actions first, then basic universal actions, then locked gear skills so thumb reach is effortless!
+  const unlockedGear = actions.filter((a) => !a.universal && a.unlocked);
+  const basics = actions.filter((a) => a.universal);
+  const lockedGear = actions.filter((a) => !a.universal && !a.unlocked);
+  return [...unlockedGear, ...basics, ...lockedGear];
+}
+
+/**
+ * Backward-compatible class-based helper.
+ */
+export function getShipClassTacticalActions(shipType = '', { includeUniversal = true, phase = 'day', equippedItems = null } = {}) {
+  if (equippedItems !== null && equippedItems !== undefined) {
+    return getGearDrivenTacticalActions(equippedItems, { phase });
+  }
   const code = resolveShipClass(shipType);
   const ids = [...(SHIP_CLASS_EXCLUSIVE_ACTIONS[code] || SHIP_CLASS_EXCLUSIVE_ACTIONS.CL)];
-  // During night battle, CV can still perform night recon & tactical support strikes
   if (includeUniversal) {
     ids.push('evade_retreat');
   }
   return ids
     .map((id) => TACTICAL_ACTION_DEFS[id])
     .filter(Boolean)
-    .map((def) => {
-      if (phase === 'night' && def.id === 'carrier_airstrike') {
-        return {
-          ...def,
-          label: '夜间舰载突袭',
-          desc: '夜战照明弹引导下的舰载机精确补刀（威力略降）',
-        };
-      }
-      if (phase === 'night' && def.id === 'torpedo_strike') {
-        return {
-          ...def,
-          label: '夜战雷击突击',
-          desc: '夜战核心爆发！伤害 +45%、暴击率大幅提升',
-        };
-      }
-      return { ...def };
-    });
+    .map((def) => ({ ...def, unlocked: true }));
 }
 
 /**
@@ -477,14 +643,16 @@ export function computeRangeRowCombatModifiers({
   const cls = String(shipClass || 'CL').toUpperCase();
   const act = String(actionId || '');
 
+  const isAirstrikeFullMap = act === 'carrier_airstrike' || act === 'airstrike';
+  if (isAirstrikeFullMap) {
+    return { effectiveDist, rowSpan, dmgMult: 1.0, hitMod: 1, label: '全图空袭无视衰减', tone: 'ok' };
+  }
+
   const isUltraLong =
     act === 'main_salvo' ||
     act === 'fire_suppress' ||
-    act === 'carrier_airstrike' ||
     act === 'salvo' ||
-    act === 'airstrike' ||
     cls === 'BB' ||
-    cls === 'CV' ||
     cls === 'BOSS';
 
   const isShortRange =
@@ -495,7 +663,7 @@ export function computeRangeRowCombatModifiers({
     (!isUltraLong && (cls === 'DD' || cls === 'SS'));
 
   if (isUltraLong) {
-    // Battleships & Carriers excel across the entire 3x4 grid even from backline -> enemy backline
+    // Battleships excel across the entire 3x4 grid even from backline -> enemy backline
     if (effectiveDist >= 4) {
       return { effectiveDist, rowSpan, dmgMult: 1.15, hitMod: 2, label: '超远射程全威', tone: 'ok' };
     }
@@ -524,22 +692,71 @@ export function computeRangeRowCombatModifiers({
       return { effectiveDist, rowSpan, dmgMult: 0.84, hitMod: -2, label: '跨排射程衰减', tone: 'warn' };
     }
     if (effectiveDist === 4) {
-      return { effectiveDist, rowSpan, dmgMult: 0.72, hitMod: -3, label: '远距跨排明显衰减', tone: 'danger' };
+      return { effectiveDist, rowSpan, dmgMult: 0.7, hitMod: -3, label: '远距跨排衰减 -30%', tone: 'danger' };
     }
-    return { effectiveDist, rowSpan, dmgMult: 0.62, hitMod: -4, label: '超距衰减（建议突进）', tone: 'danger' };
+    return { effectiveDist, rowSpan, dmgMult: 0.62, hitMod: -4, label: '超距衰减 -38%（建议突进）', tone: 'danger' };
   }
 
-  // Mid-range Cruisers (CL/CA shelling)
+  // Mid-range Cruisers & Basic Fire
   if (effectiveDist <= 1) {
-    return { effectiveDist, rowSpan, dmgMult: 1.1, hitMod: 1, label: '近中距精准火力', tone: 'ok' };
+    return { effectiveDist, rowSpan, dmgMult: 1.08, hitMod: 1, label: '近中距精准火力', tone: 'ok' };
   }
   if (effectiveDist <= 3) {
-    return { effectiveDist, rowSpan, dmgMult: 1.04, hitMod: 0, label: '巡洋最佳射程', tone: 'ok' };
+    return { effectiveDist, rowSpan, dmgMult: 1.0, hitMod: 0, label: '中距标准射程', tone: 'ok' };
   }
   if (effectiveDist === 4) {
-    return { effectiveDist, rowSpan, dmgMult: 0.9, hitMod: -1, label: '远距微幅衰减', tone: 'warn' };
+    return { effectiveDist, rowSpan, dmgMult: 0.88, hitMod: -1, label: '远距跨排衰减 -12%', tone: 'warn' };
   }
-  return { effectiveDist, rowSpan, dmgMult: 0.82, hitMod: -2, label: '远距跨排衰减', tone: 'warn' };
+  return { effectiveDist, rowSpan, dmgMult: 0.78, hitMod: -2, label: '远距跨排衰减 -22%', tone: 'warn' };
+}
+
+/**
+ * Compute real-time Aiming Preview metrics (hit chance %, damage multiplier %, and concise 1-line summary)
+ * displayed above the battle command bar whenever an enemy symbol is targeted on the 3x4 sandbox.
+ */
+export function computeTacticalAimPreview({
+  engagementRange = 'long',
+  attackerRow = 0,
+  defenderRow = 0,
+  actionId = 'basic_fire',
+  shipClass = 'CL',
+  attackerStat = 55,
+  targetEvasion = 55,
+  lockOnBonus = 0,
+  commanderTactics = 0,
+} = {}) {
+  const mod = computeRangeRowCombatModifiers({
+    engagementRange,
+    attackerRow,
+    defenderRow,
+    actionId,
+    shipClass,
+  });
+  const rangeLabel = engagementRange === 'close' ? '近距离' : engagementRange === 'medium' ? '中距离' : '远距离';
+  const statDelta = (Number(attackerStat) || 55) - (Number(targetEvasion) || 55);
+  const rawHit =
+    78 +
+    Math.round(statDelta * 0.28) +
+    (mod.hitMod || 0) * 5 +
+    (Number(lockOnBonus) || 0) * 4 +
+    (Number(commanderTactics) || 0) * 3;
+  const hitChancePct = clamp(Math.round(rawHit), 32, 99);
+  const dmgMultPct = Math.round((mod.dmgMult || 1.0) * 100);
+  const decayDelta = dmgMultPct - 100;
+  const decayTag =
+    decayDelta < 0
+      ? `远距跨排衰减 ${decayDelta}%`
+      : decayDelta > 0
+      ? `${mod.label} +${decayDelta}%`
+      : mod.label;
+
+  return {
+    ...mod,
+    rangeLabel,
+    hitChancePct,
+    dmgMultPct,
+    summaryText: `${rangeLabel} · 预计命中 ${hitChancePct}% · 伤害倍率 ${dmgMultPct}%（${decayTag}）`,
+  };
 }
 
 /**

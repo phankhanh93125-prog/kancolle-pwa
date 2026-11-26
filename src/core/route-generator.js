@@ -646,6 +646,49 @@ export function createPresetRoutes() {
   ];
 }
 
+const SEA_CONTROL_KEY = 'sea-control-v1';
+
+export const SEA_CONTROL_ZONES = Object.freeze([
+  {
+    id: 'low',
+    code: '1-1',
+    name: '近海防卫区',
+    difficultyLabel: '低危海域',
+    bossGainPct: 35,
+    expeditionYieldBonusPct: 15,
+    patrolYieldBonusPct: 15,
+    unlockRequires: null,
+  },
+  {
+    id: 'medium',
+    code: '2-1',
+    name: '外海破交航道',
+    difficultyLabel: '中危海域',
+    bossGainPct: 35,
+    expeditionYieldBonusPct: 20,
+    patrolYieldBonusPct: 20,
+    unlockRequires: 'low',
+  },
+  {
+    id: 'high',
+    code: '3-1',
+    name: '深海要塞核心区',
+    difficultyLabel: '高危海域',
+    bossGainPct: 34,
+    expeditionYieldBonusPct: 25,
+    patrolYieldBonusPct: 25,
+    unlockRequires: 'medium',
+  },
+]);
+
+function createDefaultSeaControlState() {
+  return {
+    low: { progress: 0, clearedCount: 0, controlledAt: null },
+    medium: { progress: 0, clearedCount: 0, controlledAt: null },
+    high: { progress: 0, clearedCount: 0, controlledAt: null },
+  };
+}
+
 export class RouteGenerator {
   /**
    * @param {{
@@ -657,6 +700,7 @@ export class RouteGenerator {
     this._scope = storage ? storage.namespace(STORAGE_NS) : null;
     this._bus = bus;
     this._customRoutes = [];
+    this._seaControl = createDefaultSeaControlState();
     // Build a deterministic 10-node branching preset sea chart alongside classic presets
     let seed = 133791;
     const seededRng = () => {
@@ -694,6 +738,10 @@ export class RouteGenerator {
     if (this._scope) {
       const saved = await this._scope.getLarge(CUSTOM_ROUTES_KEY, []);
       this._customRoutes = Array.isArray(saved) ? deepClone(saved) : [];
+      const savedControl = await this._scope.getLarge(SEA_CONTROL_KEY, null);
+      if (savedControl && typeof savedControl === 'object') {
+        this.deserializeSeaControl(savedControl, { persist: false });
+      }
     }
     this._hydrated = true;
   }
@@ -701,6 +749,132 @@ export class RouteGenerator {
   async persistCustomRoutes() {
     if (!this._scope) return;
     await this._scope.setLarge(CUSTOM_ROUTES_KEY, this._customRoutes);
+  }
+
+  async persistSeaControl() {
+    if (!this._scope) return;
+    await this._scope.setLarge(SEA_CONTROL_KEY, this.serializeSeaControl());
+  }
+
+  isSeaZoneUnlocked(difficultyId = 'low') {
+    const def = SEA_CONTROL_ZONES.find((z) => z.id === difficultyId);
+    if (!def || !def.unlockRequires) return true;
+    const reqState = this._seaControl[def.unlockRequires];
+    return Number(reqState?.progress || 0) >= 100;
+  }
+
+  getSeaControlOverview() {
+    let totalExpeditionBonusPct = 0;
+    let totalPatrolBonusPct = 0;
+    let controlledCount = 0;
+
+    const zones = SEA_CONTROL_ZONES.map((def) => {
+      const st = this._seaControl[def.id] || { progress: 0, clearedCount: 0, controlledAt: null };
+      const progress = clamp(Math.round(Number(st.progress) || 0), 0, 100);
+      const controlled = progress >= 100;
+      const unlocked = this.isSeaZoneUnlocked(def.id);
+      if (controlled) {
+        controlledCount += 1;
+        totalExpeditionBonusPct += def.expeditionYieldBonusPct;
+        totalPatrolBonusPct += def.patrolYieldBonusPct;
+      }
+      const reqZone = def.unlockRequires ? SEA_CONTROL_ZONES.find((z) => z.id === def.unlockRequires) : null;
+      return {
+        ...def,
+        progress,
+        clearedCount: Math.max(0, Math.floor(Number(st.clearedCount) || 0)),
+        controlled,
+        unlocked,
+        unlockHint: unlocked ? '已开放出征' : `需「${reqZone?.name || '前置海域'}」制海权达 100% 解锁`,
+      };
+    });
+
+    return {
+      zones,
+      controlledCount,
+      totalZones: zones.length,
+      totalExpeditionBonusPct,
+      totalPatrolBonusPct,
+    };
+  }
+
+  getExpeditionYieldMultiplier() {
+    const ov = this.getSeaControlOverview();
+    return Number((1 + ov.totalExpeditionBonusPct / 100).toFixed(2));
+  }
+
+  getPatrolYieldMultiplier(difficultyId = 'low') {
+    const ov = this.getSeaControlOverview();
+    const zone = ov.zones.find((z) => z.id === difficultyId);
+    const localBonus = zone?.controlled ? zone.patrolYieldBonusPct : 0;
+    return Number((1 + localBonus / 100).toFixed(2));
+  }
+
+  /**
+   * Advance Sea Control progress (0% -> 100%) upon defeating a sea zone's Boss flagship.
+   * Reaching 100% unlocks the next higher-risk sea zone & permanently boosts patrol/expedition yields!
+   */
+  async recordBossVictory(difficultyId = 'low', { isNight = false } = {}) {
+    const zoneDef = SEA_CONTROL_ZONES.find((z) => z.id === difficultyId) || SEA_CONTROL_ZONES[0];
+    const st = this._seaControl[zoneDef.id] || { progress: 0, clearedCount: 0, controlledAt: null };
+    const before = clamp(Math.round(Number(st.progress) || 0), 0, 100);
+    const gain = zoneDef.bossGainPct || 35;
+    const after = clamp(before + gain, 0, 100);
+    const newlyControlled = before < 100 && after >= 100;
+
+    st.progress = after;
+    st.clearedCount = (Number(st.clearedCount) || 0) + 1;
+    if (newlyControlled && !st.controlledAt) st.controlledAt = Date.now();
+    this._seaControl[zoneDef.id] = st;
+
+    await this.persistSeaControl();
+
+    const nextZoneDef = SEA_CONTROL_ZONES.find((z) => z.unlockRequires === zoneDef.id) || null;
+    const newlyUnlockedZone = newlyControlled && nextZoneDef ? nextZoneDef : null;
+
+    const payload = {
+      difficulty: zoneDef.id,
+      zoneName: zoneDef.name,
+      zoneCode: zoneDef.code,
+      before,
+      after,
+      gain: after - before,
+      controlled: after >= 100,
+      newlyControlled,
+      newlyUnlockedZone,
+      isNight: Boolean(isNight),
+      overview: this.getSeaControlOverview(),
+    };
+
+    if (this._bus) {
+      this._bus.emit('sortie:boss-defeated', payload);
+      this._bus.emit('sea-control:updated', payload);
+    }
+    return payload;
+  }
+
+  serializeSeaControl() {
+    return {
+      version: 1,
+      zones: deepClone(this._seaControl),
+    };
+  }
+
+  deserializeSeaControl(snapshot, { persist = true } = {}) {
+    const def = createDefaultSeaControlState();
+    const rawZones = snapshot?.zones || snapshot || {};
+    for (const z of SEA_CONTROL_ZONES) {
+      const src = rawZones[z.id];
+      if (src && typeof src === 'object') {
+        def[z.id] = {
+          progress: clamp(Math.round(Number(src.progress) || 0), 0, 100),
+          clearedCount: Math.max(0, Math.floor(Number(src.clearedCount) || 0)),
+          controlledAt: src.controlledAt || null,
+        };
+      }
+    }
+    this._seaControl = def;
+    if (persist) this.persistSeaControl();
   }
 
   getPresetRoutes() {

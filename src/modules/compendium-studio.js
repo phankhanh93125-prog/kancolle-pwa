@@ -1590,7 +1590,7 @@ function renderCompendiumStudio() {
 
   root.appendChild(
     uiKit.createSubpageHeader({
-      title: '图鉴与内容库',
+      title: '仓库与图鉴',
       subtitle: '全要素图鉴 · 剧情包与模组导入',
       modules,
       resources,
@@ -1598,6 +1598,19 @@ function renderCompendiumStudio() {
       id: 'cs-subpage-header',
     })
   );
+
+  // Unified 4th-Tab Top Switcher: 装备仓库与工坊 ⇄ 图鉴与内容库
+  const hubSwitcher = document.createElement('div');
+  hubSwitcher.className = 'wh-hub-switch-bar';
+  hubSwitcher.id = 'cs-hub-switch-bar';
+  hubSwitcher.innerHTML = `
+    <button type="button" class="wh-hub-switch-btn" id="btn-cs-hub-to-warehouse">装备仓库与工坊</button>
+    <button type="button" class="wh-hub-switch-btn is-active" id="btn-cs-hub-to-compendium">图鉴与内容库</button>
+  `;
+  hubSwitcher.querySelector('#btn-cs-hub-to-warehouse').addEventListener('click', () => {
+    if (modules.has('supply-workshop')) modules.mount('supply-workshop', { transition: 'right' });
+  });
+  root.appendChild(hubSwitcher);
 
   root.appendChild(createResourceOverviewBar(resources, { id: 'cs-resource-bar' }));
 
