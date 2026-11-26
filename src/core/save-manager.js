@@ -14,8 +14,11 @@ import {
   GRID_TOTAL_CELLS,
   KNOWN_EQUIPMENT_TYPES,
   KNOWN_EQUIPMENT_TYPE_MAP,
+  STAR_SEA_TIER_ORDER,
   inferEquipmentTypeId,
   inferItemRarity,
+  normalizeLegacyItemBonusesToCompressedScale,
+  normalizeLegacyShipStatsToCompressedScale,
   resolveShipClass,
 } from './stat-rules.js';
 
@@ -28,7 +31,7 @@ export const SAVE_ZONES = Object.freeze({
 
 export const DEFAULT_SLOT_COUNT = 5;
 export const VAULT_PRIMARY_SLOTS = 3;
-export const SAVE_SCHEMA_VERSION = 7;
+export const SAVE_SCHEMA_VERSION = 8;
 
 function deepClone(value) {
   if (typeof structuredClone === 'function') {
@@ -43,8 +46,8 @@ function deepClone(value) {
 
 /**
  * Lossless save payload migration: preserves every existing character, item, resource,
- * building, or custom field while safely backfilling any fields introduced in v2..v7+
- * so loading any slot never leaves stale data from a previously loaded slot in memory.
+ * building, or custom field while safely backfilling any fields introduced in v2..v8+
+ * (including 1★~5★ sea control migration, retrofitCores, and 2-digit compressed stat normalization).
  */
 export function migrateSavePayload(rawData = {}) {
   const data = rawData && typeof rawData === 'object' ? deepClone(rawData) : {};
@@ -82,11 +85,12 @@ export function migrateSavePayload(rawData = {}) {
 
   if (!data.inventory || typeof data.inventory !== 'object') {
     data.inventory = {
-      version: 5,
+      version: 6,
       customSlotsByCharacter: {},
       items: [],
       equipped: {},
       salvageParts: 0,
+      retrofitCores: 0,
     };
     migrated = true;
   } else {
@@ -106,6 +110,10 @@ export function migrateSavePayload(rawData = {}) {
       data.inventory.salvageParts = 0;
       migrated = true;
     }
+    if (data.inventory.retrofitCores === undefined || !Number.isFinite(Number(data.inventory.retrofitCores))) {
+      data.inventory.retrofitCores = 0;
+      migrated = true;
+    }
   }
 
   if (!data.expeditions || typeof data.expeditions !== 'object') {
@@ -116,7 +124,7 @@ export function migrateSavePayload(rawData = {}) {
   if (!data.buildings || typeof data.buildings !== 'object') {
     data.buildings = {
       version: 2,
-      dormitory: { level: 1, capacity: 3, maxCapacity: 10, residents: [], lastSettledAt: Date.now() },
+      dormitory: { level: 1, capacity: 3, maxCapacity: 12, residents: [], lastSettledAt: Date.now() },
       dockyard: { level: 1, capacity: 2, maxCapacity: 6, queue: [], completedRepairs: 0, constructedCount: 0 },
       customBuildings: [],
       medals: { unlockedIds: [], unlockedAt: {} },
@@ -133,9 +141,27 @@ export function migrateSavePayload(rawData = {}) {
     migrated = true;
   }
 
+  // Schema v8: Losslessly migrate legacy low/medium/high seaControl into 1★~5★ star_1..star_5
   if (!data.seaControl || typeof data.seaControl !== 'object') {
-    data.seaControl = { version: 1, zones: {} };
+    const emptyZones = {};
+    for (const id of STAR_SEA_TIER_ORDER) emptyZones[id] = { progress: 0, clearedCount: 0, controlledAt: null };
+    data.seaControl = { version: 2, zones: emptyZones };
     migrated = true;
+  } else {
+    const rawZ = data.seaControl.zones || {};
+    if (!rawZ.star_1 && (rawZ.low || rawZ.medium || rawZ.high)) {
+      data.seaControl = {
+        version: 2,
+        zones: {
+          star_1: rawZ.low || { progress: 0, clearedCount: 0, controlledAt: null },
+          star_2: rawZ.medium || { progress: 0, clearedCount: 0, controlledAt: null },
+          star_3: rawZ.high || { progress: 0, clearedCount: 0, controlledAt: null },
+          star_4: rawZ.star_4 || { progress: 0, clearedCount: 0, controlledAt: null },
+          star_5: rawZ.star_5 || { progress: 0, clearedCount: 0, controlledAt: null },
+        },
+      };
+      migrated = true;
+    }
   }
 
   if (!data.contentManager || typeof data.contentManager !== 'object') {
@@ -171,7 +197,7 @@ export function migrateSavePayload(rawData = {}) {
     migrated = true;
   }
 
-  // Losslessly backfill Shipgirl level/exp/maxExp on all character entities without overwriting user data
+  // Losslessly backfill Shipgirl level/exp/maxExp AND compress legacy 3-digit stats into 2-digit scale
   const entityList = Array.isArray(data.entities?.entities) ? data.entities.entities : [];
   const entityById = new Map();
   for (const ent of entityList) {
@@ -191,12 +217,16 @@ export function migrateSavePayload(rawData = {}) {
       ent.stats.maxExp = 100 + (lv - 1) * 50;
       migrated = true;
     }
+    if (normalizeLegacyShipStatsToCompressedScale(ent)) {
+      migrated = true;
+    }
   }
 
-  // Losslessly backfill universal White->Orange rarity & canonical equipmentType on all items
+  // Losslessly backfill universal White->Orange rarity, canonical equipmentType, and 2-digit compressed gear bonuses
   const invItems = Array.isArray(data.inventory?.items) ? data.inventory.items : [];
   const itemById = new Map();
-  for (const it of invItems) {
+  for (let i = 0; i < invItems.length; i++) {
+    const it = invItems[i];
     if (!it || typeof it !== 'object') continue;
     if (!it.rarity) {
       it.rarity = inferItemRarity(it);
@@ -208,10 +238,14 @@ export function migrateSavePayload(rawData = {}) {
       if (!it.subCategory) it.subCategory = eqType;
       migrated = true;
     }
-    if (it.id) itemById.set(String(it.id), it);
+    if (Number(it.statScaleVersion || 0) < 2) {
+      invItems[i] = normalizeLegacyItemBonusesToCompressedScale(it);
+      migrated = true;
+    }
+    if (invItems[i].id) itemById.set(String(invItems[i].id), invItems[i]);
   }
 
-  // Schema v5: Losslessly migrate historical freeform custom slots into typed expandable slots
+  // Schema v5+: Losslessly migrate historical freeform custom slots into typed expandable slots
   const customSlotsMap = data.inventory?.customSlotsByCharacter;
   if (customSlotsMap && typeof customSlotsMap === 'object') {
     const equippedMap = data.inventory?.equipped || {};

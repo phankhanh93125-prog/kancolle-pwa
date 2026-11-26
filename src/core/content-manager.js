@@ -19,7 +19,16 @@
 import { clamp } from './calc-engine.js';
 import { NODE_TYPES } from './route-generator.js';
 import { ITEM_CATEGORIES, ITEM_CATEGORY_LABELS, STARTER_PACK_EQUIPMENT_16 } from './inventory-system.js';
-import { inferItemRarity, normalizeRarity } from './stat-rules.js';
+import {
+  KNOWN_EQUIPMENT_TYPES,
+  inferItemRarity,
+  inferSupportRole,
+  normalizeEquipmentTypeId,
+  normalizeLegacyItemBonusesToCompressedScale,
+  normalizeLegacyShipStatsToCompressedScale,
+  normalizeRarity,
+  resolveShipClass,
+} from './stat-rules.js';
 import { normalizeDialogueCategories, normalizeLineArray } from './personality-pool.js';
 import { normalizeAdaptiveStoryPack } from './story-pack-engine.js';
 import { LOG_CATEGORIES } from './log-system.js';
@@ -34,10 +43,11 @@ export const BUILTIN_ENEMY_ARCHIVE = Object.freeze([
     id: 'enemy_builtin_patrol',
     name: '前哨巡逻编队',
     tier: NODE_TYPES.ENCOUNTER,
-    riskLevel: '低危海域',
-    hp: 58,
-    armor: 4,
-    attackPower: 11,
+    riskLevel: '1★ 近海防卫区',
+    star: 1,
+    hp: 34,
+    armor: 12,
+    attackPower: 20,
     airThreat: 0,
     subThreat: 0,
     threatLabel: '常规水面炮雷编队',
@@ -50,87 +60,92 @@ export const BUILTIN_ENEMY_ARCHIVE = Object.freeze([
     id: 'enemy_builtin_sub_wolfpack',
     name: '潜航伏击狼群',
     tier: NODE_TYPES.ENCOUNTER,
-    riskLevel: '低危海域',
-    hp: 62,
-    armor: 3,
-    attackPower: 12,
+    riskLevel: '2★ 外海破交航道',
+    star: 2,
+    hp: 52,
+    armor: 20,
+    attackPower: 36,
     airThreat: 0,
-    subThreat: 18,
+    subThreat: 28,
     threatLabel: '敌方水下潜艇威胁',
-    weakness: 'torpedo',
-    weaknessLabel: '鱼雷弱点',
-    drops: ['燃油 45~70', '钢材 60~80', '银条 120~160'],
+    weakness: 'asw',
+    weaknessLabel: '反潜弱点',
+    drops: ['燃油 55~85', '钢材 70~95', '银条 140~180'],
     builtIn: true,
   },
   {
     id: 'enemy_builtin_heavy_cruiser_div',
     name: '重巡破交封锁支队',
     tier: NODE_TYPES.ELITE,
-    riskLevel: '中危海域',
-    hp: 108,
-    armor: 9,
-    attackPower: 17,
-    airThreat: 6,
+    riskLevel: '3★ 深水前线海域',
+    star: 3,
+    hp: 88,
+    armor: 42,
+    attackPower: 60,
+    airThreat: 10,
     subThreat: 0,
     threatLabel: '重甲水面火力编队',
     weakness: 'torpedo',
     weaknessLabel: '鱼雷弱点',
-    drops: ['钢材 95~130', '燃油 70~95', '银条 190~240'],
+    drops: ['钢材 115~155', '燃油 85~115', '银条 210~280'],
     builtIn: true,
   },
   {
     id: 'enemy_builtin_air_raider',
     name: '轻航突袭中队',
     tier: NODE_TYPES.ELITE,
-    riskLevel: '中危海域',
-    hp: 96,
-    armor: 7,
-    attackPower: 16,
-    airThreat: 22,
+    riskLevel: '4★ 要塞外围战区',
+    star: 4,
+    hp: 128,
+    armor: 56,
+    attackPower: 84,
+    airThreat: 62,
     subThreat: 0,
     threatLabel: '敌方航空威胁',
-    weakness: 'shelling',
-    weaknessLabel: '炮击弱点',
-    drops: ['铝材 70~110', '钢材 85~120', '银条 170~220'],
+    weakness: 'aa',
+    weaknessLabel: '防空/空袭弱点',
+    drops: ['铝材 110~155', '钢材 120~165', '银条 260~340'],
     builtIn: true,
   },
   {
     id: 'enemy_builtin_abyssal_dreadnought',
     name: '深海战列强袭群',
     tier: NODE_TYPES.BOSS,
-    riskLevel: '高危海域',
-    hp: 185,
-    armor: 15,
-    attackPower: 24,
-    airThreat: 14,
-    subThreat: 10,
+    riskLevel: '4★ 要塞外围战区',
+    star: 4,
+    hp: 148,
+    armor: 68,
+    attackPower: 94,
+    airThreat: 44,
+    subThreat: 24,
     threatLabel: '超重甲炮击主力',
     weakness: 'torpedo',
     weaknessLabel: '鱼雷弱点',
-    drops: ['钢材 160~240', '铝材 95~145', '银条 310~430', '金条 3~7'],
+    drops: ['钢材 180~260', '铝材 110~165', '银条 340~460', '金条 4~8'],
     builtIn: true,
   },
   {
     id: 'enemy_builtin_boss_flagship',
-    name: '海域主力旗舰群',
+    name: '深渊核心联合旗舰',
     tier: NODE_TYPES.BOSS,
-    riskLevel: '高危海域',
-    hp: 168,
-    armor: 12,
-    attackPower: 22,
-    airThreat: 26,
-    subThreat: 14,
-    threatLabel: '海空潜立体主力',
+    riskLevel: '5★ 深渊核心海域',
+    star: 5,
+    hp: 218,
+    armor: 96,
+    attackPower: 138,
+    airThreat: 90,
+    subThreat: 55,
+    threatLabel: '海空潜立体主力旗舰',
     weakness: 'torpedo',
-    weaknessLabel: '鱼雷弱点',
-    drops: ['钢材 140~220', '铝材 90~150', '银条 280~400', '金条 2~7'],
+    weaknessLabel: '鱼雷/破甲弱点',
+    drops: ['钢材 220~320', '铝材 150~220', '银条 420~580', '金条 6~12'],
     builtIn: true,
   },
 ]);
 
 /**
- * 8 Featured Starter Shipgirls covering ALL 5 ship classes (DD×2, CL×2, CA×1, BB×2, CV×1).
- * Each receives an independent random Primary × Secondary personality combination upon creation/merge.
+ * Featured Starter Shipgirls covering ALL core & support ship classes (DD/CL/CA/BB/CV/AR/AO)
+ * calibrated to the 2-Digit Compressed Lv.1 Stat Curve (8 ~ 25).
  */
 export const STARTER_PACK_SHIPGIRLS_8 = Object.freeze([
   {
@@ -138,56 +153,56 @@ export const STARTER_PACK_SHIPGIRLS_8 = Object.freeze([
     name: '示范驱逐 · 一号舰',
     shipType: '驱逐舰',
     roleTag: '高机动雷击反潜',
-    stats: { maxHp: 78, hp: 78, firepower: 46, armor: 34, torpedo: 76, evasion: 78, recon: 62, aa: 54, asw: 74, morale: 78, ap: 90, maxAp: 100, affinity: 52, level: 1, exp: 0, maxExp: 100 },
+    stats: { maxHp: 24, hp: 24, firepower: 13, armor: 10, torpedo: 23, evasion: 24, recon: 17, aa: 15, asw: 22, morale: 80, ap: 90, maxAp: 100, affinity: 52, level: 1, exp: 0, maxExp: 100 },
   },
   {
     id: 'char_template_02',
     name: '示范轻巡 · 二号舰',
     shipType: '轻巡洋舰',
     roleTag: '均衡侦查防空',
-    stats: { maxHp: 94, hp: 94, firepower: 60, armor: 52, torpedo: 58, evasion: 64, recon: 72, aa: 70, asw: 66, morale: 82, ap: 90, maxAp: 100, affinity: 42, level: 1, exp: 0, maxExp: 100 },
+    stats: { maxHp: 28, hp: 28, firepower: 17, armor: 15, torpedo: 18, evasion: 20, recon: 21, aa: 20, asw: 19, morale: 82, ap: 90, maxAp: 100, affinity: 42, level: 1, exp: 0, maxExp: 100 },
   },
   {
     id: 'char_template_03',
     name: '示范战列 · 三号舰',
     shipType: '战列舰',
     roleTag: '主力重炮重甲',
-    stats: { maxHp: 132, hp: 132, firepower: 86, armor: 82, torpedo: 12, evasion: 38, recon: 48, aa: 68, asw: 22, morale: 76, ap: 90, maxAp: 100, affinity: 38, level: 1, exp: 0, maxExp: 100 },
+    stats: { maxHp: 42, hp: 42, firepower: 25, armor: 24, torpedo: 8, evasion: 11, recon: 15, aa: 20, asw: 8, morale: 78, ap: 90, maxAp: 100, affinity: 38, level: 1, exp: 0, maxExp: 100 },
   },
   {
     id: 'char_pack_ca_04',
     name: '曙光重巡 · 四号舰',
     shipType: '重巡洋舰',
     roleTag: '重甲护盾援护主力',
-    stats: { maxHp: 112, hp: 112, firepower: 76, armor: 70, torpedo: 46, evasion: 54, recon: 58, aa: 62, asw: 32, morale: 80, ap: 100, maxAp: 100, affinity: 35, level: 1, exp: 0, maxExp: 100 },
+    stats: { maxHp: 34, hp: 34, firepower: 22, armor: 21, torpedo: 15, evasion: 16, recon: 18, aa: 18, asw: 11, morale: 80, ap: 100, maxAp: 100, affinity: 35, level: 1, exp: 0, maxExp: 100 },
   },
   {
     id: 'char_pack_cv_05',
     name: '苍穹航母 · 五号舰',
     shipType: '航空母舰',
     roleTag: '舰载机空袭与视野扩展',
-    stats: { maxHp: 118, hp: 118, firepower: 72, armor: 58, torpedo: 0, evasion: 52, recon: 86, aa: 82, asw: 30, morale: 82, ap: 100, maxAp: 100, affinity: 36, level: 1, exp: 0, maxExp: 100 },
+    stats: { maxHp: 38, hp: 38, firepower: 21, armor: 18, torpedo: 8, evasion: 16, recon: 25, aa: 24, asw: 11, morale: 82, ap: 100, maxAp: 100, affinity: 36, level: 1, exp: 0, maxExp: 100 },
   },
   {
     id: 'char_pack_dd_06',
     name: '疾风驱逐 · 六号舰',
     shipType: '驱逐舰',
     roleTag: '高速夜战氧雷突击',
-    stats: { maxHp: 74, hp: 74, firepower: 44, armor: 32, torpedo: 82, evasion: 84, recon: 60, aa: 52, asw: 78, morale: 84, ap: 100, maxAp: 100, affinity: 30, level: 1, exp: 0, maxExp: 100 },
+    stats: { maxHp: 23, hp: 23, firepower: 12, armor: 10, torpedo: 25, evasion: 25, recon: 17, aa: 14, asw: 23, morale: 84, ap: 100, maxAp: 100, affinity: 30, level: 1, exp: 0, maxExp: 100 },
   },
   {
-    id: 'char_pack_cl_07',
-    name: '星铃轻巡 · 七号舰',
-    shipType: '轻巡洋舰',
-    roleTag: '区域防空与反潜核心',
-    stats: { maxHp: 92, hp: 92, firepower: 58, armor: 50, torpedo: 60, evasion: 66, recon: 76, aa: 78, asw: 72, morale: 80, ap: 100, maxAp: 100, affinity: 30, level: 1, exp: 0, maxExp: 100 },
+    id: 'char_pack_ar_07',
+    name: '明石维修 · 七号舰',
+    shipType: '维修舰',
+    roleTag: '战地抢修与锚地专精 (AR)',
+    stats: { maxHp: 32, hp: 32, firepower: 10, armor: 18, torpedo: 8, evasion: 14, recon: 21, aa: 20, asw: 14, morale: 84, ap: 100, maxAp: 100, affinity: 34, level: 1, exp: 0, maxExp: 100 },
   },
   {
-    id: 'char_pack_bb_08',
-    name: '铁壁战列 · 八号舰',
-    shipType: '战列舰',
-    roleTag: '远程超重穿甲压阵',
-    stats: { maxHp: 138, hp: 138, firepower: 90, armor: 86, torpedo: 10, evasion: 34, recon: 50, aa: 70, asw: 20, morale: 78, ap: 100, maxAp: 100, affinity: 32, level: 1, exp: 0, maxExp: 100 },
+    id: 'char_pack_ao_08',
+    name: '汐风补给 · 八号舰',
+    shipType: '补给舰',
+    roleTag: '携带油弹扩容与前线补给 (AO)',
+    stats: { maxHp: 30, hp: 30, firepower: 10, armor: 16, torpedo: 8, evasion: 15, recon: 23, aa: 19, asw: 14, morale: 84, ap: 100, maxAp: 100, affinity: 34, level: 1, exp: 0, maxExp: 100 },
   },
 ]);
 
@@ -196,12 +211,13 @@ export const STARTER_PACK_ENEMIES_TIERED = Object.freeze([
     id: 'enemy_pack_low_picket',
     name: '近海高速哨戒驱逐队',
     tier: NODE_TYPES.ENCOUNTER,
-    hp: 60,
-    armor: 4,
-    attackPower: 11,
+    star: 1,
+    hp: 34,
+    armor: 12,
+    attackPower: 20,
     airThreat: 0,
     subThreat: 8,
-    threatLabel: '低危 · 驱逐哨戒编队',
+    threatLabel: '1★ · 驱逐哨戒编队',
     weakness: 'shelling',
     drops: ['燃油 50', '钢材 60', '银条 120'],
   },
@@ -209,27 +225,29 @@ export const STARTER_PACK_ENEMIES_TIERED = Object.freeze([
     id: 'enemy_pack_mid_ca_cvl',
     name: '中海重巡轻航混编队',
     tier: NODE_TYPES.ELITE,
-    hp: 112,
-    armor: 9,
-    attackPower: 17,
-    airThreat: 20,
+    star: 3,
+    hp: 86,
+    armor: 40,
+    attackPower: 60,
+    airThreat: 38,
     subThreat: 0,
-    threatLabel: '中危 · 航空与重炮混编',
+    threatLabel: '3★ · 航空与重炮混编',
     weakness: 'torpedo',
-    drops: ['铝材 90', '钢材 110', '银条 210'],
+    drops: ['铝材 95', '钢材 120', '银条 220'],
   },
   {
     id: 'enemy_pack_high_carrier_taskforce',
     name: '深海机动航母特混舰队',
     tier: NODE_TYPES.BOSS,
-    hp: 196,
-    armor: 14,
-    attackPower: 25,
-    airThreat: 34,
-    subThreat: 16,
-    threatLabel: '高危 · 航母特混决战群',
-    weakness: 'shelling',
-    drops: ['钢材 180', '铝材 160', '银条 360', '金条 4'],
+    star: 5,
+    hp: 210,
+    armor: 92,
+    attackPower: 132,
+    airThreat: 88,
+    subThreat: 44,
+    threatLabel: '5★ · 航母特混决战群',
+    weakness: 'aa',
+    drops: ['钢材 220', '铝材 190', '银条 420', '金条 8'],
   },
 ]);
 
@@ -940,29 +958,45 @@ export class ContentManager {
       return [];
     };
 
+    const normalizeImportedShipType = (rawType = '驱逐舰') => {
+      const s = String(rawType || '').trim();
+      const cls = resolveShipClass(s);
+      const map = {
+        DD: '驱逐舰',
+        CL: '轻巡洋舰',
+        CA: '重巡洋舰',
+        BB: '战列舰',
+        CV: '航空母舰',
+        SS: '潜艇',
+        AR: '维修舰',
+        AO: '补给舰',
+      };
+      return map[cls] || s || '驱逐舰';
+    };
+
     const importCharacterEntry = async (ch) => {
       if (!ch || typeof ch !== 'object' || !this._entities) return false;
       const name = String(ch.name ?? ch.title ?? ch.shipName ?? '').trim();
       if (!name) return false;
       const cid = String(ch.id || `char_imp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`);
       const baseStats = ch.stats && typeof ch.stats === 'object' ? ch.stats : ch;
-      const maxHp = Math.max(20, Number(baseStats.maxHp ?? baseStats.hp ?? 90) || 90);
-      const shipType = String(ch.meta?.shipType || ch.shipType || ch.shipClass || ch.class || '驱逐舰').trim();
+      const rawMaxHp = Math.max(12, Number(baseStats.maxHp ?? baseStats.hp ?? 28) || 28);
+      const shipType = normalizeImportedShipType(ch.meta?.shipType || ch.shipType || ch.shipClass || ch.class || '驱逐舰');
       const reg = this._entities.register({
         id: cid,
         kind: 'character',
         name,
         tags: Array.isArray(ch.tags) ? [...ch.tags] : [shipType],
         stats: {
-          maxHp,
-          hp: Math.min(maxHp, Number(baseStats.hp ?? maxHp) || maxHp),
-          firepower: Number(baseStats.firepower ?? 55) || 55,
-          armor: Number(baseStats.armor ?? 45) || 45,
-          torpedo: Number(baseStats.torpedo ?? 50) || 50,
-          evasion: Number(baseStats.evasion ?? 55) || 55,
-          recon: Number(baseStats.recon ?? 50) || 50,
-          aa: Number(baseStats.aa ?? 48) || 48,
-          asw: Number(baseStats.asw ?? 46) || 46,
+          maxHp: rawMaxHp,
+          hp: Math.min(rawMaxHp, Number(baseStats.hp ?? rawMaxHp) || rawMaxHp),
+          firepower: Number(baseStats.firepower ?? 16) || 16,
+          armor: Number(baseStats.armor ?? 14) || 14,
+          torpedo: Number(baseStats.torpedo ?? 16) || 16,
+          evasion: Number(baseStats.evasion ?? 18) || 18,
+          recon: Number(baseStats.recon ?? 18) || 18,
+          aa: Number(baseStats.aa ?? 16) || 16,
+          asw: Number(baseStats.asw ?? 16) || 16,
           morale: Number(baseStats.morale ?? 80) || 80,
           ap: Number(baseStats.ap ?? 100) || 100,
           maxAp: Number(baseStats.maxAp ?? 100) || 100,
@@ -981,6 +1015,8 @@ export class ContentManager {
           ...(ch.meta || {}),
         },
       });
+      // Smoothly compress legacy/3-digit imported ship stats to 2-digit scale
+      normalizeLegacyShipStatsToCompressedScale(reg);
       if (statRules && typeof statRules.ensureShipProgression === 'function') {
         statRules.ensureShipProgression(reg);
       }
@@ -1000,15 +1036,31 @@ export class ContentManager {
       if (!eq || typeof eq !== 'object') return false;
       const name = String(eq.name ?? eq.title ?? '').trim();
       if (!name) return false;
-      const normalizedEq = {
+      const rawTypeHint = eq.equipmentType || eq.subCategory || eq.type || eq.slotType || '';
+      const resolvedEqType = rawTypeHint ? normalizeEquipmentTypeId(rawTypeHint, null) : null;
+      const isSupport = resolvedEqType === KNOWN_EQUIPMENT_TYPES.SUPPORT;
+      const rawBonuses = Array.isArray(eq.bonuses)
+        ? eq.bonuses
+        : eq.stats && typeof eq.stats === 'object'
+        ? Object.entries(eq.stats)
+            .filter(([, v]) => Number.isFinite(Number(v)) && Number(v) !== 0)
+            .map(([stat, value]) => ({ stat, layer: 'baseAdd', value: Number(value) }))
+        : [];
+      const draftEq = {
         ...eq,
         name,
         rarity: normalizeAdaptiveRarity(eq.rarity ?? eq.quality ?? eq.grade ?? eq.tier, eq),
-        category: forceOutfit || eq.outfitStyle || eq.style ? ITEM_CATEGORIES.OUTFIT : eq.category,
+        category: forceOutfit || eq.outfitStyle || eq.style ? ITEM_CATEGORIES.OUTFIT : eq.category || ITEM_CATEGORIES.EXTENSION,
+        subGroup: isSupport ? 'support' : eq.subGroup,
+        subCategory: resolvedEqType || eq.subCategory,
+        equipmentType: resolvedEqType || eq.equipmentType,
+        supportRole: isSupport ? eq.supportRole || inferSupportRole(eq) || 'repair' : eq.supportRole || '',
         outfitStyle: eq.outfitStyle || eq.style || (forceOutfit ? '日常便装' : ''),
-        bonuses: eq.bonuses || eq.stats || {},
+        bonuses: rawBonuses,
+        baseBonuses: rawBonuses,
         description: String(eq.description ?? eq.desc ?? '').trim(),
       };
+      const normalizedEq = normalizeLegacyItemBonusesToCompressedScale(draftEq);
       const tpl = await this.saveCustomEquipmentTemplate(normalizedEq);
       if (this._inventory) {
         await this.issueEquipmentToWarehouse(tpl.id, 1);

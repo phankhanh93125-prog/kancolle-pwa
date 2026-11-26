@@ -25,6 +25,7 @@ import {
   KNOWN_EQUIPMENT_TYPE_MAP,
   NAVAL_EIGHT_STAT_DEFS,
   NAVAL_EIGHT_STAT_MAP,
+  RARITY_STAT_BUDGETS,
   getDisassembleYieldByRarity,
   getEquipmentPromoteCost,
   getShipClassSlotCap,
@@ -32,7 +33,9 @@ import {
   getSlotExpansionCost,
   inferEquipmentTypeId,
   inferItemRarity,
+  inferSupportRole,
   normalizeEquipmentTypeId,
+  normalizeLegacyItemBonusesToCompressedScale,
   normalizeRarity,
   normalizeStatKey,
   resolveShipClass,
@@ -61,11 +64,6 @@ export const ITEM_CATEGORY_LABELS = Object.freeze({
   [ITEM_CATEGORIES.CONSUMABLE]: '消耗品',
 });
 
-/**
- * Unified Visual Editor & Warehouse Subcategory Presets strictly derived from
- * `KNOWN_EQUIPMENT_TYPE_DEFS` (+ Shipgirl Outfits) so expandable slots and the
- * equipment editor always share 100% identical equipment type IDs.
- */
 export const EQUIPMENT_SUBCATEGORY_DEFS = Object.freeze([
   ...KNOWN_EQUIPMENT_TYPE_DEFS.map((d) => ({
     id: d.id,
@@ -96,6 +94,8 @@ export const ITEM_ICON_PRESETS = Object.freeze([
   { id: 'main_gun', label: '主炮炮管' },
   { id: 'torpedo', label: '酸素鱼雷' },
   { id: 'aircraft', label: '舰载机翼' },
+  { id: 'support_repair', label: '抢修吊舱' },
+  { id: 'support_supply', label: '补给物资箱' },
   { id: 'radar', label: '相控雷达' },
   { id: 'sonar', label: '水下声呐' },
   { id: 'aa_gun', label: '防空火网' },
@@ -160,6 +160,7 @@ export const WAREHOUSE_GROUPS = Object.freeze({
   ALL: 'all',
   CORE: 'core',
   WEAPON: 'weapon',
+  SUPPORT: 'support',
   TACTICAL: 'tactical',
   OUTFIT_CONSUMABLE: 'outfit_consumable',
 });
@@ -168,12 +169,13 @@ export const WAREHOUSE_GROUP_DEFS = Object.freeze([
   { id: WAREHOUSE_GROUPS.ALL, label: '全部', shortLabel: '全部' },
   { id: WAREHOUSE_GROUPS.CORE, label: '核心三件套', shortLabel: '核心' },
   { id: WAREHOUSE_GROUPS.WEAPON, label: '主战武器', shortLabel: '武器' },
+  { id: WAREHOUSE_GROUPS.SUPPORT, label: '后勤支援', shortLabel: '支援' },
   { id: WAREHOUSE_GROUPS.TACTICAL, label: '战术辅助', shortLabel: '辅助' },
   { id: WAREHOUSE_GROUPS.OUTFIT_CONSUMABLE, label: '服装与道具', shortLabel: '服/道具' },
 ]);
 
 /**
- * Classify any item into one of the 4 compact warehouse tabs.
+ * Classify any item into one of the compact warehouse tabs.
  */
 export function classifyItemWarehouseGroup(item) {
   if (!item) return WAREHOUSE_GROUPS.TACTICAL;
@@ -187,10 +189,16 @@ export function classifyItemWarehouseGroup(item) {
   if (item.category === ITEM_CATEGORIES.OUTFIT || item.category === ITEM_CATEGORIES.CONSUMABLE) {
     return WAREHOUSE_GROUPS.OUTFIT_CONSUMABLE;
   }
+  if (item.subGroup === 'support' || inferEquipmentTypeId(item, null) === KNOWN_EQUIPMENT_TYPES.SUPPORT) {
+    return WAREHOUSE_GROUPS.SUPPORT;
+  }
   if (item.subGroup === 'weapon') return WAREHOUSE_GROUPS.WEAPON;
   if (item.subGroup === 'tactical') return WAREHOUSE_GROUPS.TACTICAL;
 
   const text = `${item.name || ''} ${(item.tags || []).join(' ')} ${item.description || ''}`;
+  if (/(抢修|维修|损管|补给箱|海上补给|后勤|支援)/.test(text)) {
+    return WAREHOUSE_GROUPS.SUPPORT;
+  }
   if (/(主炮|重炮|副炮|高平两用炮|鱼雷|氧雷|舰载|轰炸机|攻击机|战斗机|主战武器)/.test(text)) {
     return WAREHOUSE_GROUPS.WEAPON;
   }
@@ -202,7 +210,7 @@ export function classifyItemWarehouseGroup(item) {
 }
 
 /**
- * Pure geometric SVG icon for compact equipment & outfit cards (supports custom `iconKey` + rarity tint).
+ * Pure geometric SVG icon for compact equipment & outfit cards.
  */
 export function getItemIconSvg(item, { size = 20, iconKey = null } = {}) {
   const s = Number(size) || 20;
@@ -210,6 +218,14 @@ export function getItemIconSvg(item, { size = 20, iconKey = null } = {}) {
   const rarityColor = ITEM_RARITY_MAP[rarityId]?.color || null;
   const key = iconKey || item?.iconKey || '';
 
+  if (key === 'support_repair' || (inferEquipmentTypeId(item, null) === KNOWN_EQUIPMENT_TYPES.SUPPORT && inferSupportRole(item) === 'repair')) {
+    const c = rarityColor || '#34d399';
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4" stroke="${c}" stroke-width="1.9" fill="rgba(52,211,153,0.18)"/><path d="M12 8v8M8 12h8" stroke="${c}" stroke-width="2.2" stroke-linecap="round"/></svg>`;
+  }
+  if (key === 'support_supply' || inferEquipmentTypeId(item, null) === KNOWN_EQUIPMENT_TYPES.SUPPORT) {
+    const c = rarityColor || '#fbbf24';
+    return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 7h14v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7Z" stroke="${c}" stroke-width="1.9" fill="rgba(251,191,36,0.18)"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M9 13h6" stroke="${c}" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+  }
   if (key === 'torpedo') {
     const c = rarityColor || '#22d3ee';
     return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 16L17 5l2 2-11 13-4-4Z" stroke="${c}" stroke-width="1.9" fill="rgba(34,211,238,0.16)"/><path d="M5 19l-2 2M8 19l-1 2" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/></svg>`;
@@ -266,46 +282,54 @@ export function getItemIconSvg(item, { size = 20, iconKey = null } = {}) {
   return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="3" stroke="#fbbf24" stroke-width="1.8" fill="rgba(251,191,36,0.15)"/><path d="M12 9V15M9 12H15" stroke="#fbbf24" stroke-width="2" stroke-linecap="round"/></svg>`;
 }
 
+/**
+ * Compressed 2-Digit Starter Items:
+ * White (+2~4), Green (+4~7), Blue (+7~11), Purple (+11~16), Orange (+16~22).
+ */
 export const STARTER_ITEMS = [
   {
     id: 'item_core_engine_01',
     name: '标准蒸汽轮机引擎',
     category: ITEM_CATEGORIES.ENGINE,
+    rarity: ITEM_RARITIES.COMMON,
+    statScaleVersion: 2,
     tags: ['核心必装', '动力'],
     description: '制式舰用推进引擎，提供稳定的机动性与反潜航速支持。',
-    quantity: 8,
+    quantity: 10,
     level: 0,
     bonuses: [
-      { stat: 'evasion', layer: 'baseAdd', value: 12 },
-      { stat: 'asw', layer: 'baseAdd', value: 4 },
+      { stat: 'evasion', layer: 'baseAdd', value: 4 },
+      { stat: 'asw', layer: 'baseAdd', value: 2 },
     ],
   },
   {
     id: 'item_core_armor_01',
     name: '复合均质舰体装甲',
     category: ITEM_CATEGORIES.ARMOR,
+    rarity: ITEM_RARITIES.COMMON,
+    statScaleVersion: 2,
     tags: ['核心必装', '防护'],
-    description: '均衡型舰体装甲结构，提升装甲防护、耐久上限与防空结构强度。',
-    quantity: 8,
+    description: '均衡型舰体装甲结构，提升装甲防护与耐久上限。',
+    quantity: 10,
     level: 0,
     bonuses: [
-      { stat: 'armor', layer: 'baseAdd', value: 10 },
-      { stat: 'maxHp', layer: 'baseAdd', value: 8 },
-      { stat: 'aa', layer: 'baseAdd', value: 4 },
+      { stat: 'armor', layer: 'baseAdd', value: 4 },
+      { stat: 'maxHp', layer: 'baseAdd', value: 4 },
     ],
   },
   {
     id: 'item_core_core_01',
     name: '标准火控中枢核心',
     category: ITEM_CATEGORIES.CORE,
+    rarity: ITEM_RARITIES.COMMON,
+    statScaleVersion: 2,
     tags: ['核心必装', '中枢'],
-    description: '舰载作战控制核心，强化火力、雷击、侦查与检定基准精度。',
-    quantity: 8,
+    description: '舰载作战控制核心，强化火力、侦查与基础检定精度。',
+    quantity: 10,
     level: 0,
     bonuses: [
-      { stat: 'firepower', layer: 'baseAdd', value: 8 },
-      { stat: 'torpedo', layer: 'baseAdd', value: 6 },
-      { stat: 'recon', layer: 'baseAdd', value: 6 },
+      { stat: 'firepower', layer: 'baseAdd', value: 3 },
+      { stat: 'recon', layer: 'baseAdd', value: 3 },
       { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
     ],
   },
@@ -314,14 +338,17 @@ export const STARTER_ITEMS = [
     name: '高爆双联主炮',
     category: ITEM_CATEGORIES.EXTENSION,
     subGroup: 'weapon',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.MAIN_GUN,
+    iconKey: 'main_gun',
+    rarity: ITEM_RARITIES.UNCOMMON,
+    statScaleVersion: 2,
     tags: ['主战武器', '主炮'],
-    description: '高初速双联装主炮模块，兼顾主力炮击火力、防空与射程延伸。',
+    description: '高初速双联装主炮模块，穿甲系数稳定。',
     quantity: 3,
     level: 0,
     bonuses: [
-      { stat: 'firepower', layer: 'baseAdd', value: 14 },
-      { stat: 'aa', layer: 'baseAdd', value: 8 },
-      { stat: '射程延伸', layer: 'baseAdd', value: 2 },
+      { stat: 'firepower', layer: 'baseAdd', value: 6 },
+      { stat: 'aa', layer: 'baseAdd', value: 3 },
     ],
   },
   {
@@ -329,28 +356,70 @@ export const STARTER_ITEMS = [
     name: '主动声呐阵列',
     category: ITEM_CATEGORIES.EXTENSION,
     subGroup: 'tactical',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.SONAR,
+    iconKey: 'sonar',
+    rarity: ITEM_RARITIES.UNCOMMON,
+    statScaleVersion: 2,
     tags: ['战术辅助', '声呐', '反潜'],
-    description: '高灵敏度水下声呐与夜战观瞄模块，大幅强化反潜、侦查与夜战修正。',
+    description: '高灵敏度水下声呐模块，强化反潜与侦查定位。',
     quantity: 3,
     level: 0,
     bonuses: [
-      { stat: 'recon', layer: 'baseAdd', value: 10 },
-      { stat: 'asw', layer: 'baseAdd', value: 14 },
-      { stat: '夜战修正', layer: 'baseAdd', value: 8 },
-      { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
+      { stat: 'asw', layer: 'baseAdd', value: 6 },
+      { stat: 'recon', layer: 'baseAdd', value: 4 },
+    ],
+  },
+  {
+    id: 'item_support_repair_01',
+    name: '战地抢修吊舱',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'support',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.SUPPORT,
+    supportRole: 'repair',
+    iconKey: 'support_repair',
+    rarity: ITEM_RARITIES.UNCOMMON,
+    statScaleVersion: 2,
+    tags: ['后勤支援', '抢修', '损管'],
+    description: '装备后解锁战斗指令「紧急抢修」，为 3×4 阵型内受伤队友恢复耐久。',
+    quantity: 2,
+    level: 0,
+    bonuses: [
+      { stat: 'armor', layer: 'baseAdd', value: 4 },
+      { stat: 'recon', layer: 'baseAdd', value: 5 },
+    ],
+  },
+  {
+    id: 'item_support_supply_01',
+    name: '海上补给箱',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'support',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.SUPPORT,
+    supportRole: 'supply',
+    iconKey: 'support_supply',
+    rarity: ITEM_RARITIES.UNCOMMON,
+    statScaleVersion: 2,
+    tags: ['后勤支援', '补给', '油弹'],
+    description: '装备后解锁战斗指令「前线补给」，恢复随舰弹药并提升全队士气（单次出征限用 2 次）。',
+    quantity: 2,
+    level: 0,
+    bonuses: [
+      { stat: 'maxHp', layer: 'baseAdd', value: 5 },
+      { stat: 'recon', layer: 'baseAdd', value: 4 },
     ],
   },
   {
     id: 'item_outfit_standard',
     name: '标准港区常服',
     category: ITEM_CATEGORIES.OUTFIT,
+    rarity: ITEM_RARITIES.COMMON,
+    statScaleVersion: 2,
     tags: ['服装', '日常'],
     description: '剪裁轻便的港区执勤常服，提供机动与侦查小幅加成。',
     quantity: 4,
     level: 0,
     bonuses: [
-      { stat: 'evasion', layer: 'baseAdd', value: 6 },
-      { stat: 'recon', layer: 'baseAdd', value: 4 },
+      { stat: 'evasion', layer: 'baseAdd', value: 3 },
+      { stat: 'recon', layer: 'baseAdd', value: 2 },
     ],
   },
   {
@@ -382,9 +451,7 @@ export const STARTER_ITEMS = [
 ];
 
 /**
- * Full 16-Piece Starter Content Pack Equipment Catalog (covering Core 3-piece,
- * Main Weapons, Tactical Support, and Outfits).
- * Auto-seeded on fresh saves and merge-importable without overwriting existing saves.
+ * Full Starter Content Pack Equipment Catalog (Compressed 2-Digit Scale: White +2~4, Green +4~7, Blue +7~11).
  */
 export const STARTER_PACK_EQUIPMENT_16 = [
   ...STARTER_ITEMS.filter((i) => i.category !== ITEM_CATEGORIES.CONSUMABLE),
@@ -392,40 +459,46 @@ export const STARTER_PACK_EQUIPMENT_16 = [
     id: 'item_pack_engine_turbo',
     name: '涡轮增压引擎',
     category: ITEM_CATEGORIES.ENGINE,
+    rarity: ITEM_RARITIES.UNCOMMON,
+    statScaleVersion: 2,
     tags: ['核心必装', '高机动'],
-    description: '高出力增压轮机，为驱逐/轻巡提供爆发机动与迂回优势。',
+    description: '高出力增压轮机，提供爆发机动与迂回优势。',
     quantity: 2,
     level: 0,
     bonuses: [
-      { stat: 'evasion', layer: 'baseAdd', value: 18 },
-      { stat: 'torpedo', layer: 'baseAdd', value: 6 },
+      { stat: 'evasion', layer: 'baseAdd', value: 7 },
+      { stat: 'torpedo', layer: 'baseAdd', value: 4 },
     ],
   },
   {
     id: 'item_pack_armor_sloped',
     name: '倾角装甲板',
     category: ITEM_CATEGORIES.ARMOR,
+    rarity: ITEM_RARITIES.UNCOMMON,
+    statScaleVersion: 2,
     tags: ['核心必装', '重甲防护'],
-    description: '大倾角复合跳弹装甲，为战列与重巡显著抬升装甲与耐久上限。',
+    description: '大倾角复合跳弹装甲，抬升装甲与耐久上限。',
     quantity: 2,
     level: 0,
     bonuses: [
-      { stat: 'armor', layer: 'baseAdd', value: 18 },
-      { stat: 'maxHp', layer: 'baseAdd', value: 16 },
+      { stat: 'armor', layer: 'baseAdd', value: 7 },
+      { stat: 'maxHp', layer: 'baseAdd', value: 6 },
     ],
   },
   {
     id: 'item_pack_core_tactical',
     name: '精密战术火控核心',
     category: ITEM_CATEGORIES.CORE,
+    rarity: ITEM_RARITIES.RARE,
+    statScaleVersion: 2,
     tags: ['核心必装', '精密火控'],
-    description: '多目标弹道解算中枢，提升火力、侦查并提供 +2 检定精度修正。',
+    description: '多目标弹道解算中枢，提升火力、侦查与命中修正。',
     quantity: 2,
     level: 0,
     bonuses: [
-      { stat: 'firepower', layer: 'baseAdd', value: 12 },
-      { stat: 'recon', layer: 'baseAdd', value: 12 },
-      { stat: 'checkBonus', layer: 'flatFinal', value: 2 },
+      { stat: 'firepower', layer: 'baseAdd', value: 8 },
+      { stat: 'recon', layer: 'baseAdd', value: 7 },
+      { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
     ],
   },
   {
@@ -433,14 +506,17 @@ export const STARTER_PACK_EQUIPMENT_16 = [
     name: '九三式氧雷',
     category: ITEM_CATEGORIES.EXTENSION,
     subGroup: 'weapon',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.TORPEDO,
+    iconKey: 'torpedo',
+    rarity: ITEM_RARITIES.RARE,
+    statScaleVersion: 2,
     tags: ['主战武器', '鱼雷'],
-    description: '高航速无航迹重型酸素鱼雷，极大幅度强化雷击爆发与破甲倍率。',
+    description: '高航速无航迹重型酸素鱼雷，无视 40% 有效装甲。',
     quantity: 2,
     level: 0,
     bonuses: [
-      { stat: 'torpedo', layer: 'baseAdd', value: 20 },
+      { stat: 'torpedo', layer: 'baseAdd', value: 10 },
       { stat: 'evasion', layer: 'baseAdd', value: 4 },
-      { stat: '雷击穿透', layer: 'baseAdd', value: 10 },
     ],
   },
   {
@@ -448,14 +524,17 @@ export const STARTER_PACK_EQUIPMENT_16 = [
     name: '超重三联装主炮',
     category: ITEM_CATEGORIES.EXTENSION,
     subGroup: 'weapon',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.MAIN_GUN,
+    iconKey: 'main_gun',
+    rarity: ITEM_RARITIES.RARE,
+    statScaleVersion: 2,
     tags: ['主战武器', '主炮', '重炮'],
-    description: '主力舰级超重穿甲三联主炮，正面轰击伤害惊人。',
+    description: '主力舰级超重穿甲三联主炮，无视 35% 有效装甲。',
     quantity: 2,
     level: 0,
     bonuses: [
-      { stat: 'firepower', layer: 'baseAdd', value: 22 },
+      { stat: 'firepower', layer: 'baseAdd', value: 11 },
       { stat: 'armor', layer: 'baseAdd', value: 4 },
-      { stat: '穿甲修正', layer: 'baseAdd', value: 12 },
     ],
   },
   {
@@ -463,28 +542,16 @@ export const STARTER_PACK_EQUIPMENT_16 = [
     name: '舰载俯冲轰炸机中队',
     category: ITEM_CATEGORIES.EXTENSION,
     subGroup: 'weapon',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.AIRCRAFT,
+    iconKey: 'aircraft',
+    rarity: ITEM_RARITIES.RARE,
+    statScaleVersion: 2,
     tags: ['主战武器', '舰载机', '航母'],
-    description: '精锐舰载俯冲轰炸中队，大幅提升航母空袭火力与侦查视野。',
+    description: '精锐舰载俯冲轰炸中队，全图空袭无视排数衰减。',
     quantity: 2,
     level: 0,
     bonuses: [
-      { stat: 'firepower', layer: 'baseAdd', value: 16 },
-      { stat: 'recon', layer: 'baseAdd', value: 14 },
-      { stat: '制空值', layer: 'baseAdd', value: 18 },
-    ],
-  },
-  {
-    id: 'item_pack_wpn_torp_bomber',
-    name: '舰载鱼雷攻击机中队',
-    category: ITEM_CATEGORIES.EXTENSION,
-    subGroup: 'weapon',
-    tags: ['主战武器', '舰载机', '鱼雷'],
-    description: '低空贴海突防鱼雷机编队，同时增强雷击、反潜与空袭压制。',
-    quantity: 2,
-    level: 0,
-    bonuses: [
-      { stat: 'torpedo', layer: 'baseAdd', value: 14 },
-      { stat: 'asw', layer: 'baseAdd', value: 10 },
+      { stat: 'firepower', layer: 'baseAdd', value: 9 },
       { stat: 'recon', layer: 'baseAdd', value: 8 },
     ],
   },
@@ -493,43 +560,69 @@ export const STARTER_PACK_EQUIPMENT_16 = [
     name: '对空电探',
     category: ITEM_CATEGORIES.EXTENSION,
     subGroup: 'tactical',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.RADAR,
+    iconKey: 'radar',
+    rarity: ITEM_RARITIES.UNCOMMON,
+    statScaleVersion: 2,
     tags: ['战术辅助', '雷达', '防空'],
-    description: '广域相控对空电探，大幅提升舰队防空拦截网与雷达侦查。',
+    description: '广域相控对空电探，提升雷达校射扫描与防空拦截。',
     quantity: 2,
     level: 0,
     bonuses: [
-      { stat: 'aa', layer: 'baseAdd', value: 18 },
-      { stat: 'recon', layer: 'baseAdd', value: 12 },
-      { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
+      { stat: 'aa', layer: 'baseAdd', value: 6 },
+      { stat: 'recon', layer: 'baseAdd', value: 6 },
     ],
   },
   {
-    id: 'item_pack_tac_optical_radar',
-    name: '光学测距与观瞄雷达',
+    id: 'item_pack_tac_aa_gun',
+    name: '四联装速射防空炮',
     category: ITEM_CATEGORIES.EXTENSION,
     subGroup: 'tactical',
-    tags: ['战术辅助', '雷达', '火控'],
-    description: '全天候火控测距观瞄仪，提升扫描命中与全队火力命中修正。',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.AA_GUN,
+    iconKey: 'aa_gun',
+    rarity: ITEM_RARITIES.UNCOMMON,
+    statScaleVersion: 2,
+    tags: ['战术辅助', '防空', '高炮'],
+    description: '高射速防空炮塔，装备后解锁「防空警戒网」邻格护盾。',
     quantity: 2,
     level: 0,
     bonuses: [
-      { stat: 'recon', layer: 'baseAdd', value: 14 },
-      { stat: 'firepower', layer: 'baseAdd', value: 8 },
-      { stat: 'checkBonus', layer: 'flatFinal', value: 2 },
+      { stat: 'aa', layer: 'baseAdd', value: 7 },
+      { stat: 'firepower', layer: 'baseAdd', value: 3 },
+    ],
+  },
+  {
+    id: 'item_pack_support_dc_kit',
+    name: '精工损管抢修套件',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'support',
+    equipmentType: KNOWN_EQUIPMENT_TYPES.SUPPORT,
+    supportRole: 'repair',
+    iconKey: 'support_repair',
+    rarity: ITEM_RARITIES.RARE,
+    statScaleVersion: 2,
+    tags: ['后勤支援', '损管', '抢修'],
+    description: '军工级损管抢修套件，强化紧急抢修效率并提升耐久装甲。',
+    quantity: 1,
+    level: 0,
+    bonuses: [
+      { stat: 'armor', layer: 'baseAdd', value: 8 },
+      { stat: 'maxHp', layer: 'baseAdd', value: 9 },
     ],
   },
   {
     id: 'item_pack_outfit_banquet',
     name: '港区礼装宴会服',
     category: ITEM_CATEGORIES.OUTFIT,
+    rarity: ITEM_RARITIES.UNCOMMON,
+    statScaleVersion: 2,
     tags: ['服装', '礼装'],
-    description: '优雅精致的港区庆典礼服，穿戴后提升侦查、机动与日常互动风采。',
+    description: '优雅精致的港区庆典礼服，穿戴后提升侦查与机动。',
     quantity: 2,
     level: 0,
     bonuses: [
-      { stat: 'recon', layer: 'baseAdd', value: 10 },
-      { stat: 'evasion', layer: 'baseAdd', value: 8 },
-      { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
+      { stat: 'recon', layer: 'baseAdd', value: 5 },
+      { stat: 'evasion', layer: 'baseAdd', value: 5 },
     ],
   },
 ];
@@ -560,20 +653,22 @@ function sanitizeBonuses(bonuses = []) {
 }
 
 /**
- * Deterministic enhancement bonus scaling formula for a given target level.
+ * Compressed 2-Digit Enhancement Scaling (+1 ~ +10 provides +5 ~ +10 additional stat points total).
  */
 export function computeEnhancedBonuses(baseBonuses = [], level = 0) {
   const lv = Math.max(0, Math.min(MAX_ENHANCE_LEVEL, Math.floor(Number(level) || 0)));
   return sanitizeBonuses(baseBonuses).map((b) => {
     if (lv === 0 || b.value <= 0) return { ...b };
     if (b.layer === 'percentAdd' || b.layer === 'percentMult') {
-      return { ...b, value: Number((b.value + lv * 0.02).toFixed(4)) };
+      return { ...b, value: Number((b.value + lv * 0.015).toFixed(4)) };
     }
     if (b.stat === 'checkBonus') {
-      return { ...b, value: b.value + Math.floor((lv + 1) / 2) };
+      return { ...b, value: b.value + Math.floor(lv / 4) };
     }
-    const perLevelGain = Math.max(2, Math.round(b.value * 0.25));
-    return { ...b, value: b.value + perLevelGain * lv };
+    // +10 provides +5 (low-base secondary stat) to +10 (primary high-tier stat)
+    const maxAt10 = Math.max(5, Math.min(10, Math.round(5 + b.value * 0.25)));
+    const gain = Math.round((maxAt10 * lv) / MAX_ENHANCE_LEVEL);
+    return { ...b, value: b.value + gain };
   });
 }
 
@@ -592,14 +687,6 @@ export function getEnhanceCost(item, { discount = 0 } = {}) {
 }
 
 export class InventorySystem {
-  /**
-   * @param {{
-   *   storage: import('./storage.js').StorageManager,
-   *   entities: import('./entity-system.js').EntitySystem,
-   *   commander?: import('./commander-system.js').CommanderSystem | null,
-   *   bus?: import('./event-bus.js').EventBus | null
-   * }} deps
-   */
   constructor({ storage, entities, commander = null, bus = null }) {
     this._storage = storage;
     this._scope = storage.namespace(STORAGE_NS);
@@ -615,6 +702,8 @@ export class InventorySystem {
     this._equipped = {};
     /** @type {number} Salvage parts accumulated from disassembling surplus equipment for rarity promotion */
     this._salvageParts = 0;
+    /** @type {number} Retrofit Cores earned from duplicate ship construction */
+    this._retrofitCores = 0;
     this._hydrated = false;
 
     if (this._bus) {
@@ -635,6 +724,31 @@ export class InventorySystem {
     await this.persist();
     this._emit('inventory:salvage-changed', { salvageParts: this._salvageParts, delta: add });
     return this._salvageParts;
+  }
+
+  getRetrofitCores() {
+    return Math.max(0, Math.floor(Number(this._retrofitCores) || 0));
+  }
+
+  async addRetrofitCores(amount) {
+    const add = Math.max(0, Math.floor(Number(amount) || 0));
+    if (add <= 0) return this.getRetrofitCores();
+    this._retrofitCores = this.getRetrofitCores() + add;
+    await this.persist();
+    this._emit('inventory:retrofit-cores-changed', { retrofitCores: this._retrofitCores, delta: add });
+    return this._retrofitCores;
+  }
+
+  async toggleItemLock(itemId, force = null) {
+    const id = String(itemId || '');
+    const item = this._items.get(id);
+    if (!item) throw new Error('目标装备不存在');
+    const nextLocked = force !== null && force !== undefined ? Boolean(force) : !item.locked;
+    item.locked = nextLocked;
+    item.updatedAt = Date.now();
+    await this.persist();
+    this._emit('inventory:item-updated', { item: deepClone(item) });
+    return deepClone(item);
   }
 
   getSalvagePartsYield(item) {
@@ -1017,6 +1131,7 @@ export class InventorySystem {
     const list = [];
     for (const item of this._items.values()) {
       if (item.category === ITEM_CATEGORIES.CONSUMABLE) continue;
+      if (item.locked) continue;
       if ((Number(item.level) || 0) > 0) continue;
       if (this.getWearersOfItem(item.id).length > 0) continue;
       list.push({ ...deepClone(item), rarity: inferItemRarity(item) });
@@ -1025,7 +1140,7 @@ export class InventorySystem {
   }
 
   /**
-   * Filter idle (unequipped, non-consumable) items matching selected rarities for batch disassembly.
+   * Filter idle (unequipped, unlocked, non-consumable) items matching selected rarities for batch disassembly.
    */
   getIdleItemsByRarity({
     rarities = [ITEM_RARITIES.COMMON, ITEM_RARITIES.UNCOMMON],
@@ -1035,6 +1150,7 @@ export class InventorySystem {
     const list = [];
     for (const item of this._items.values()) {
       if (item.category === ITEM_CATEGORIES.CONSUMABLE) continue;
+      if (item.locked) continue;
       if (!includeEnhanced && (Number(item.level) || 0) > 0) continue;
       if (this.getWearersOfItem(item.id).length > 0) continue;
       const r = inferItemRarity(item);
@@ -1065,6 +1181,9 @@ export class InventorySystem {
     const id = String(itemId || '');
     const existing = this._items.get(id);
     if (!existing) throw new Error('目标物品不存在');
+    if (existing.locked) {
+      throw new Error(`「${existing.name}」已上锁（🔒），请先解锁后再拆解`);
+    }
     const mult = resources && typeof resources.getDropMultiplier === 'function' ? resources.getDropMultiplier() : 1.0;
     const baseYield =
       existing.category === ITEM_CATEGORIES.CONSUMABLE
@@ -1175,127 +1294,202 @@ export class InventorySystem {
   }
 
   /**
-   * Roll & create a high-rarity equipment or outfit drop crate from sortie salvage / combat victories.
-   * Commander permanent Luck directly boosts Legendary (橙装) drop odds.
+   * Roll & create a compressed 2-digit equipment or outfit drop crate from 1★~5★ sortie salvage / combat victories.
+   * Commander permanent Luck directly boosts Legendary (橙装) drop odds. Includes AR/AO support equipment!
    */
   async rollLootDropItem({
     tier = 'encounter', // 'resource' | 'encounter' | 'elite' | 'boss'
-    difficulty = 'low',
+    difficulty = 'star_1',
     dropMultiplier = 1.0,
     luckBonus = null,
     rng = Math.random,
   } = {}) {
     const mult = Math.max(0.5, Number(dropMultiplier) || 1.0);
-    const diffBoost = difficulty === 'high' ? 0.22 : difficulty === 'medium' ? 0.1 : 0;
-    const multBoost = Math.min(0.28, Math.max(0, mult - 1) * 0.12);
+    const diffStr = String(difficulty || 'star_1').toLowerCase();
+    const starBoostMap = {
+      low: 0,
+      star_1: 0,
+      medium: 0.1,
+      star_2: 0.08,
+      high: 0.22,
+      star_3: 0.16,
+      star_4: 0.24,
+      star_5: 0.34,
+    };
+    const diffBoost = starBoostMap[diffStr] ?? 0;
+    const multBoost = Math.min(0.24, Math.max(0, mult - 1) * 0.1);
     const cmdLuckBoost =
       luckBonus !== null && luckBonus !== undefined
         ? Number(luckBonus) || 0
         : this._commander && typeof this._commander.getLuckEffects === 'function'
-        ? Math.max(0, Math.min(0.32, (this._commander.getLuckEffects().rareDropBonus || 0) * 0.85))
+        ? Math.max(0, Math.min(0.28, (this._commander.getLuckEffects().rareDropBonus || 0) * 0.85))
         : 0;
     const roll = rng() + diffBoost + multBoost + cmdLuckBoost;
 
     let rarity = ITEM_RARITIES.UNCOMMON;
     if (tier === 'boss') {
-      rarity = roll >= 0.72 ? ITEM_RARITIES.LEGENDARY : roll >= 0.35 ? ITEM_RARITIES.EPIC : ITEM_RARITIES.RARE;
+      rarity = roll >= 0.78 ? ITEM_RARITIES.LEGENDARY : roll >= 0.42 ? ITEM_RARITIES.EPIC : ITEM_RARITIES.RARE;
     } else if (tier === 'elite') {
-      rarity = roll >= 0.88 ? ITEM_RARITIES.LEGENDARY : roll >= 0.52 ? ITEM_RARITIES.EPIC : roll >= 0.18 ? ITEM_RARITIES.RARE : ITEM_RARITIES.UNCOMMON;
+      rarity = roll >= 0.9 ? ITEM_RARITIES.LEGENDARY : roll >= 0.56 ? ITEM_RARITIES.EPIC : roll >= 0.22 ? ITEM_RARITIES.RARE : ITEM_RARITIES.UNCOMMON;
     } else if (tier === 'encounter') {
-      rarity = roll >= 0.94 ? ITEM_RARITIES.LEGENDARY : roll >= 0.72 ? ITEM_RARITIES.EPIC : roll >= 0.38 ? ITEM_RARITIES.RARE : ITEM_RARITIES.UNCOMMON;
+      rarity = roll >= 0.96 ? ITEM_RARITIES.LEGENDARY : roll >= 0.75 ? ITEM_RARITIES.EPIC : roll >= 0.42 ? ITEM_RARITIES.RARE : ITEM_RARITIES.UNCOMMON;
     } else {
-      rarity = roll >= 0.86 ? ITEM_RARITIES.EPIC : roll >= 0.5 ? ITEM_RARITIES.RARE : roll >= 0.2 ? ITEM_RARITIES.UNCOMMON : ITEM_RARITIES.COMMON;
+      rarity = roll >= 0.88 ? ITEM_RARITIES.EPIC : roll >= 0.54 ? ITEM_RARITIES.RARE : roll >= 0.22 ? ITEM_RARITIES.UNCOMMON : ITEM_RARITIES.COMMON;
     }
 
     const rDef = ITEM_RARITY_MAP[rarity] || ITEM_RARITY_MAP.uncommon;
-    const scale = rDef.statScale || 1.0;
+    const budget = RARITY_STAT_BUDGETS[rarity] || RARITY_STAT_BUDGETS.uncommon;
+    const primaryVal = Math.round(budget.min + rng() * (budget.max - budget.min));
+    const secondaryVal = Math.max(2, Math.round(primaryVal * (0.45 + rng() * 0.15)));
 
     const pool = [
       {
         name: '高初速穿甲双联主炮',
         category: ITEM_CATEGORIES.EXTENSION,
         subGroup: 'weapon',
-        subCategory: 'main_gun',
+        subCategory: KNOWN_EQUIPMENT_TYPES.MAIN_GUN,
+        equipmentType: KNOWN_EQUIPMENT_TYPES.MAIN_GUN,
         iconKey: 'main_gun',
         tags: ['主战武器', '主炮', '战利品'],
         bonuses: [
-          { stat: 'firepower', layer: 'baseAdd', value: Math.round(14 * scale) },
-          { stat: 'aa', layer: 'baseAdd', value: Math.round(6 * scale) },
+          { stat: 'firepower', layer: 'baseAdd', value: primaryVal },
+          { stat: 'aa', layer: 'baseAdd', value: secondaryVal },
         ],
       },
       {
         name: '五联装酸素鱼雷发射管',
         category: ITEM_CATEGORIES.EXTENSION,
         subGroup: 'weapon',
-        subCategory: 'torpedo',
+        subCategory: KNOWN_EQUIPMENT_TYPES.TORPEDO,
+        equipmentType: KNOWN_EQUIPMENT_TYPES.TORPEDO,
         iconKey: 'torpedo',
         tags: ['主战武器', '鱼雷', '战利品'],
         bonuses: [
-          { stat: 'torpedo', layer: 'baseAdd', value: Math.round(16 * scale) },
-          { stat: 'evasion', layer: 'baseAdd', value: Math.round(5 * scale) },
+          { stat: 'torpedo', layer: 'baseAdd', value: primaryVal },
+          { stat: 'evasion', layer: 'baseAdd', value: secondaryVal },
         ],
       },
       {
         name: '精锐舰载俯冲轰炸机队',
         category: ITEM_CATEGORIES.EXTENSION,
         subGroup: 'weapon',
-        subCategory: 'aircraft',
+        subCategory: KNOWN_EQUIPMENT_TYPES.AIRCRAFT,
+        equipmentType: KNOWN_EQUIPMENT_TYPES.AIRCRAFT,
         iconKey: 'aircraft',
         tags: ['主战武器', '舰载机', '战利品'],
         bonuses: [
-          { stat: 'firepower', layer: 'baseAdd', value: Math.round(12 * scale) },
-          { stat: 'recon', layer: 'baseAdd', value: Math.round(10 * scale) },
-          { stat: 'aa', layer: 'baseAdd', value: Math.round(8 * scale) },
+          { stat: 'firepower', layer: 'baseAdd', value: primaryVal },
+          { stat: 'recon', layer: 'baseAdd', value: secondaryVal },
+          { stat: 'aa', layer: 'baseAdd', value: Math.max(2, Math.round(secondaryVal * 0.8)) },
         ],
       },
       {
         name: '深水脉冲反潜声呐阵列',
         category: ITEM_CATEGORIES.EXTENSION,
         subGroup: 'tactical',
-        subCategory: 'sonar',
+        subCategory: KNOWN_EQUIPMENT_TYPES.SONAR,
+        equipmentType: KNOWN_EQUIPMENT_TYPES.SONAR,
         iconKey: 'sonar',
         tags: ['战术辅助', '声呐', '反潜'],
         bonuses: [
-          { stat: 'asw', layer: 'baseAdd', value: Math.round(15 * scale) },
-          { stat: 'recon', layer: 'baseAdd', value: Math.round(8 * scale) },
-          ...(rDef.rank >= 3 ? [{ stat: 'checkBonus', layer: 'flatFinal', value: rDef.rank >= 5 ? 2 : 1 }] : []),
+          { stat: 'asw', layer: 'baseAdd', value: primaryVal },
+          { stat: 'recon', layer: 'baseAdd', value: secondaryVal },
+          ...(rDef.rank >= 4 ? [{ stat: 'checkBonus', layer: 'flatFinal', value: rDef.rank >= 5 ? 2 : 1 }] : []),
         ],
       },
       {
         name: '相控阵对空搜索雷达',
         category: ITEM_CATEGORIES.EXTENSION,
         subGroup: 'tactical',
-        subCategory: 'radar',
+        subCategory: KNOWN_EQUIPMENT_TYPES.RADAR,
+        equipmentType: KNOWN_EQUIPMENT_TYPES.RADAR,
         iconKey: 'radar',
         tags: ['战术辅助', '雷达', '防空'],
         bonuses: [
-          { stat: 'aa', layer: 'baseAdd', value: Math.round(14 * scale) },
-          { stat: 'recon', layer: 'baseAdd', value: Math.round(11 * scale) },
-          ...(rDef.rank >= 3 ? [{ stat: 'checkBonus', layer: 'flatFinal', value: rDef.rank >= 5 ? 2 : 1 }] : []),
+          { stat: 'aa', layer: 'baseAdd', value: primaryVal },
+          { stat: 'recon', layer: 'baseAdd', value: secondaryVal },
+          ...(rDef.rank >= 4 ? [{ stat: 'checkBonus', layer: 'flatFinal', value: rDef.rank >= 5 ? 2 : 1 }] : []),
+        ],
+      },
+      {
+        name: '高射速防空联装机炮',
+        category: ITEM_CATEGORIES.EXTENSION,
+        subGroup: 'tactical',
+        subCategory: KNOWN_EQUIPMENT_TYPES.AA_GUN,
+        equipmentType: KNOWN_EQUIPMENT_TYPES.AA_GUN,
+        iconKey: 'aa_gun',
+        tags: ['战术辅助', '防空', '高炮'],
+        bonuses: [
+          { stat: 'aa', layer: 'baseAdd', value: primaryVal },
+          { stat: 'firepower', layer: 'baseAdd', value: secondaryVal },
+        ],
+      },
+      {
+        name: '战地抢修吊舱',
+        category: ITEM_CATEGORIES.EXTENSION,
+        subGroup: 'support',
+        subCategory: KNOWN_EQUIPMENT_TYPES.SUPPORT,
+        equipmentType: KNOWN_EQUIPMENT_TYPES.SUPPORT,
+        supportRole: 'repair',
+        iconKey: 'support_repair',
+        tags: ['后勤支援', '抢修', '维修舰'],
+        bonuses: [
+          { stat: 'armor', layer: 'baseAdd', value: primaryVal },
+          { stat: 'maxHp', layer: 'baseAdd', value: secondaryVal },
+        ],
+      },
+      {
+        name: '海上补给箱',
+        category: ITEM_CATEGORIES.EXTENSION,
+        subGroup: 'support',
+        subCategory: KNOWN_EQUIPMENT_TYPES.SUPPORT,
+        equipmentType: KNOWN_EQUIPMENT_TYPES.SUPPORT,
+        supportRole: 'supply',
+        iconKey: 'support_supply',
+        tags: ['后勤支援', '补给', '补给舰'],
+        bonuses: [
+          { stat: 'recon', layer: 'baseAdd', value: primaryVal },
+          { stat: 'evasion', layer: 'baseAdd', value: secondaryVal },
+        ],
+      },
+      {
+        name: '精工损管抢修套件',
+        category: ITEM_CATEGORIES.EXTENSION,
+        subGroup: 'support',
+        subCategory: KNOWN_EQUIPMENT_TYPES.SUPPORT,
+        equipmentType: KNOWN_EQUIPMENT_TYPES.SUPPORT,
+        supportRole: 'repair',
+        iconKey: 'support_repair',
+        tags: ['后勤支援', '损管', '抢修'],
+        bonuses: [
+          { stat: 'maxHp', layer: 'baseAdd', value: primaryVal },
+          { stat: 'armor', layer: 'baseAdd', value: secondaryVal },
         ],
       },
       {
         name: '高出力舰用燃气轮机',
         category: ITEM_CATEGORIES.ENGINE,
         subGroup: 'core',
-        subCategory: 'engine',
+        subCategory: KNOWN_EQUIPMENT_TYPES.ENGINE,
+        equipmentType: KNOWN_EQUIPMENT_TYPES.ENGINE,
         iconKey: 'engine',
         tags: ['核心必装', '引擎'],
         bonuses: [
-          { stat: 'evasion', layer: 'baseAdd', value: Math.round(14 * scale) },
-          { stat: 'asw', layer: 'baseAdd', value: Math.round(6 * scale) },
+          { stat: 'evasion', layer: 'baseAdd', value: primaryVal },
+          { stat: 'asw', layer: 'baseAdd', value: secondaryVal },
         ],
       },
       {
         name: '多层陶瓷复合舰体装甲',
         category: ITEM_CATEGORIES.ARMOR,
         subGroup: 'core',
-        subCategory: 'armor',
+        subCategory: KNOWN_EQUIPMENT_TYPES.ARMOR,
+        equipmentType: KNOWN_EQUIPMENT_TYPES.ARMOR,
         iconKey: 'armor',
         tags: ['核心必装', '装甲'],
         bonuses: [
-          { stat: 'armor', layer: 'baseAdd', value: Math.round(12 * scale) },
-          { stat: 'maxHp', layer: 'baseAdd', value: Math.round(12 * scale) },
+          { stat: 'armor', layer: 'baseAdd', value: primaryVal },
+          { stat: 'maxHp', layer: 'baseAdd', value: secondaryVal },
         ],
       },
       {
@@ -1307,8 +1501,8 @@ export class InventorySystem {
         outfitStyle: rDef.rank >= 5 ? '誓约花嫁' : rDef.rank >= 4 ? '优雅礼服' : '海滨泳装',
         tags: ['服装', '战利品服装箱'],
         bonuses: [
-          { stat: 'evasion', layer: 'baseAdd', value: Math.round(8 * scale) },
-          { stat: 'recon', layer: 'baseAdd', value: Math.round(8 * scale) },
+          { stat: 'evasion', layer: 'baseAdd', value: Math.max(2, Math.round(primaryVal * 0.65)) },
+          { stat: 'recon', layer: 'baseAdd', value: Math.max(2, Math.round(primaryVal * 0.65)) },
           ...(rDef.rank >= 4 ? [{ stat: 'checkBonus', layer: 'flatFinal', value: 1 }] : []),
         ],
       },
@@ -1329,11 +1523,14 @@ export class InventorySystem {
       category: picked.category,
       subGroup: picked.subGroup,
       subCategory: picked.subCategory,
+      equipmentType: picked.equipmentType,
+      supportRole: picked.supportRole || '',
       iconKey: picked.iconKey,
       outfitStyle: picked.outfitStyle || '',
       rarity,
+      statScaleVersion: 2,
       tags: [...picked.tags, rDef.shortLabel],
-      description: `海域缴获的${rDef.label}级${picked.category === ITEM_CATEGORIES.OUTFIT ? '舰娘服装' : '战术装备'}。`,
+      description: `海域缴获的${rDef.label}级${picked.category === ITEM_CATEGORIES.OUTFIT ? '舰娘服装' : picked.subGroup === 'support' ? '后勤支援装备' : '战术装备'}。`,
       bonuses: picked.bonuses,
       quantity: 1,
       level: 0,
@@ -1376,8 +1573,11 @@ export class InventorySystem {
       ...(def.subGroup ? { subGroup: String(def.subGroup) } : {}),
       ...(def.subCategory ? { subCategory: String(def.subCategory) } : {}),
       ...(def.equipmentType ? { equipmentType: String(def.equipmentType) } : {}),
+      ...(def.supportRole ? { supportRole: String(def.supportRole) } : {}),
       ...(def.iconKey ? { iconKey: String(def.iconKey) } : {}),
       ...(def.outfitStyle ? { outfitStyle: String(def.outfitStyle).trim() } : {}),
+      locked: Boolean(def.locked),
+      statScaleVersion: Number(def.statScaleVersion) || 2,
       tags: Array.isArray(def.tags)
         ? def.tags.map((t) => String(t).trim()).filter(Boolean)
         : String(def.tags || '')
@@ -1397,6 +1597,9 @@ export class InventorySystem {
       const resolvedType = inferEquipmentTypeId(draft, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
       draft.equipmentType = resolvedType;
       draft.subCategory = resolvedType;
+      if (resolvedType === KNOWN_EQUIPMENT_TYPES.SUPPORT && !draft.supportRole) {
+        draft.supportRole = inferSupportRole(draft) || 'repair';
+      }
     }
 
     this._items.set(id, draft);
@@ -1434,8 +1637,11 @@ export class InventorySystem {
       subGroup: patch.subGroup !== undefined ? String(patch.subGroup) : existing.subGroup,
       subCategory: patch.subCategory !== undefined ? String(patch.subCategory) : existing.subCategory,
       equipmentType: patch.equipmentType !== undefined ? String(patch.equipmentType) : patch.subCategory !== undefined ? String(patch.subCategory) : existing.equipmentType,
+      supportRole: patch.supportRole !== undefined ? String(patch.supportRole) : existing.supportRole || '',
       iconKey: patch.iconKey !== undefined ? String(patch.iconKey) : existing.iconKey,
       outfitStyle: patch.outfitStyle !== undefined ? String(patch.outfitStyle).trim() : existing.outfitStyle || '',
+      locked: patch.locked !== undefined ? Boolean(patch.locked) : Boolean(existing.locked),
+      statScaleVersion: Number(patch.statScaleVersion ?? existing.statScaleVersion ?? 2),
       rarity:
         patch.rarity !== undefined
           ? normalizeRarity(patch.rarity)
@@ -1613,7 +1819,11 @@ export class InventorySystem {
 
   async deleteItem(itemId) {
     const id = String(itemId);
-    if (!this._items.has(id)) return false;
+    const existing = this._items.get(id);
+    if (!existing) return false;
+    if (existing.locked) {
+      throw new Error(`「${existing.name}」已上锁（🔒），请先解锁后再删除`);
+    }
 
     for (const [charId, slotMap] of Object.entries(this._equipped)) {
       let changed = false;
@@ -1956,27 +2166,64 @@ export class InventorySystem {
 
   /**
    * Compute deterministic priority tuple for optimal auto-equip:
-   *   1. Rarity rank (legendary 5 > epic 4 > rare 3 > uncommon 2 > common 1)
-   *   2. Enhancement level (+Lv)
-   *   3. Total naval 8-stat + checkBonus sum
+   *   1. Ship-class role affinity bonus (AR/AO prioritize support/AA/radar/armor/recon over heavy offensive guns)
+   *   2. Rarity rank (legendary 5 > epic 4 > rare 3 > uncommon 2 > common 1)
+   *   3. Enhancement level (+Lv)
+   *   4. Weighted naval 8-stat + checkBonus sum
    */
-  _scoreItemForAutoEquip(item) {
+  _scoreItemForAutoEquip(item, shipClass = '') {
     const rId = inferItemRarity(item);
     const rarityRank = ITEM_RARITY_MAP[rId]?.rank || 1;
     const level = Math.max(0, Math.floor(Number(item?.level) || 0));
+    const cls = String(shipClass || '').toUpperCase();
+    const eqType = inferEquipmentTypeId(item, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+    const supportRole = inferSupportRole(item);
+
+    let roleBias = 0;
+    if (cls === 'AR' || cls === 'AO') {
+      if (eqType === KNOWN_EQUIPMENT_TYPES.SUPPORT) {
+        roleBias += 25;
+        if (cls === 'AR' && supportRole === 'repair') roleBias += 12;
+        if (cls === 'AO' && supportRole === 'supply') roleBias += 12;
+      } else if (
+        eqType === KNOWN_EQUIPMENT_TYPES.AA_GUN ||
+        eqType === KNOWN_EQUIPMENT_TYPES.RADAR ||
+        eqType === KNOWN_EQUIPMENT_TYPES.SONAR
+      ) {
+        roleBias += 10;
+      } else if (eqType === KNOWN_EQUIPMENT_TYPES.MAIN_GUN || eqType === KNOWN_EQUIPMENT_TYPES.TORPEDO) {
+        roleBias -= 10;
+      }
+    } else if (cls === 'CV') {
+      if (eqType === KNOWN_EQUIPMENT_TYPES.AIRCRAFT) roleBias += 12;
+    } else if (cls === 'BB') {
+      if (eqType === KNOWN_EQUIPMENT_TYPES.MAIN_GUN) roleBias += 10;
+    } else if (cls === 'DD' || cls === 'SS') {
+      if (eqType === KNOWN_EQUIPMENT_TYPES.TORPEDO || eqType === KNOWN_EQUIPMENT_TYPES.SONAR) roleBias += 8;
+    }
+
     let statSum = 0;
     for (const b of item?.bonuses || []) {
       const val = Number(b?.value) || 0;
+      let weight = 1.0;
+      if (cls === 'AR') {
+        if (b?.stat === 'armor' || b?.stat === 'maxHp' || b?.stat === 'aa' || b?.stat === 'recon') weight = 1.35;
+        else if (b?.stat === 'firepower' || b?.stat === 'torpedo') weight = 0.6;
+      } else if (cls === 'AO') {
+        if (b?.stat === 'recon' || b?.stat === 'evasion' || b?.stat === 'aa' || b?.stat === 'armor') weight = 1.35;
+        else if (b?.stat === 'firepower' || b?.stat === 'torpedo') weight = 0.6;
+      }
       if (b?.stat === 'checkBonus') statSum += val * 8;
-      else if (b?.layer === 'percentAdd' || b?.layer === 'percentMult') statSum += val * 100;
-      else statSum += val;
+      else if (b?.layer === 'percentAdd' || b?.layer === 'percentMult') statSum += val * 100 * weight;
+      else statSum += val * weight;
     }
-    return { rarityRank, level, statSum };
+    return { roleBias, rarityRank, level, statSum };
   }
 
-  _compareAutoEquipCandidates(a, b) {
-    const sa = this._scoreItemForAutoEquip(a);
-    const sb = this._scoreItemForAutoEquip(b);
+  _compareAutoEquipCandidates(a, b, shipClass = '') {
+    const sa = this._scoreItemForAutoEquip(a, shipClass);
+    const sb = this._scoreItemForAutoEquip(b, shipClass);
+    if (sb.roleBias !== sa.roleBias) return sb.roleBias - sa.roleBias;
     if (sb.rarityRank !== sa.rarityRank) return sb.rarityRank - sa.rarityRank;
     if (sb.level !== sa.level) return sb.level - sa.level;
     if (sb.statSum !== sa.statSum) return sb.statSum - sa.statSum;
@@ -1987,11 +2234,14 @@ export class InventorySystem {
    * One-click optimal auto-equip for a single shipgirl:
    * Iterates 3 mandatory core slots -> all expanded typed slots -> outfit slot (if currently empty),
    * assigning the highest-rarity / highest-level / highest-stat IDLE matching warehouse equipment.
+   * Respects ship class specialization (AR/AO prioritize support/AA/radar over BB main guns).
    * Never downgrades a slot that already holds a better item.
    */
   async autoEquipCharacter(characterId, { includeOutfit = true, excludeItemIds = null } = {}) {
     const cid = String(characterId || '');
     if (!cid) throw new Error('目标角色 ID 不能为空');
+    const entity = this._entities?.get(cid);
+    const shipClass = resolveShipClass(entity?.meta?.shipType || '');
     const slots = this.getCharacterSlots(cid);
     if (!this._equipped[cid]) this._equipped[cid] = {};
 
@@ -2048,7 +2298,7 @@ export class InventorySystem {
         continue;
       }
 
-      candidates.sort((a, b) => this._compareAutoEquipCandidates(a, b));
+      candidates.sort((a, b) => this._compareAutoEquipCandidates(a, b, shipClass));
       const best = candidates[0];
 
       // Avoid swapping if already wearing an equally good or better item in this slot
@@ -2056,7 +2306,7 @@ export class InventorySystem {
         usedOnThisChar.add(best.id);
         continue;
       }
-      if (currentItem && this._compareAutoEquipCandidates(currentItem, best) <= 0) {
+      if (currentItem && this._compareAutoEquipCandidates(currentItem, best, shipClass) <= 0) {
         usedOnThisChar.add(currentItem.id);
         continue;
       }
@@ -2199,11 +2449,12 @@ export class InventorySystem {
 
   serialize() {
     return {
-      version: 5,
+      version: 6,
       customSlotsByCharacter: deepClone(this._customSlotsByCharacter),
       items: Array.from(this._items.values()).map((it) => deepClone(it)),
       equipped: deepClone(this._equipped),
       salvageParts: this.getSalvageParts(),
+      retrofitCores: this.getRetrofitCores(),
     };
   }
 
@@ -2211,23 +2462,33 @@ export class InventorySystem {
     if (!snapshot || typeof snapshot !== 'object') return;
     this._items.clear();
     this._salvageParts = Math.max(0, Math.floor(Number(snapshot.salvageParts) || 0));
+    this._retrofitCores = Math.max(0, Math.floor(Number(snapshot.retrofitCores) || 0));
     if (Array.isArray(snapshot.items)) {
       for (const it of snapshot.items) {
         if (it && it.id) {
-          const baseBonuses = sanitizeBonuses(it.baseBonuses || it.bonuses || []);
-          const level = Math.max(0, Math.min(MAX_ENHANCE_LEVEL, Math.floor(Number(it.level) || 0)));
+          const rawMerged = {
+            ...deepClone(it),
+            locked: Boolean(it.locked),
+          };
+          rawMerged.rarity = it.rarity ? normalizeRarity(it.rarity) : inferItemRarity(rawMerged);
+          const normalized = normalizeLegacyItemBonusesToCompressedScale(rawMerged);
+          const baseBonuses = sanitizeBonuses(normalized.baseBonuses || normalized.bonuses || []);
+          const level = Math.max(0, Math.min(MAX_ENHANCE_LEVEL, Math.floor(Number(normalized.level) || 0)));
           const bonuses = computeEnhancedBonuses(baseBonuses, level);
           const merged = {
-            ...deepClone(it),
+            ...normalized,
             level,
             baseBonuses,
             bonuses,
+            statScaleVersion: 2,
           };
-          merged.rarity = it.rarity ? normalizeRarity(it.rarity) : inferItemRarity(merged);
           if (merged.category !== ITEM_CATEGORIES.CONSUMABLE) {
             const resolvedType = inferEquipmentTypeId(merged, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
             merged.equipmentType = resolvedType;
             merged.subCategory = resolvedType;
+            if (resolvedType === KNOWN_EQUIPMENT_TYPES.SUPPORT && !merged.supportRole) {
+              merged.supportRole = inferSupportRole(merged) || 'repair';
+            }
           }
           this._items.set(String(it.id), merged);
         }

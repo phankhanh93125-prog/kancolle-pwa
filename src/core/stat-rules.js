@@ -30,12 +30,15 @@ export const SHIP_TYPE_PRESETS = Object.freeze([
   '战列舰',
   '航空母舰',
   '潜艇',
-  '工作舰',
+  '维修舰',
+  '补给舰',
 ]);
 
 /**
- * 5 Canonical Ship-Class Profiles:
- * Differentiated per-level stat growth, combat role modifiers, base step cost, and geometric SVG emblem.
+ * 8 Canonical Ship-Class Profiles (Compressed 2-Digit Curve):
+ *   - Level 1 base combat stats strictly in 8 ~ 25 (maxHp 26 ~ 46)
+ *   - Natural per-level growth strictly in 0.30 ~ 0.50 (Lv.100 bare stats land in 40 ~ 75)
+ *   - Full high-enhance orange gear pushes late-game cores cleanly into 110 ~ 160.
  */
 export const SHIP_CLASS_PROFILES = Object.freeze({
   DD: {
@@ -43,13 +46,14 @@ export const SHIP_CLASS_PROFILES = Object.freeze({
     name: '驱逐',
     fullName: '驱逐舰',
     color: '#38bdf8',
-    roleSummary: '高机动/雷击/反潜 · 鱼雷高破甲高暴击 · 反潜巨额克制 · 消耗最低',
-    growth: { maxHp: 2, firepower: 1, armor: 1, torpedo: 3, evasion: 3, recon: 1, aa: 1, asw: 3 },
+    roleSummary: '高机动/雷击/反潜 · 鱼雷破甲暴击 · 消耗最低',
+    baseLv1: { maxHp: 28, firepower: 11, armor: 9, torpedo: 22, evasion: 23, recon: 15, aa: 13, asw: 21 },
+    growth: { maxHp: 0.48, firepower: 0.32, armor: 0.30, torpedo: 0.50, evasion: 0.48, recon: 0.36, aa: 0.34, asw: 0.48 },
     stepCost: { fuel: 6, ammo: 6 },
     combat: {
-      torpedoArmorPen: 0.55,
-      torpedoCritMult: 2.15,
-      aswCounterMult: 1.75,
+      torpedoArmorPen: 0.40,
+      torpedoCritMult: 1.5,
+      aswCounterMult: 1.55,
     },
   },
   CL: {
@@ -57,8 +61,9 @@ export const SHIP_CLASS_PROFILES = Object.freeze({
     name: '轻巡',
     fullName: '轻巡洋舰',
     color: '#2dd4bf',
-    roleSummary: '均衡成长 · 突出防空/反潜/侦查 · 提升全队扫描与防空屏障',
-    growth: { maxHp: 3, firepower: 2, armor: 2, torpedo: 2, evasion: 2, recon: 3, aa: 3, asw: 3 },
+    roleSummary: '均衡成长 · 突出防空/反潜/侦查 · 同排护航增幅',
+    baseLv1: { maxHp: 34, firepower: 15, armor: 14, torpedo: 16, evasion: 18, recon: 19, aa: 19, asw: 18 },
+    growth: { maxHp: 0.52, firepower: 0.38, armor: 0.36, torpedo: 0.38, evasion: 0.40, recon: 0.45, aa: 0.45, asw: 0.44 },
     stepCost: { fuel: 9, ammo: 9 },
     combat: {
       scanCheckBonus: 2,
@@ -70,13 +75,14 @@ export const SHIP_CLASS_PROFILES = Object.freeze({
     name: '重巡',
     fullName: '重巡洋舰',
     color: '#f59e0b',
-    roleSummary: '侧重火力/装甲/耐久 · 常规炮击扎实 · 僚机援护挡伤率与减伤大增',
-    growth: { maxHp: 4, firepower: 3, armor: 3, torpedo: 1, evasion: 1, recon: 2, aa: 2, asw: 1 },
+    roleSummary: '侧重火力/装甲/耐久 · 僚机援护挡伤率与减伤高',
+    baseLv1: { maxHp: 39, firepower: 20, armor: 19, torpedo: 13, evasion: 14, recon: 16, aa: 16, asw: 10 },
+    growth: { maxHp: 0.58, firepower: 0.45, armor: 0.45, torpedo: 0.34, evasion: 0.34, recon: 0.38, aa: 0.38, asw: 0.30 },
     stepCost: { fuel: 13, ammo: 13 },
     combat: {
-      shellingBonusMult: 1.12,
+      shellingBonusMult: 1.08,
       guardChanceBonus: 0.18,
-      guardDamageMult: 0.36,
+      guardDamageMult: 0.38,
     },
   },
   BB: {
@@ -84,12 +90,13 @@ export const SHIP_CLASS_PROFILES = Object.freeze({
     name: '战列',
     fullName: '战列舰',
     color: '#f87171',
-    roleSummary: '最高耐久/火力/装甲 · 重炮高破甲系数击穿重甲 · 消耗最高',
-    growth: { maxHp: 6, firepower: 4, armor: 4, torpedo: 0, evasion: 0, recon: 1, aa: 2, asw: 0 },
+    roleSummary: '最高耐久/火力/装甲 · 重炮穿甲破防 · 消耗最高',
+    baseLv1: { maxHp: 46, firepower: 25, armor: 24, torpedo: 8, evasion: 10, recon: 13, aa: 17, asw: 8 },
+    growth: { maxHp: 0.65, firepower: 0.50, armor: 0.50, torpedo: 0.30, evasion: 0.30, recon: 0.34, aa: 0.40, asw: 0.30 },
     stepCost: { fuel: 18, ammo: 20 },
     combat: {
-      shellingBonusMult: 1.24,
-      shellingArmorPen: 0.45,
+      shellingBonusMult: 1.15,
+      shellingArmorPen: 0.35,
     },
   },
   CV: {
@@ -97,8 +104,9 @@ export const SHIP_CLASS_PROFILES = Object.freeze({
     name: '航母',
     fullName: '航空母舰',
     color: '#a78bfa',
-    roleSummary: '高侦查/防空/耐久 · 炮击转为舰载机空袭（无视前排护甲）· 扩大海图视野',
-    growth: { maxHp: 4, firepower: 2, armor: 2, torpedo: 0, evasion: 1, recon: 4, aa: 4, asw: 1 },
+    roleSummary: '高侦查/防空/耐久 · 舰载机全图空袭无视排数衰减',
+    baseLv1: { maxHp: 42, firepower: 21, armor: 17, torpedo: 8, evasion: 14, recon: 24, aa: 22, asw: 10 },
+    growth: { maxHp: 0.60, firepower: 0.46, armor: 0.38, torpedo: 0.30, evasion: 0.34, recon: 0.50, aa: 0.48, asw: 0.32 },
     stepCost: { fuel: 16, ammo: 14 },
     combat: {
       airstrikeMode: true,
@@ -110,27 +118,59 @@ export const SHIP_CLASS_PROFILES = Object.freeze({
     name: '潜艇',
     fullName: '潜艇',
     color: '#22d3ee',
-    roleSummary: '极高雷击与水下隐蔽 · 开幕雷击奇袭 · 消耗极低但耐久脆弱',
-    growth: { maxHp: 1, firepower: 1, armor: 1, torpedo: 4, evasion: 3, recon: 2, aa: 0, asw: 1 },
+    roleSummary: '极高雷击与水下隐蔽 · 开幕雷击奇袭 · 消耗极低',
+    baseLv1: { maxHp: 24, firepower: 9, armor: 8, torpedo: 24, evasion: 22, recon: 16, aa: 8, asw: 12 },
+    growth: { maxHp: 0.42, firepower: 0.30, armor: 0.30, torpedo: 0.50, evasion: 0.48, recon: 0.38, aa: 0.30, asw: 0.32 },
     stepCost: { fuel: 5, ammo: 6 },
     combat: {
-      torpedoArmorPen: 0.65,
-      torpedoCritMult: 2.25,
+      torpedoArmorPen: 0.40,
+      torpedoCritMult: 1.5,
+    },
+  },
+  AR: {
+    code: 'AR',
+    name: '维修',
+    fullName: '维修舰',
+    color: '#34d399',
+    roleSummary: '战地抢修核心 · 锚地免费额外回血 · 远征钢铝增产',
+    baseLv1: { maxHp: 36, firepower: 10, armor: 16, torpedo: 8, evasion: 13, recon: 18, aa: 17, asw: 12 },
+    growth: { maxHp: 0.54, firepower: 0.30, armor: 0.42, torpedo: 0.30, evasion: 0.34, recon: 0.44, aa: 0.42, asw: 0.34 },
+    stepCost: { fuel: 8, ammo: 5 },
+    combat: {
+      repairPowerBonus: 1.25,
+      anchorageFreeHealPct: 0.22,
+    },
+  },
+  AO: {
+    code: 'AO',
+    name: '补给',
+    fullName: '补给舰',
+    color: '#fbbf24',
+    roleSummary: '提高随舰油弹携行上限 · 战中前线补给 · 远征油弹银增产',
+    baseLv1: { maxHp: 35, firepower: 10, armor: 15, torpedo: 8, evasion: 14, recon: 17, aa: 16, asw: 12 },
+    growth: { maxHp: 0.52, firepower: 0.30, armor: 0.40, torpedo: 0.30, evasion: 0.36, recon: 0.42, aa: 0.40, asw: 0.34 },
+    stepCost: { fuel: 7, ammo: 5 },
+    combat: {
+      carriedSupplyBonusFuel: 160,
+      carriedSupplyBonusAmmo: 160,
+      resupplyPowerBonus: 1.25,
     },
   },
 });
 
 /**
  * Ship-class custom expandable equipment slot caps (outside 3 fixed core slots: engine/armor/core):
- *   - DD / SS : max 2 expanded slots
- *   - CL / CA : max 3 expanded slots
- *   - BB / CV : max 4 expanded slots
+ *   - DD / SS          : max 2 expanded slots
+ *   - CL / CA / AR / AO: max 3 expanded slots
+ *   - BB / CV          : max 4 expanded slots
  */
 export const SHIP_CLASS_CUSTOM_SLOT_CAPS = Object.freeze({
   DD: 2,
   SS: 2,
   CL: 3,
   CA: 3,
+  AR: 3,
+  AO: 3,
   BB: 4,
   CV: 4,
 });
@@ -207,16 +247,19 @@ export function getFleetSlotCostFactor(zeroBasedIndex) {
 }
 
 /**
- * Map any Chinese/English/custom shipType string to one of the canonical class codes ('DD'|'SS'|'CL'|'CA'|'BB'|'CV').
+ * Map any Chinese/English/custom shipType string to one of the canonical class codes
+ * ('DD'|'SS'|'CL'|'CA'|'BB'|'CV'|'AR'|'AO').
  */
 export function resolveShipClass(shipType = '') {
   const s = String(shipType || '').trim().toUpperCase();
   if (!s) return 'DD';
+  if (s === 'AR' || s.includes('维修') || s.includes('工作') || s.includes('REPAIR')) return 'AR';
+  if (s === 'AO' || s.includes('补给') || s.includes('油船') || s.includes('SUPPLY') || s.includes('TANKER') || s.includes('OILER')) return 'AO';
   if (s.includes('航母') || s.includes('空母') || s.includes('CV') || s.includes('CARRIER')) return 'CV';
   if (s.includes('战列') || s.includes('战巡') || s.includes('BB') || s.includes('BATTLESHIP')) return 'BB';
   if (s.includes('重巡') || s.includes('CA') || s.includes('HEAVY')) return 'CA';
   if (s.includes('潜艇') || s.includes('潜舰') || s === 'SS' || s.includes('SUB')) return 'SS';
-  if (s.includes('轻巡') || s.includes('CL') || s.includes('工作') || s.includes('LIGHT')) return 'CL';
+  if (s.includes('轻巡') || s.includes('CL') || s.includes('LIGHT')) return 'CL';
   if (s.includes('驱逐') || s.includes('DD') || s.includes('DESTROYER')) return 'DD';
   return 'CL';
 }
@@ -232,8 +275,8 @@ export function getShipClassProfile(shipType = '') {
 export const TACTICAL_ACTION_DEFS = Object.freeze({
   basic_fire: {
     id: 'basic_fire',
-    label: '常规射击',
-    shortLabel: '常规射击',
+    label: '常规防卫射击',
+    shortLabel: '防卫射击',
     desc: '通用副炮/轻武器射击，未装配专项武器时始终可用',
     statKey: 'firepower',
     kind: 'attack',
@@ -248,27 +291,57 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     id: 'evade_maneuver',
     label: '机动规避 / 调整站位',
     shortLabel: '机动规避',
-    desc: '拉近或拉开交战距离并强化闪避减伤（非BOSS可尝试迂回脱离）',
+    desc: '拉近交战距离并强化 2 回合全队闪避减伤',
     statKey: 'evasion',
     kind: 'maneuver',
     visualStyle: 'evade',
     tone: 'maneuver',
     idealRanges: ['long', 'medium', 'close'],
-    cost: { fuel: 6, ammo: 0 },
+    cost: { fuel: 5, ammo: 0 },
     universal: true,
     requiredEquipmentType: null,
+  },
+  field_repair: {
+    id: 'field_repair',
+    label: '紧急抢修',
+    shortLabel: '紧急抢修',
+    desc: '为 3×4 阵型内受伤队友恢复耐久（维修舰施放额外 +25%）',
+    statKey: 'recon',
+    kind: 'support',
+    visualStyle: 'repair',
+    tone: 'support',
+    idealRanges: ['long', 'medium', 'close'],
+    cost: { fuel: 2, ammo: 0 },
+    requiredEquipmentType: 'support',
+    requiredSupportRole: 'repair',
+    requiredHint: '需装备抢修支援',
+  },
+  frontline_resupply: {
+    id: 'frontline_resupply',
+    label: '前线补给',
+    shortLabel: '前线补给',
+    desc: '恢复随舰携带弹药/燃油并提升全队士气（单次出征限用 2 次）',
+    statKey: 'recon',
+    kind: 'support',
+    visualStyle: 'resupply',
+    tone: 'support',
+    idealRanges: ['long', 'medium', 'close'],
+    cost: { fuel: 0, ammo: 0 },
+    requiredEquipmentType: 'support',
+    requiredSupportRole: 'supply',
+    requiredHint: '需装备补给支援',
   },
   main_salvo: {
     id: 'main_salvo',
     label: '主炮齐射',
     shortLabel: '主炮齐射',
-    desc: '高穿甲远程火力打击（无视 45% 护甲，远/中距全威）',
+    desc: '高穿甲远程火力打击（无视 35% 有效装甲，远/中距全威）',
     statKey: 'firepower',
     kind: 'attack',
     visualStyle: 'shelling',
     tone: 'shelling',
     idealRanges: ['long', 'medium'],
-    cost: { fuel: 0, ammo: 12 },
+    cost: { fuel: 0, ammo: 10 },
     requiredEquipmentType: 'main_gun',
     requiredHint: '需装备主炮',
   },
@@ -276,13 +349,13 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     id: 'torpedo_strike',
     label: '鱼雷突击',
     shortLabel: '鱼雷突击',
-    desc: '中近距离高爆发雷击（高破甲高暴击，近距额外 +30%）',
+    desc: '中近距离高爆发雷击（无视 40% 有效装甲，近距额外 +28%）',
     statKey: 'torpedo',
     kind: 'attack',
     visualStyle: 'torpedo',
     tone: 'torpedo',
     idealRanges: ['close', 'medium'],
-    cost: { fuel: 0, ammo: 10 },
+    cost: { fuel: 0, ammo: 9 },
     requiredEquipmentType: 'torpedo',
     requiredHint: '需装备鱼雷',
   },
@@ -296,7 +369,7 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     visualStyle: 'airstrike',
     tone: 'airstrike',
     idealRanges: ['long', 'medium', 'close'],
-    cost: { fuel: 4, ammo: 10 },
+    cost: { fuel: 4, ammo: 9 },
     requiredEquipmentType: 'aircraft',
     requiredHint: '需装备舰载机',
   },
@@ -310,7 +383,7 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     visualStyle: 'aa',
     tone: 'support',
     idealRanges: ['long', 'medium', 'close'],
-    cost: { fuel: 0, ammo: 6 },
+    cost: { fuel: 0, ammo: 5 },
     requiredEquipmentType: 'aa_gun',
     requiredHint: '需装备防空',
   },
@@ -318,13 +391,13 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     id: 'radar_scan',
     label: '雷达校射扫描',
     shortLabel: '雷达扫描',
-    desc: '揭露敌舰意图弱点并大幅提升全队命中（锁定 +4）',
+    desc: '揭露敌舰意图弱点并大幅提升全队命中（d20 锁定 +3）',
     statKey: 'recon',
     kind: 'recon',
     visualStyle: 'scan',
     tone: 'scan',
     idealRanges: ['long', 'medium', 'close'],
-    cost: { fuel: 4, ammo: 0 },
+    cost: { fuel: 3, ammo: 0 },
     requiredEquipmentType: 'radar',
     requiredHint: '需装备雷达',
   },
@@ -338,7 +411,7 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     visualStyle: 'asw',
     tone: 'scan',
     idealRanges: ['close', 'medium'],
-    cost: { fuel: 0, ammo: 6 },
+    cost: { fuel: 0, ammo: 5 },
     requiredEquipmentType: 'sonar',
     requiredHint: '需装备声呐',
   },
@@ -353,7 +426,7 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     visualStyle: 'smoke',
     tone: 'support',
     idealRanges: ['long', 'medium', 'close'],
-    cost: { fuel: 6, ammo: 0 },
+    cost: { fuel: 5, ammo: 0 },
   },
   full_ahead: {
     id: 'full_ahead',
@@ -365,7 +438,7 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     visualStyle: 'advance',
     tone: 'maneuver',
     idealRanges: ['long', 'medium'],
-    cost: { fuel: 8, ammo: 0 },
+    cost: { fuel: 6, ammo: 0 },
   },
   tactical_shelling: {
     id: 'tactical_shelling',
@@ -377,7 +450,7 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     visualStyle: 'shelling',
     tone: 'shelling',
     idealRanges: ['medium', 'close'],
-    cost: { fuel: 0, ammo: 8 },
+    cost: { fuel: 0, ammo: 7 },
   },
   heavy_shelling: {
     id: 'heavy_shelling',
@@ -389,19 +462,19 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     visualStyle: 'shelling',
     tone: 'shelling',
     idealRanges: ['medium', 'long'],
-    cost: { fuel: 0, ammo: 10 },
+    cost: { fuel: 0, ammo: 8 },
   },
   vanguard_guard: {
     id: 'vanguard_guard',
     label: '前排援护',
     shortLabel: '前排援护',
-    desc: '2 回合内为低血量队友构筑护盾分担 60% 伤害',
+    desc: '2 回合内为低血量队友构筑护盾分担 55% 伤害',
     statKey: 'armor',
     kind: 'support',
     visualStyle: 'guard',
     tone: 'support',
     idealRanges: ['long', 'medium', 'close'],
-    cost: { fuel: 4, ammo: 0 },
+    cost: { fuel: 3, ammo: 0 },
   },
   fire_suppress: {
     id: 'fire_suppress',
@@ -413,36 +486,38 @@ export const TACTICAL_ACTION_DEFS = Object.freeze({
     visualStyle: 'shelling',
     tone: 'support',
     idealRanges: ['long', 'medium'],
-    cost: { fuel: 0, ammo: 12 },
+    cost: { fuel: 0, ammo: 10 },
   },
   carrier_recon: {
     id: 'carrier_recon',
     label: '舰载侦察',
     shortLabel: '舰载侦察',
-    desc: '大范围揭露全部敌舰情报并提升全队暴击 +20%',
+    desc: '大范围揭露全部敌舰情报并提升全队命中修正',
     statKey: 'recon',
     kind: 'recon',
     visualStyle: 'scan',
     tone: 'scan',
     idealRanges: ['long', 'medium', 'close'],
-    cost: { fuel: 4, ammo: 0 },
+    cost: { fuel: 3, ammo: 0 },
   },
   evade_retreat: {
     id: 'evade_retreat',
     label: '机动迂回/撤退',
     shortLabel: '迂回/撤退',
-    desc: '非 BOSS 尝试全队无伤脱离；BOSS 战大幅提升闪避',
+    desc: '尝试全队机动回避并提升闪避',
     statKey: 'evasion',
     kind: 'maneuver',
     visualStyle: 'evade',
     tone: 'maneuver',
     idealRanges: ['long', 'medium', 'close'],
-    cost: { fuel: 10, ammo: 0 },
+    cost: { fuel: 6, ammo: 0 },
     universal: true,
   },
 });
 
 export const GEAR_DRIVEN_ACTION_ORDER = Object.freeze([
+  'field_repair',
+  'frontline_resupply',
   'main_salvo',
   'torpedo_strike',
   'carrier_airstrike',
@@ -460,34 +535,83 @@ export const SHIP_CLASS_EXCLUSIVE_ACTIONS = Object.freeze({
   CA: ['heavy_shelling', 'vanguard_guard', 'full_ahead'],
   BB: ['main_salvo', 'fire_suppress'],
   CV: ['carrier_airstrike', 'carrier_recon'],
+  AR: ['field_repair', 'aa_alert', 'basic_fire'],
+  AO: ['frontline_resupply', 'aa_alert', 'basic_fire'],
 });
+
+/**
+ * Determine whether a support equipment item provides 'repair' (紧急抢修), 'supply' (前线补给), or 'both'.
+ */
+export function inferSupportRole(item = null) {
+  if (!item || typeof item !== 'object') return null;
+  const eqType = inferEquipmentTypeId(item, null);
+  if (eqType !== KNOWN_EQUIPMENT_TYPES.SUPPORT) return null;
+  if (item.supportRole === 'repair' || item.supportRole === 'supply' || item.supportRole === 'both') {
+    return item.supportRole;
+  }
+  const text = `${item.name || ''} ${(item.tags || []).join(' ')} ${item.description || ''} ${item.iconKey || ''}`.toLowerCase();
+  const isRepair = /(抢修|维修|损管|修复|吊舱|起重|焊|repair|damage_control|crane)/.test(text);
+  const isSupply = /(补给|油弹|弹药箱|油槽|输油|粮|supply|ration|oiler|resupply)/.test(text);
+  if (isRepair && isSupply) return 'both';
+  if (isSupply) return 'supply';
+  return 'repair';
+}
 
 /**
  * Build the Equipment-Driven Tactical Command list for a shipgirl based strictly on her currently equipped items:
  *   - Universal basic commands (`basic_fire`, `evade_maneuver`) are ALWAYS unlocked.
- *   - Specialized commands (`main_salvo`, `torpedo_strike`, `carrier_airstrike`, `aa_alert`, `radar_scan`, `depth_asw`)
- *     are unlocked ONLY when the shipgirl currently wears an equipment item of the matching Known Equipment Type.
- *     Locked commands are returned with `unlocked: false` & `requiredHint` (e.g. `需装备鱼雷`) so the UI clearly renders them disabled.
+ *   - Specialized commands (`field_repair`, `frontline_resupply`, `main_salvo`, `torpedo_strike`,
+ *     `carrier_airstrike`, `aa_alert`, `radar_scan`, `depth_asw`) are unlocked ONLY when wearing
+ *     matching equipment.
  */
-export function getGearDrivenTacticalActions(equippedItems = [], { phase = 'day' } = {}) {
+export function getGearDrivenTacticalActions(
+  equippedItems = [],
+  { phase = 'day', resupplyUsesRemaining = 2 } = {}
+) {
   const wornTypes = new Set();
+  const wornSupportRoles = new Set();
   const list = Array.isArray(equippedItems) ? equippedItems : Object.values(equippedItems || {});
   for (const item of list) {
     if (!item || typeof item !== 'object') continue;
     if (item.category === 'consumable' || item.category === 'outfit') continue;
     const eqType = inferEquipmentTypeId(item, null);
-    if (eqType) wornTypes.add(eqType);
+    if (eqType) {
+      wornTypes.add(eqType);
+      if (eqType === KNOWN_EQUIPMENT_TYPES.SUPPORT) {
+        const role = inferSupportRole(item);
+        if (role === 'both') {
+          wornSupportRoles.add('repair');
+          wornSupportRoles.add('supply');
+        } else if (role) {
+          wornSupportRoles.add(role);
+        }
+      }
+    }
   }
 
   const actions = GEAR_DRIVEN_ACTION_ORDER.map((id) => {
     const base = TACTICAL_ACTION_DEFS[id];
     const reqType = base.requiredEquipmentType || null;
-    const unlocked = !reqType || wornTypes.has(reqType);
+    let unlocked = !reqType || wornTypes.has(reqType);
+    let requiredHint = unlocked ? null : base.requiredHint || '需装备对应武器';
+
+    if (reqType === KNOWN_EQUIPMENT_TYPES.SUPPORT && base.requiredSupportRole) {
+      unlocked = wornSupportRoles.has(base.requiredSupportRole);
+      requiredHint = unlocked ? null : base.requiredHint;
+    }
+
     let label = base.label;
     let desc = base.desc;
-    if (phase === 'night' && id === 'torpedo_strike') {
+    if (id === 'frontline_resupply') {
+      const rem = Math.max(0, Math.floor(Number(resupplyUsesRemaining ?? 2)));
+      label = `前线补给 (${rem}/2)`;
+      if (unlocked && rem <= 0) {
+        unlocked = false;
+        requiredHint = '本次出征次数已用尽';
+      }
+    } else if (phase === 'night' && id === 'torpedo_strike') {
       label = '夜战鱼雷突击';
-      desc = '夜战核心爆发！中近距雷击伤害 +45%、暴击率大幅提升';
+      desc = '夜战核心爆发！中近距雷击伤害 +35%、暴击修正 +2';
     } else if (phase === 'night' && id === 'carrier_airstrike') {
       label = '夜间舰载空袭';
       desc = '无视前后排距离衰减的夜间航空突击（威力略降）';
@@ -498,11 +622,10 @@ export function getGearDrivenTacticalActions(equippedItems = [], { phase = 'day'
       desc,
       unlocked,
       requiredTypeId: reqType,
-      requiredHint: unlocked ? null : base.requiredHint || '需装备对应武器',
+      requiredHint,
     };
   });
 
-  // Sort unlocked specialized actions first, then basic universal actions, then locked gear skills so thumb reach is effortless!
   const unlockedGear = actions.filter((a) => !a.universal && a.unlocked);
   const basics = actions.filter((a) => a.universal);
   const lockedGear = actions.filter((a) => !a.universal && !a.unlocked);
@@ -512,14 +635,17 @@ export function getGearDrivenTacticalActions(equippedItems = [], { phase = 'day'
 /**
  * Backward-compatible class-based helper.
  */
-export function getShipClassTacticalActions(shipType = '', { includeUniversal = true, phase = 'day', equippedItems = null } = {}) {
+export function getShipClassTacticalActions(
+  shipType = '',
+  { includeUniversal = true, phase = 'day', equippedItems = null, resupplyUsesRemaining = 2 } = {}
+) {
   if (equippedItems !== null && equippedItems !== undefined) {
-    return getGearDrivenTacticalActions(equippedItems, { phase });
+    return getGearDrivenTacticalActions(equippedItems, { phase, resupplyUsesRemaining });
   }
   const code = resolveShipClass(shipType);
   const ids = [...(SHIP_CLASS_EXCLUSIVE_ACTIONS[code] || SHIP_CLASS_EXCLUSIVE_ACTIONS.CL)];
   if (includeUniversal) {
-    ids.push('evade_retreat');
+    ids.push('evade_maneuver');
   }
   return ids
     .map((id) => TACTICAL_ACTION_DEFS[id])
@@ -546,6 +672,15 @@ export function getShipClassSvg(shipType = '', { size = 18 } = {}) {
   if (prof.code === 'BB') {
     return `<svg class="ship-class-ico" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 21 7 21 17 12 22 3 17 3 7 12 2" fill="${c}" fill-opacity="0.2"/><path d="M8 9h8M7 13h10M9 17h6"/></svg>`;
   }
+  if (prof.code === 'SS') {
+    return `<svg class="ship-class-ico" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="14" rx="7.5" ry="3.8" fill="${c}" fill-opacity="0.2"/><path d="M12 10V6.5h2.5"/></svg>`;
+  }
+  if (prof.code === 'AR') {
+    return `<svg class="ship-class-ico" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4" fill="${c}" fill-opacity="0.18"/><path d="M12 8v8M8 12h8"/></svg>`;
+  }
+  if (prof.code === 'AO') {
+    return `<svg class="ship-class-ico" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7h14v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7Z" fill="${c}" fill-opacity="0.18"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M9 13h6"/></svg>`;
+  }
   // CV
   return `<svg class="ship-class-ico" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 21 17h-6l-3-4-3 4H3L12 3Z" fill="${c}" fill-opacity="0.2"/><path d="M7 20h10"/></svg>`;
 }
@@ -557,13 +692,12 @@ export const GRID_ROW_LABELS = Object.freeze(['前排', '中排', '后排']);
 
 /**
  * High-contrast minimalist tactical geometric SVG symbol for the 3x4 naval radar grid.
- * Supports DD (sharp triangle), CL (diamond), CA (heavy shield), BB (twin-turret crest),
- * CV (angled flight deck), SS (sonar arc/sub), and BOSS (crowned hex).
+ * Supports DD, CL, CA, BB, CV, SS, AR (repair cross-crest), AO (supply canister), and BOSS.
  */
 export function getTacticalGridSymbolSvg(shipTypeOrClass = '', { side = 'ally', size = 26 } = {}) {
   const raw = String(shipTypeOrClass || '').trim().toUpperCase();
   const code =
-    raw === 'BOSS' || raw === 'SS' || raw === 'DD' || raw === 'CL' || raw === 'CA' || raw === 'BB' || raw === 'CV'
+    raw === 'BOSS' || raw === 'SS' || raw === 'DD' || raw === 'CL' || raw === 'CA' || raw === 'BB' || raw === 'CV' || raw === 'AR' || raw === 'AO'
       ? raw
       : resolveShipClass(shipTypeOrClass);
   const s = Math.max(16, Number(size) || 26);
@@ -577,6 +711,8 @@ export function getTacticalGridSymbolSvg(shipTypeOrClass = '', { side = 'ally', 
         BB: '#ef4444',
         CV: '#e879f9',
         SS: '#22d3ee',
+        AR: '#34d399',
+        AO: '#facc15',
         BOSS: '#f43f5e',
       }
     : {
@@ -586,60 +722,242 @@ export function getTacticalGridSymbolSvg(shipTypeOrClass = '', { side = 'ally', 
         BB: '#f97316',
         CV: '#c084fc',
         SS: '#06b6d4',
+        AR: '#34d399',
+        AO: '#facc15',
         BOSS: '#34d399',
       };
   const c = palette[code] || (isEnemy ? '#fb7185' : '#38bdf8');
   const fillOpacity = isEnemy ? '0.24' : '0.22';
 
-  // DD: Sharp acute triangle pointing toward enemy (down for enemy, up for ally)
   if (code === 'DD') {
     const pts = isEnemy ? '12 22 4 4 12 8 20 4' : '12 2 20 20 12 16 4 20';
     return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="${pts}" fill="${c}" fill-opacity="${fillOpacity}"/></svg>`;
   }
-  // CL: Crisp diamond with inner dot
   if (code === 'CL') {
     return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 21 12 12 22 3 12" fill="${c}" fill-opacity="${fillOpacity}"/><circle cx="12" cy="12" r="2.6" fill="${c}"/></svg>`;
   }
-  // CA: Heavy armored shield
   if (code === 'CA') {
     return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 20 6v6.5c0 4.5-3.4 7.6-8 9-4.6-1.4-8-4.5-8-9V6l8-3.5Z" fill="${c}" fill-opacity="${fillOpacity}"/><path d="M8.5 11.5h7M12 8v7"/></svg>`;
   }
-  // BB: Twin-turret battleship crest
   if (code === 'BB') {
     const barrelY1 = isEnemy ? 16 : 8;
     const barrelY2 = isEnemy ? 22 : 2;
     return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="7.5" width="15" height="9" rx="2.5" fill="${c}" fill-opacity="${fillOpacity}"/><line x1="9" y1="${barrelY1}" x2="9" y2="${barrelY2}"/><line x1="15" y1="${barrelY1}" x2="15" y2="${barrelY2}"/><line x1="7.5" y1="12" x2="16.5" y2="12"/></svg>`;
   }
-  // CV: Angled aircraft carrier flight deck mark
   if (code === 'CV') {
     return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 18 3 21 21 9 21" fill="${c}" fill-opacity="${fillOpacity}"/><line x1="11" y1="6" x2="15" y2="18" stroke-dasharray="3 2.5"/><line x1="17" y1="9" x2="19.5" y2="9"/></svg>`;
   }
-  // SS: Acoustic submarine sonar wave mark
   if (code === 'SS') {
     return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="14" rx="7.5" ry="3.8" fill="${c}" fill-opacity="${fillOpacity}"/><path d="M12 10V6.5h2.5"/><path d="M6.5 6.5a8 8 0 0 1 11 0" stroke-width="1.6" stroke-dasharray="2.5 2"/></svg>`;
   }
-  // BOSS: Crowned heavy hexagon emblem
+  if (code === 'AR') {
+    // Repair Ship: Tactical cross inside rounded octagon
+    return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="4.5" fill="${c}" fill-opacity="${fillOpacity}"/><path d="M12 7.5v9M7.5 12h9" stroke-width="2.5"/></svg>`;
+  }
+  if (code === 'AO') {
+    // Supply Ship: Fuel/Ammo logistics tank emblem
+    return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7.5h14v10a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 17.5v-10Z" fill="${c}" fill-opacity="${fillOpacity}"/><path d="M8.5 7.5V5a1.5 1.5 0 0 1 1.5-1.5h4A1.5 1.5 0 0 1 15.5 5v2.5"/><path d="M9 13h6M12 10.5v5"/></svg>`;
+  }
   return `<svg class="grid-sym-svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 21 7 21 17 12 22 3 17 3 7" fill="${c}" fill-opacity="0.28"/><polygon points="12 6.5 16.5 12 12 17.5 7.5 12" fill="${c}" fill-opacity="0.55"/></svg>`;
+}
+
+/**
+ * 1★ ~ 5★ Symmetric Sea Tier Standards (Enemies use the exact same 2-digit..3-digit curve as Allies).
+ */
+export const STAR_SEA_TIERS = Object.freeze({
+  star_1: {
+    id: 'star_1',
+    starLevel: 1,
+    code: '1★',
+    label: '1★ 近海警戒区',
+    atkRange: [15, 28],
+    accRange: [15, 28],
+    evaRange: [15, 28],
+    armorRange: [8, 18],
+    hpRange: [25, 45],
+    bossCap: 28,
+    lootScale: 1.0,
+    goldBonus: 3,
+  },
+  star_2: {
+    id: 'star_2',
+    starLevel: 2,
+    code: '2★',
+    label: '2★ 外海巡航道',
+    atkRange: [30, 48],
+    accRange: [30, 48],
+    evaRange: [30, 48],
+    armorRange: [18, 32],
+    hpRange: [45, 75],
+    bossCap: 48,
+    lootScale: 1.35,
+    goldBonus: 4,
+  },
+  star_3: {
+    id: 'star_3',
+    starLevel: 3,
+    code: '3★',
+    label: '3★ 岛链破交线',
+    atkRange: [50, 72],
+    accRange: [50, 72],
+    evaRange: [50, 72],
+    armorRange: [32, 50],
+    hpRange: [70, 110],
+    bossCap: 72,
+    lootScale: 1.75,
+    goldBonus: 6,
+  },
+  star_4: {
+    id: 'star_4',
+    starLevel: 4,
+    code: '4★',
+    label: '4★ 深海前沿域',
+    atkRange: [75, 98],
+    accRange: [75, 98],
+    evaRange: [75, 98],
+    armorRange: [50, 72],
+    hpRange: [105, 155],
+    bossCap: 98,
+    lootScale: 2.25,
+    goldBonus: 8,
+  },
+  star_5: {
+    id: 'star_5',
+    starLevel: 5,
+    code: '5★',
+    label: '5★ 深海要塞核心',
+    atkRange: [100, 135],
+    accRange: [100, 135],
+    evaRange: [100, 135],
+    armorRange: [75, 105],
+    hpRange: [150, 240],
+    bossCap: 150,
+    lootScale: 3.0,
+    goldBonus: 12,
+  },
+});
+
+export const STAR_SEA_TIER_ORDER = Object.freeze(['star_1', 'star_2', 'star_3', 'star_4', 'star_5']);
+
+export function normalizeStarTierId(raw = 'star_1') {
+  const s = String(raw || '').trim().toLowerCase();
+  if (STAR_SEA_TIERS[s]) return s;
+  if (s === 'low' || s === '1' || s === '1★' || s === '1-1') return 'star_1';
+  if (s === 'medium' || s === '2' || s === '2★' || s === '2-1') return 'star_2';
+  if (s === 'high' || s === '3' || s === '3★' || s === '3-1') return 'star_3';
+  if (s === '4' || s === '4★' || s === '4-1') return 'star_4';
+  if (s === '5' || s === '5★' || s === '5-1') return 'star_5';
+  return 'star_1';
+}
+
+/**
+ * d20 Focused Combat Resolution (Hit / Graze / Crit):
+ *   modifier = clamp(Math.round((accuracy - evasion) / 8), -5, 7) + Math.floor(commanderLuck / 5) + extraMod
+ *   Roll 1d20 + modifier:
+ *     - naturalRoll === 1               -> Graze (0.4x guaranteed chip damage)
+ *     - naturalRoll === 20 || total>=19 -> Critical Hit (1.5x damage)
+ *     - total >= 11                     -> Normal Hit (1.0x damage)
+ *     - total < 11                      -> Graze (0.4x chip damage)
+ */
+export function resolveD20CombatRoll({
+  accuracy = 20,
+  evasion = 20,
+  commanderLuck = 0,
+  extraMod = 0,
+  rng = Math.random,
+} = {}) {
+  const acc = Number(accuracy) || 0;
+  const eva = Number(evasion) || 0;
+  const baseDiffMod = clamp(Math.round((acc - eva) / 8), -5, 7);
+  const luckMod = Math.floor((Number(commanderLuck) || 0) / 5);
+  const bonusMod = Math.round(Number(extraMod) || 0);
+  const modifier = baseDiffMod + luckMod + bonusMod;
+  const naturalRoll = clamp(Math.floor(rng() * 20) + 1, 1, 20);
+  const total = naturalRoll + modifier;
+
+  let outcome = 'graze';
+  let outcomeLabel = '擦伤';
+  let rollMult = 0.4;
+  let isCrit = false;
+  let isHit = false;
+
+  if (naturalRoll === 1) {
+    outcome = 'graze';
+    outcomeLabel = '擦伤(1)';
+    rollMult = 0.4;
+  } else if (naturalRoll === 20 || total >= 19) {
+    outcome = 'crit';
+    outcomeLabel = '要害暴击';
+    rollMult = 1.5;
+    isCrit = true;
+    isHit = true;
+  } else if (total >= 11) {
+    outcome = 'hit';
+    outcomeLabel = '命中';
+    rollMult = 1.0;
+    isHit = true;
+  } else {
+    outcome = 'graze';
+    outcomeLabel = '擦伤';
+    rollMult = 0.4;
+  }
+
+  return {
+    naturalRoll,
+    baseDiffMod,
+    luckMod,
+    extraMod: bonusMod,
+    modifier,
+    total,
+    outcome,
+    outcomeLabel,
+    rollMult,
+    isCrit,
+    isHit,
+    formulaText: `1d20(${naturalRoll}) ${modifier >= 0 ? `+ ${modifier}` : `- ${Math.abs(modifier)}`} = ${total}`,
+  };
+}
+
+/**
+ * Symmetric Smooth Armor Mitigation Formula (shared identically by Allies & Enemies):
+ *   actualDamage = Math.max(1, Math.round(effectiveAttack * (50 / (50 + effectiveArmor)) * skillMult * rangeMult * rollMult))
+ */
+export function computeSymmetricDamage({
+  attack = 20,
+  armor = 10,
+  armorPen = 0,
+  skillMult = 1.0,
+  rangeMult = 1.0,
+  rollMult = 1.0,
+} = {}) {
+  const effAttack = Math.max(1, Number(attack) || 1);
+  const pen = clamp(Number(armorPen) || 0, 0, 0.85);
+  const effArmor = Math.max(0, (Number(armor) || 0) * (1 - pen));
+  const armorFactor = 50 / (50 + effArmor);
+  const raw = effAttack * armorFactor * (Number(skillMult) || 1) * (Number(rangeMult) || 1) * (Number(rollMult) || 1);
+  return {
+    damage: Math.max(1, Math.round(raw)),
+    effectiveArmor: Number(effArmor.toFixed(1)),
+    armorFactor: Number(armorFactor.toFixed(3)),
+  };
 }
 
 /**
  * Free all-grid targeting with Engagement Range (long/medium/close) + Row Distance (0..4)
  * dynamic accuracy & damage decay formula.
- *   - Row 0 = Frontline, Row 1 = Midline, Row 2 = Backline
- *   - effectiveDist = baseRangeDist (long:2, medium:1, close:0) + attackerRow + defenderRow (0..6)
  */
 export function computeRangeRowCombatModifiers({
   engagementRange = 'long',
   attackerRow = 0,
   defenderRow = 0,
-  actionId = 'tactical_shelling',
+  actionId = 'basic_fire',
   shipClass = 'CL',
 } = {}) {
   const aRow = clamp(Math.floor(Number(attackerRow) || 0), 0, 2);
   const dRow = clamp(Math.floor(Number(defenderRow) || 0), 0, 2);
   const baseDist = engagementRange === 'close' ? 0 : engagementRange === 'medium' ? 1 : 2;
   const rowSpan = aRow + dRow;
-  const effectiveDist = baseDist + rowSpan; // 0 (front-vs-front close) .. 6 (back-vs-back long)
+  const effectiveDist = baseDist + rowSpan;
   const cls = String(shipClass || 'CL').toUpperCase();
   const act = String(actionId || '');
 
@@ -663,12 +981,11 @@ export function computeRangeRowCombatModifiers({
     (!isUltraLong && (cls === 'DD' || cls === 'SS'));
 
   if (isUltraLong) {
-    // Battleships excel across the entire 3x4 grid even from backline -> enemy backline
     if (effectiveDist >= 4) {
-      return { effectiveDist, rowSpan, dmgMult: 1.15, hitMod: 2, label: '超远射程全威', tone: 'ok' };
+      return { effectiveDist, rowSpan, dmgMult: 1.15, hitMod: 1, label: '超远射程全威', tone: 'ok' };
     }
     if (effectiveDist >= 2) {
-      return { effectiveDist, rowSpan, dmgMult: 1.08, hitMod: 1, label: '远中程稳定压制', tone: 'ok' };
+      return { effectiveDist, rowSpan, dmgMult: 1.06, hitMod: 1, label: '远中程稳定压制', tone: 'ok' };
     }
     if (effectiveDist === 1) {
       return { effectiveDist, rowSpan, dmgMult: 1.0, hitMod: 0, label: '常规射程', tone: 'muted' };
@@ -677,29 +994,26 @@ export function computeRangeRowCombatModifiers({
   }
 
   if (isShortRange) {
-    // Destroyers, Submarines & Torpedoes suffer heavy decay across rows at long range,
-    // and erupt with massive close-range front-row burst when advancing!
     if (effectiveDist === 0) {
-      return { effectiveDist, rowSpan, dmgMult: 1.32, hitMod: 3, label: '前排贴脸全额爆发', tone: 'ok' };
+      return { effectiveDist, rowSpan, dmgMult: 1.28, hitMod: 2, label: '前排贴脸全额爆发', tone: 'ok' };
     }
     if (effectiveDist === 1) {
-      return { effectiveDist, rowSpan, dmgMult: 1.16, hitMod: 2, label: '近中距突击加成', tone: 'ok' };
+      return { effectiveDist, rowSpan, dmgMult: 1.14, hitMod: 1, label: '近中距突击加成', tone: 'ok' };
     }
     if (effectiveDist === 2) {
       return { effectiveDist, rowSpan, dmgMult: 1.0, hitMod: 0, label: '标准交战射程', tone: 'muted' };
     }
     if (effectiveDist === 3) {
-      return { effectiveDist, rowSpan, dmgMult: 0.84, hitMod: -2, label: '跨排射程衰减', tone: 'warn' };
+      return { effectiveDist, rowSpan, dmgMult: 0.84, hitMod: -1, label: '跨排射程衰减', tone: 'warn' };
     }
     if (effectiveDist === 4) {
-      return { effectiveDist, rowSpan, dmgMult: 0.7, hitMod: -3, label: '远距跨排衰减 -30%', tone: 'danger' };
+      return { effectiveDist, rowSpan, dmgMult: 0.7, hitMod: -2, label: '远距跨排衰减 -30%', tone: 'danger' };
     }
-    return { effectiveDist, rowSpan, dmgMult: 0.62, hitMod: -4, label: '超距衰减 -38%（建议突进）', tone: 'danger' };
+    return { effectiveDist, rowSpan, dmgMult: 0.62, hitMod: -3, label: '超距衰减 -38%（建议突进）', tone: 'danger' };
   }
 
-  // Mid-range Cruisers & Basic Fire
   if (effectiveDist <= 1) {
-    return { effectiveDist, rowSpan, dmgMult: 1.08, hitMod: 1, label: '近中距精准火力', tone: 'ok' };
+    return { effectiveDist, rowSpan, dmgMult: 1.06, hitMod: 1, label: '近中距精准火力', tone: 'ok' };
   }
   if (effectiveDist <= 3) {
     return { effectiveDist, rowSpan, dmgMult: 1.0, hitMod: 0, label: '中距标准射程', tone: 'ok' };
@@ -711,8 +1025,7 @@ export function computeRangeRowCombatModifiers({
 }
 
 /**
- * Compute real-time Aiming Preview metrics (hit chance %, damage multiplier %, and concise 1-line summary)
- * displayed above the battle command bar whenever an enemy symbol is targeted on the 3x4 sandbox.
+ * Compute real-time Aiming Preview metrics aligned 100% with the new d20 Combat Formula.
  */
 export function computeTacticalAimPreview({
   engagementRange = 'long',
@@ -720,10 +1033,11 @@ export function computeTacticalAimPreview({
   defenderRow = 0,
   actionId = 'basic_fire',
   shipClass = 'CL',
-  attackerStat = 55,
-  targetEvasion = 55,
+  attackerStat = 20,
+  targetEvasion = 20,
   lockOnBonus = 0,
   commanderTactics = 0,
+  commanderLuck = 0,
 } = {}) {
   const mod = computeRangeRowCombatModifiers({
     engagementRange,
@@ -733,19 +1047,29 @@ export function computeTacticalAimPreview({
     shipClass,
   });
   const rangeLabel = engagementRange === 'close' ? '近距离' : engagementRange === 'medium' ? '中距离' : '远距离';
-  const statDelta = (Number(attackerStat) || 55) - (Number(targetEvasion) || 55);
-  const rawHit =
-    78 +
-    Math.round(statDelta * 0.28) +
-    (mod.hitMod || 0) * 5 +
-    (Number(lockOnBonus) || 0) * 4 +
-    (Number(commanderTactics) || 0) * 3;
-  const hitChancePct = clamp(Math.round(rawHit), 32, 99);
+  const diffMod = clamp(Math.round(((Number(attackerStat) || 20) - (Number(targetEvasion) || 20)) / 8), -5, 7);
+  const luckMod = Math.floor((Number(commanderLuck) || 0) / 5);
+  const totalMod = diffMod + luckMod + (mod.hitMod || 0) + (Number(lockOnBonus) || 0) + Math.min(2, Math.floor((Number(commanderTactics) || 0) / 2));
+
+  // Exact probability of 1d20 + totalMod >= 11 (with natural 1 always grazing)
+  let hitFaces = 0;
+  let critFaces = 0;
+  for (let d = 1; d <= 20; d++) {
+    if (d === 1) continue;
+    if (d === 20 || d + totalMod >= 19) {
+      critFaces += 1;
+      hitFaces += 1;
+    } else if (d + totalMod >= 11) {
+      hitFaces += 1;
+    }
+  }
+  const hitChancePct = Math.round((hitFaces / 20) * 100);
+  const critChancePct = Math.round((critFaces / 20) * 100);
   const dmgMultPct = Math.round((mod.dmgMult || 1.0) * 100);
   const decayDelta = dmgMultPct - 100;
   const decayTag =
     decayDelta < 0
-      ? `远距跨排衰减 ${decayDelta}%`
+      ? `跨排衰减 ${decayDelta}%`
       : decayDelta > 0
       ? `${mod.label} +${decayDelta}%`
       : mod.label;
@@ -753,9 +1077,11 @@ export function computeTacticalAimPreview({
   return {
     ...mod,
     rangeLabel,
+    d20Modifier: totalMod,
     hitChancePct,
+    critChancePct,
     dmgMultPct,
-    summaryText: `${rangeLabel} · 预计命中 ${hitChancePct}% · 伤害倍率 ${dmgMultPct}%（${decayTag}）`,
+    summaryText: `${rangeLabel} · d20${totalMod >= 0 ? `+${totalMod}` : totalMod} · 命中 ${hitChancePct}% / 暴击 ${critChancePct}% · ${decayTag}`,
   };
 }
 
@@ -1044,22 +1370,34 @@ export class StatRulesEngine {
   }
 
   /**
-   * Ensure a character entity has valid level / exp / maxExp fields without overwriting existing stats.
+   * Ensure a character entity has valid level / exp / maxExp fields and compressed 2-digit growth anchor.
    */
   ensureShipProgression(entity) {
     if (!entity || typeof entity !== 'object') return { level: 1, exp: 0, maxExp: this.getShipMaxExp(1) };
     if (!entity.stats || typeof entity.stats !== 'object') entity.stats = {};
+    if (!entity.meta || typeof entity.meta !== 'object') entity.meta = {};
     const lv = clamp(Math.floor(Number(entity.stats.level ?? 1) || 1), 1, this._config.shipLevelMax);
     const maxExp = this.getShipMaxExp(lv);
     const exp = clamp(Math.floor(Number(entity.stats.exp ?? 0) || 0), 0, Math.max(maxExp, 999999));
     entity.stats.level = lv;
     entity.stats.exp = exp;
     entity.stats.maxExp = maxExp;
+    normalizeLegacyShipStatsToCompressedScale(entity);
+    if (!entity.meta.lv1BaseStats || typeof entity.meta.lv1BaseStats !== 'object') {
+      const growth = this.getShipGrowthForEntity(entity);
+      const baseSnap = {};
+      for (const def of NAVAL_EIGHT_STAT_DEFS) {
+        const cur = Number(entity.stats[def.key] ?? def.defaultValue);
+        const g = Number(growth[def.key]) || 0.35;
+        baseSnap[def.key] = Math.max(def.isVital ? 18 : 6, Number((cur - g * Math.max(0, lv - 1)).toFixed(2)));
+      }
+      entity.meta.lv1BaseStats = baseSnap;
+    }
     return { level: lv, exp, maxExp };
   }
 
   /**
-   * Resolve per-level 8-stat growth weights for a shipgirl based on her ship class (DD/CL/CA/BB/CV)
+   * Resolve per-level 8-stat growth weights for a shipgirl based on her ship class (DD/CL/CA/BB/CV/SS/AR/AO)
    * or optional custom per-class overrides in config.
    */
   getShipGrowthForEntity(entity) {
@@ -1074,7 +1412,7 @@ export class StatRulesEngine {
   }
 
   /**
-   * Grant experience to a shipgirl character, automatically handling multi-level-up growth & stat refresh.
+   * Grant experience to a shipgirl character, automatically handling multi-level-up fractional growth & stat refresh.
    */
   grantShipExp(entities, characterId, rawAmount, { reason = '', inventory = null, emitEvent = true } = {}) {
     if (!entities || !entities.has(characterId)) return null;
@@ -1100,15 +1438,16 @@ export class StatRulesEngine {
 
     if (levelsGained > 0) {
       const growth = this.getShipGrowthForEntity(entity);
+      const lv1Base = entity.meta?.lv1BaseStats || {};
       for (const def of NAVAL_EIGHT_STAT_DEFS) {
-        const delta = Math.round((Number(growth[def.key]) || 0) * levelsGained);
-        if (delta <= 0) continue;
         const curBase = Number(entity.stats[def.key] ?? def.defaultValue);
         const cap = def.isVital ? 999 : this._config.statMax;
-        const nextBase = clamp(curBase + delta, def.min, cap);
-        const applied = nextBase - curBase;
+        const g = Number(growth[def.key]) || 0;
+        const anchor = Number.isFinite(Number(lv1Base[def.key])) ? Number(lv1Base[def.key]) : curBase;
+        const targetVal = clamp(Math.round(anchor + g * (level - 1)), def.min, cap);
+        const applied = targetVal - curBase;
         if (applied > 0) {
-          entities.setStat(characterId, def.key, nextBase, { min: def.min, max: cap });
+          entities.setStat(characterId, def.key, targetVal, { min: def.min, max: cap });
           statGains[def.key] = applied;
         }
       }
@@ -1150,7 +1489,7 @@ export class StatRulesEngine {
   }
 
   /**
-   * Manually adjust a shipgirl's level (for testing / debugging), applying proportional class growth delta if requested.
+   * Manually adjust a shipgirl's level (for testing / debugging), applying proportional fractional class growth cleanly.
    */
   setShipLevelManual(entities, characterId, targetLevel, { exp = 0, inventory = null, applyGrowthDelta = true } = {}) {
     if (!entities || !entities.has(characterId)) return null;
@@ -1165,12 +1504,13 @@ export class StatRulesEngine {
 
     if (applyGrowthDelta && levelDelta !== 0) {
       const growth = this.getShipGrowthForEntity(entity);
+      const lv1Base = entity.meta?.lv1BaseStats || {};
       for (const def of NAVAL_EIGHT_STAT_DEFS) {
-        const delta = Math.round((Number(growth[def.key]) || 0) * levelDelta);
-        if (delta === 0) continue;
         const curBase = Number(entity.stats[def.key] ?? def.defaultValue);
         const cap = def.isVital ? 999 : this._config.statMax;
-        const nextBase = clamp(curBase + delta, def.min, cap);
+        const g = Number(growth[def.key]) || 0;
+        const anchor = Number.isFinite(Number(lv1Base[def.key])) ? Number(lv1Base[def.key]) : curBase;
+        const nextBase = clamp(Math.round(anchor + g * (nextLevel - 1)), def.min, cap);
         entities.setStat(characterId, def.key, nextBase, { min: def.min, max: cap });
         statGains[def.key] = nextBase - curBase;
       }
@@ -1726,6 +2066,7 @@ export const KNOWN_EQUIPMENT_TYPES = Object.freeze({
   RADAR: 'radar',
   SONAR: 'sonar',
   AA_GUN: 'aa_gun',
+  SUPPORT: 'support',
   ENGINE: 'engine',
   ARMOR: 'armor',
   CORE: 'core',
@@ -1740,7 +2081,7 @@ export const KNOWN_EQUIPMENT_TYPE_DEFS = Object.freeze([
     category: 'extension',
     subGroup: 'weapon',
     defaultIcon: 'main_gun',
-    desc: '舰炮与穿甲重炮武器，大幅强化火力输出',
+    desc: '舰炮与穿甲重炮武器，大幅强化火力输出（无视 35% 护甲）',
     keywords: ['主炮', '舰炮', '重炮', '火炮', '炮塔', '炮击', 'gun', 'cannon', 'turret'],
   },
   {
@@ -1751,7 +2092,7 @@ export const KNOWN_EQUIPMENT_TYPE_DEFS = Object.freeze([
     category: 'extension',
     subGroup: 'weapon',
     defaultIcon: 'torpedo',
-    desc: '酸素鱼雷与近距雷装，强化雷击与高破甲暴击',
+    desc: '酸素鱼雷与近距雷装，强化雷击（无视 40% 护甲）',
     keywords: ['鱼雷', '酸素', '氧雷', '雷装', '鱼雷管', 'torpedo'],
   },
   {
@@ -1766,6 +2107,17 @@ export const KNOWN_EQUIPMENT_TYPE_DEFS = Object.freeze([
     keywords: ['舰载机', '舰载', '轰炸机', '攻击机', '战斗机', '空袭', '航空', '侦察机', 'aircraft', 'plane'],
   },
   {
+    id: KNOWN_EQUIPMENT_TYPES.SUPPORT,
+    label: '后勤支援',
+    slotLabel: '支援槽',
+    group: '后勤支援',
+    category: 'extension',
+    subGroup: 'support',
+    defaultIcon: 'support_repair',
+    desc: '战地抢修吊舱、海上补给箱与损管套件（解锁紧急抢修 / 前线补给）',
+    keywords: ['支援', '后勤', '抢修', '维修', '损管', '补给箱', '海上补给', '油弹补给', '吊舱', '起重', 'support', 'repair', 'supply', 'logistics'],
+  },
+  {
     id: KNOWN_EQUIPMENT_TYPES.RADAR,
     label: '雷达',
     slotLabel: '雷达槽',
@@ -1774,7 +2126,7 @@ export const KNOWN_EQUIPMENT_TYPE_DEFS = Object.freeze([
     subGroup: 'tactical',
     defaultIcon: 'radar',
     desc: '相控电探、火控校准与夜战侦察系统',
-    keywords: ['雷达', '电探', '侦查', '侦察', '火控', '夜战', '探照灯', '通信', '协同', '增幅', '补给型', 'radar', 'recon'],
+    keywords: ['雷达', '电探', '侦查', '侦察', '火控', '夜战', '探照灯', '通信', '协同', '增幅', 'radar', 'recon'],
   },
   {
     id: KNOWN_EQUIPMENT_TYPES.SONAR,
@@ -1858,7 +2210,6 @@ export function normalizeEquipmentTypeId(raw, fallback = KNOWN_EQUIPMENT_TYPES.M
 
 /**
  * Infer canonical Known Equipment Type id for any equipment item or legacy custom slot.
- * Returns 'outfit' for outfit items, or one of KNOWN_EQUIPMENT_TYPES for all equipment/slots.
  */
 export function inferEquipmentTypeId(target = null, fallback = KNOWN_EQUIPMENT_TYPES.MAIN_GUN) {
   if (!target || typeof target !== 'object') return fallback;
@@ -1867,20 +2218,20 @@ export function inferEquipmentTypeId(target = null, fallback = KNOWN_EQUIPMENT_T
     return 'outfit';
   }
 
-  // 1. Direct canonical equipmentType / subCategory match
   const explicit = String(target.equipmentType || target.subCategory || '').trim().toLowerCase();
   if (KNOWN_EQUIPMENT_TYPE_MAP[explicit]) return explicit;
+  if (explicit === 'support_repair' || explicit === 'support_supply' || explicit === 'logistics') {
+    return KNOWN_EQUIPMENT_TYPES.SUPPORT;
+  }
 
-  // 2. Mandatory core categories
   if (target.category === 'engine') return KNOWN_EQUIPMENT_TYPES.ENGINE;
   if (target.category === 'armor') return KNOWN_EQUIPMENT_TYPES.ARMOR;
   if (target.category === 'core') return KNOWN_EQUIPMENT_TYPES.CORE;
 
-  // 3. Icon key match
   const icon = String(target.iconKey || '').trim().toLowerCase();
   if (KNOWN_EQUIPMENT_TYPE_MAP[icon]) return icon;
+  if (icon === 'support_repair' || icon === 'support_supply') return KNOWN_EQUIPMENT_TYPES.SUPPORT;
 
-  // 4. Keyword match with priority: name/label -> tags -> description
   const primaryText = `${target.name || ''} ${target.label || ''}`.trim();
   const byPrimary = normalizeEquipmentTypeId(primaryText, null);
   if (byPrimary) return byPrimary;
@@ -1892,7 +2243,6 @@ export function inferEquipmentTypeId(target = null, fallback = KNOWN_EQUIPMENT_T
   const byDesc = normalizeEquipmentTypeId(String(target.description || ''), null);
   if (byDesc) return byDesc;
 
-  // 5. Fallback heuristic from dominant stat bonus
   const bonuses = Array.isArray(target.bonuses) && target.bonuses.length > 0 ? target.bonuses : target.baseBonuses || [];
   let topStat = null;
   let topVal = 0;
@@ -1913,6 +2263,102 @@ export function inferEquipmentTypeId(target = null, fallback = KNOWN_EQUIPMENT_T
   if (topStat === 'armor' || topStat === 'maxHp') return KNOWN_EQUIPMENT_TYPES.ARMOR;
 
   return fallback;
+}
+
+// ============================================================
+// Compressed 2-Digit Stat Curve Normalization (Lossless Legacy / External JSON Support)
+// ============================================================
+
+export const RARITY_STAT_BUDGETS = Object.freeze({
+  common: { min: 2, max: 4 },
+  uncommon: { min: 4, max: 7 },
+  rare: { min: 7, max: 11 },
+  epic: { min: 11, max: 16 },
+  legendary: { min: 16, max: 22 },
+});
+
+/**
+ * Smoothly compress legacy inflated 3-digit bare ship stats (e.g. from pre-v25 saves or external JSON mods)
+ * onto the new 2-digit curve: Lv.1 base 8..25 + 0.30..0.50/lv growth -> Lv.100 bare 40..75.
+ * Idempotent: tags `meta.statScaleVersion = 2` so already-compressed ships are never touched twice.
+ */
+export function normalizeLegacyShipStatsToCompressedScale(entity) {
+  if (!entity || typeof entity !== 'object' || entity.kind !== 'character') return false;
+  if (!entity.stats || typeof entity.stats !== 'object') entity.stats = {};
+  if (!entity.meta || typeof entity.meta !== 'object') entity.meta = {};
+  if (Number(entity.meta.statScaleVersion) >= 2) return false;
+
+  const lv = clamp(Math.floor(Number(entity.stats.level ?? 1) || 1), 1, 100);
+  const combatKeys = ['firepower', 'armor', 'torpedo', 'evasion', 'recon', 'aa', 'asw'];
+  const maxCombatStat = Math.max(...combatKeys.map((k) => Number(entity.stats[k]) || 0));
+  const curMaxHp = Number(entity.stats.maxHp) || 32;
+  const expectedBareCap = 28 + Math.round((lv - 1) * 0.52);
+
+  // Only compress if clearly on the legacy 40~100+ bare scale
+  const needsCompress = maxCombatStat > expectedBareCap + 10 || curMaxHp > 58 + Math.round((lv - 1) * 0.7);
+  if (!needsCompress) {
+    entity.meta.statScaleVersion = 2;
+    return false;
+  }
+
+  const profile = getShipClassProfile(entity.meta.shipType || '');
+  const hpRatio = clamp((Number(entity.stats.hp ?? curMaxHp) || curMaxHp) / Math.max(1, curMaxHp), 0, 1);
+
+  // Smoothly compress each combat stat while preserving the ship's relative strengths/archetype
+  for (const k of combatKeys) {
+    const raw = Number(entity.stats[k]) || 0;
+    const lv1Target = clamp(Math.round(8 + (clamp(raw, 0, 110) / 110) * 17), 8, 25);
+    const g = Number(profile.growth?.[k]) || 0.38;
+    entity.stats[k] = clamp(Math.round(lv1Target + g * (lv - 1)), 8, 75);
+  }
+  const lv1Hp = clamp(Math.round(24 + (clamp(curMaxHp, 40, 160) - 40) / 120 * 24), 24, 48);
+  const hpG = Number(profile.growth?.maxHp) || 0.52;
+  const nextMaxHp = clamp(Math.round(lv1Hp + hpG * (lv - 1)), 24, 115);
+  entity.stats.maxHp = nextMaxHp;
+  entity.stats.hp = Math.max(1, Math.round(nextMaxHp * hpRatio));
+  entity.meta.statScaleVersion = 2;
+  delete entity.meta.lv1BaseStats;
+  return true;
+}
+
+/**
+ * Smoothly compress legacy inflated equipment bonuses onto the v25 budget:
+ *   White +2~4, Green +4~7, Blue +7~11, Purple +11~16, Orange +16~22 (before +1~+10 enhance).
+ */
+export function normalizeLegacyItemBonusesToCompressedScale(item) {
+  if (!item || typeof item !== 'object' || item.category === 'consumable') return false;
+  if (Number(item.statScaleVersion) >= 2) return false;
+
+  const baseList = Array.isArray(item.baseBonuses) && item.baseBonuses.length > 0 ? item.baseBonuses : item.bonuses;
+  if (!Array.isArray(baseList) || baseList.length === 0) {
+    item.statScaleVersion = 2;
+    return false;
+  }
+
+  const rarityId = inferItemRarity(item);
+  const budget = RARITY_STAT_BUDGETS[rarityId] || RARITY_STAT_BUDGETS.common;
+  const flatStats = baseList.filter((b) => b && b.stat !== 'checkBonus' && b.layer !== 'percentAdd' && b.layer !== 'percentMult');
+  const maxSingle = flatStats.reduce((m, b) => Math.max(m, Math.abs(Number(b.value) || 0)), 0);
+
+  if (maxSingle <= budget.max + 2) {
+    item.statScaleVersion = 2;
+    return false;
+  }
+
+  const scaleFactor = budget.max / Math.max(1, maxSingle);
+  const compressedBase = baseList.map((b) => {
+    if (!b || b.stat === 'checkBonus' || b.layer === 'percentAdd' || b.layer === 'percentMult') {
+      return { ...b };
+    }
+    const raw = Number(b.value) || 0;
+    const sign = raw < 0 ? -1 : 1;
+    const scaled = Math.max(budget.min >= 4 ? 2 : 1, Math.min(budget.max, Math.round(Math.abs(raw) * scaleFactor)));
+    return { ...b, value: sign * scaled };
+  });
+
+  item.baseBonuses = compressedBase;
+  item.statScaleVersion = 2;
+  return true;
 }
 
 

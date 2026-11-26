@@ -73,15 +73,15 @@ export const DEFAULT_CHARACTER_TEMPLATES = [
     name: '示范驱逐 · 一号舰',
     tags: ['驱逐舰', '雷击反潜'],
     stats: {
-      maxHp: 78,
-      hp: 78,
-      firepower: 46,
-      armor: 34,
-      torpedo: 76,
-      evasion: 78,
-      recon: 62,
-      aa: 54,
-      asw: 74,
+      maxHp: 24,
+      hp: 24,
+      firepower: 13,
+      armor: 10,
+      torpedo: 23,
+      evasion: 24,
+      recon: 17,
+      aa: 15,
+      asw: 22,
       morale: 78,
       ap: 90,
       maxAp: 100,
@@ -91,7 +91,7 @@ export const DEFAULT_CHARACTER_TEMPLATES = [
       maxExp: 100,
     },
     statBounds: {
-      hp: { min: 0, max: 300 },
+      hp: { min: 0, max: 500 },
       morale: { min: 0, max: 100 },
       ap: { min: 0, max: 100 },
       affinity: { min: 0, max: 100 },
@@ -100,6 +100,8 @@ export const DEFAULT_CHARACTER_TEMPLATES = [
       shipType: '驱逐舰',
       roleTag: '高机动雷击反潜',
       avatarAssetId: null,
+      statScaleVersion: 2,
+      lv1BaseStats: { maxHp: 24, firepower: 13, armor: 10, torpedo: 23, evasion: 24, recon: 17, aa: 15, asw: 22 },
       personality: '敏捷果断、擅长夜战突击与反潜护航，对指挥官指令响应极快。',
       speechHabit: '「一号舰全速前进，鱼雷管注水完毕！」',
     },
@@ -110,15 +112,15 @@ export const DEFAULT_CHARACTER_TEMPLATES = [
     name: '示范轻巡 · 二号舰',
     tags: ['轻巡洋舰', '侦查防空'],
     stats: {
-      maxHp: 94,
-      hp: 94,
-      firepower: 60,
-      armor: 52,
-      torpedo: 58,
-      evasion: 64,
-      recon: 72,
-      aa: 70,
-      asw: 66,
+      maxHp: 28,
+      hp: 28,
+      firepower: 17,
+      armor: 15,
+      torpedo: 18,
+      evasion: 20,
+      recon: 20,
+      aa: 20,
+      asw: 19,
       morale: 82,
       ap: 90,
       maxAp: 100,
@@ -128,7 +130,7 @@ export const DEFAULT_CHARACTER_TEMPLATES = [
       maxExp: 100,
     },
     statBounds: {
-      hp: { min: 0, max: 300 },
+      hp: { min: 0, max: 500 },
       morale: { min: 0, max: 100 },
       ap: { min: 0, max: 100 },
       affinity: { min: 0, max: 100 },
@@ -137,6 +139,8 @@ export const DEFAULT_CHARACTER_TEMPLATES = [
       shipType: '轻巡洋舰',
       roleTag: '均衡侦查防空',
       avatarAssetId: null,
+      statScaleVersion: 2,
+      lv1BaseStats: { maxHp: 28, firepower: 17, armor: 15, torpedo: 18, evasion: 20, recon: 20, aa: 20, asw: 19 },
       personality: '冷静周密、擅长舰队侦察协调与对空掩护，是可靠的僚机中枢。',
       speechHabit: '「空域与水下态势已同步，随时可以掩护编队。」',
     },
@@ -147,15 +151,15 @@ export const DEFAULT_CHARACTER_TEMPLATES = [
     name: '示范战列 · 三号舰',
     tags: ['战列舰', '重炮重甲'],
     stats: {
-      maxHp: 132,
-      hp: 132,
-      firepower: 86,
-      armor: 82,
-      torpedo: 12,
-      evasion: 38,
-      recon: 48,
-      aa: 68,
-      asw: 22,
+      maxHp: 42,
+      hp: 42,
+      firepower: 25,
+      armor: 25,
+      torpedo: 8,
+      evasion: 11,
+      recon: 15,
+      aa: 20,
+      asw: 8,
       morale: 76,
       ap: 90,
       maxAp: 100,
@@ -165,7 +169,7 @@ export const DEFAULT_CHARACTER_TEMPLATES = [
       maxExp: 100,
     },
     statBounds: {
-      hp: { min: 0, max: 300 },
+      hp: { min: 0, max: 500 },
       morale: { min: 0, max: 100 },
       ap: { min: 0, max: 100 },
       affinity: { min: 0, max: 100 },
@@ -174,6 +178,8 @@ export const DEFAULT_CHARACTER_TEMPLATES = [
       shipType: '战列舰',
       roleTag: '主力重炮重甲',
       avatarAssetId: null,
+      statScaleVersion: 2,
+      lv1BaseStats: { maxHp: 42, firepower: 25, armor: 25, torpedo: 8, evasion: 11, recon: 15, aa: 20, asw: 8 },
       personality: '沉稳坚毅、拥有强悍正面火力与装甲抗伤能力，擅长为编队承伤压阵。',
       speechHabit: '「主炮装填就绪，交给我正面突破即可。」',
     },
@@ -413,6 +419,7 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
                     <span class="ship-class-ico">${getShipClassSvg(shipClass, { size: 20 })}</span>
                     <h3 class="cc-hero-name">${escapeHtml(ch.name)}</h3>
                     <span class="status-badge ship-lv-badge">Lv.${prog.level}</span>
+                    ${ch.meta?.locked ? '<span class="status-badge badge-warn ship-lock-badge">🔒 已锁定</span>' : ''}
                     <span class="status-badge ${seaworthy.seaworthy ? 'badge-ok' : 'badge-danger'}">${seaworthy.seaworthy ? '适航' : '未适航'}</span>
                   </div>
                   <div class="cc-badge-row">
@@ -448,6 +455,9 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
                   ${isSec ? '★ 当前秘书舰' : '设为秘书舰'}
                 </button>
               </div>
+              <button type="button" id="btn-tm-toggle-lock" class="${ch.meta?.locked ? 'btn-primary' : 'btn-secondary'} uikit-touch-target">
+                ${ch.meta?.locked ? '🔓 解除舰娘锁定保护' : '🔒 锁定舰娘（防止误删/退役）'}
+              </button>
 
               <div class="lab-stack-sm">
                 <div class="section-header-row" style="margin-bottom:0;">
@@ -524,6 +534,17 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
             if (!interaction) return;
             await interaction.setSecretary(ch.id);
             uiKit.showToast(`已指派「${ch.name}」担任秘书舰！`, 'ok');
+            await renderDetailBody();
+          });
+
+          body.querySelector('#btn-tm-toggle-lock')?.addEventListener('click', async () => {
+            if (!ch.meta) ch.meta = {};
+            ch.meta.locked = !ch.meta.locked;
+            if (rootStorage) await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: ch.id });
+            uiKit.showToast(
+              ch.meta.locked ? `🔒 已锁定舰娘「${ch.name}」，禁止误删或退役` : `🔓 已解除舰娘「${ch.name}」锁定`,
+              'info'
+            );
             await renderDetailBody();
           });
 
@@ -2336,8 +2357,13 @@ function renderOverviewTab(host, char) {
     </div>
     <div class="lab-btn-grid">
       <button type="button" id="btn-cc-offline-sim" class="btn-secondary uikit-touch-target">离线恢复 +30分</button>
-      <button type="button" id="btn-cc-del-char" class="btn-danger uikit-touch-target" ${getCharacters().length <= 1 ? 'disabled' : ''}>删除当前角色</button>
+      <button type="button" id="btn-cc-toggle-lock" class="${char.meta?.locked ? 'btn-primary' : 'btn-secondary'} uikit-touch-target">
+        ${char.meta?.locked ? '🔓 解除舰娘锁定' : '🔒 锁定防误删'}
+      </button>
     </div>
+    <button type="button" id="btn-cc-del-char" class="btn-danger uikit-touch-target" ${getCharacters().length <= 1 || char.meta?.locked ? 'disabled' : ''}>
+      ${char.meta?.locked ? '🔒 已锁定（不可删除当前角色）' : '删除当前角色'}
+    </button>
   `;
 
   personaCard.querySelector('#btn-cc-aff-inc').addEventListener('click', async () => {
@@ -2384,8 +2410,23 @@ function renderOverviewTab(host, char) {
     await renderConsole();
   });
 
+  personaCard.querySelector('#btn-cc-toggle-lock').addEventListener('click', async () => {
+    if (!char.meta) char.meta = {};
+    char.meta.locked = !char.meta.locked;
+    await saveRosterNow();
+    uiKit.showToast(
+      char.meta.locked ? `🔒 已锁定舰娘「${char.name}」，防止误删` : `🔓 已解除舰娘「${char.name}」锁定`,
+      'info'
+    );
+    await renderConsole();
+  });
+
   personaCard.querySelector('#btn-cc-del-char').addEventListener('click', async () => {
     if (getCharacters().length <= 1) return;
+    if (char.meta?.locked) {
+      uiKit.showToast(`「${char.name}」已锁定保护，请先解除锁定后再删除`, 'warn');
+      return;
+    }
     const ok = await uiKit.confirmDialog({
       title: `删除角色「${char.name}」`,
       message: '确认删除该角色吗？其已装入的部件与装备将保留在全局仓库中。',
@@ -2571,7 +2612,7 @@ function renderEquipmentTab(host, char) {
                 ${isConsumable ? '使用消耗品' : isEquipped ? '卸下部件' : '一键装入'}
               </button>
               <button type="button" class="btn-secondary uikit-touch-target" data-act="edit">调词条</button>
-              <button type="button" class="btn-danger uikit-touch-target" data-act="delete">删除</button>
+              <button type="button" class="btn-danger uikit-touch-target" data-act="delete" ${item.locked ? 'disabled' : ''}>${item.locked ? '🔒 锁定' : '删除'}</button>
             </div>
           </div>
         `
@@ -2614,6 +2655,10 @@ function renderEquipmentTab(host, char) {
       const delBtn = card.querySelector('[data-act="delete"]');
       if (delBtn) {
         delBtn.addEventListener('click', async () => {
+          if (item.locked) {
+            uiKit.showToast(`「${item.name}」已锁定保护，请先解锁后再删除`, 'warn');
+            return;
+          }
           const ok = await uiKit.confirmDialog({
             title: `删除物品「${item.name}」`,
             message: '确认从仓库永久删除该物品吗？若角色正在穿戴，将自动卸下并重算属性。',
@@ -2621,11 +2666,15 @@ function renderEquipmentTab(host, char) {
             tone: 'danger',
           });
           if (!ok) return;
-          await inventory.deleteItem(item.id);
-          await saveRosterNow();
-          consoleState.expandedWarehouseItemId = null;
-          uiKit.showToast(`已删除物品：${item.name}`, 'ok');
-          await renderConsole();
+          try {
+            await inventory.deleteItem(item.id);
+            await saveRosterNow();
+            consoleState.expandedWarehouseItemId = null;
+            uiKit.showToast(`已删除物品：${item.name}`, 'ok');
+            await renderConsole();
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '删除失败', 'warn');
+          }
         });
       }
 

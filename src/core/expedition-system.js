@@ -13,6 +13,7 @@
 
 import { formatDurationZh } from './entity-system.js';
 import { LOG_CATEGORIES } from './log-system.js';
+import { resolveShipClass } from './stat-rules.js';
 
 const STORAGE_NS = 'core-expeditions';
 const STATE_KEY = 'expedition-state-v1';
@@ -294,12 +295,30 @@ export class ExpeditionSystem {
         : 1.0;
     const totalMult = dispatchMult * shipCountBonus * seaControlMult;
 
+    // AR (维修舰) boosts steel & bauxite (+12% each); AO (补给舰) boosts fuel, ammo & silver (+15% each)
+    let arCount = 0;
+    let aoCount = 0;
+    for (const cid of run.characterIds || []) {
+      const ent = this._entities?.get(cid);
+      const cls = resolveShipClass(ent?.meta?.shipType || '');
+      if (cls === 'AR') arCount += 1;
+      else if (cls === 'AO') aoCount += 1;
+    }
+    const arMatMult = 1 + Math.min(0.36, arCount * 0.12);
+    const aoSupplyMult = 1 + Math.min(0.45, aoCount * 0.15);
+
     const grantedRewards = {};
     for (const [resId, baseAmt] of Object.entries(run.rewards || {})) {
+      const supportMult =
+        resId === 'steel' || resId === 'bauxite'
+          ? arMatMult
+          : resId === 'fuel' || resId === 'ammo' || resId === 'silver'
+          ? aoSupplyMult
+          : 1.0;
       const amount =
         resId === 'gold'
           ? Math.max(1, Math.round(baseAmt * (1 + Math.max(0, dispatchMult * seaControlMult - 1) * 0.4)))
-          : Math.max(1, Math.round(baseAmt * totalMult));
+          : Math.max(1, Math.round(baseAmt * totalMult * supportMult));
       await this._resources.add(resId, amount, { reason: `远征完成：${run.missionName}` });
       grantedRewards[resId] = amount;
     }
@@ -339,12 +358,16 @@ export class ExpeditionSystem {
       .filter((r) => r.leveledUp)
       .map((r) => `${r.characterName} Lv.${r.afterLevel}`)
       .join('、');
+    const supportBonusParts = [];
+    if (arCount > 0) supportBonusParts.push(`维修舰×${arCount} 钢铝+${Math.round((arMatMult - 1) * 100)}%`);
+    if (aoCount > 0) supportBonusParts.push(`补给舰×${aoCount} 油弹银+${Math.round((aoSupplyMult - 1) * 100)}%`);
+    const supportBonusNote = supportBonusParts.join(' · ');
 
     if (this._logs) {
       this._logs.add({
         category: LOG_CATEGORIES.RESOURCE,
         title: `远征归港领取：${run.missionName}`,
-        detail: `调度加成 x${dispatchMult.toFixed(2)} | 获得：${rewardSummary} | 指挥官经验 +${run.commanderExp} | 舰娘经验 +${shipExpGain}${levelUpText ? `（升级：${levelUpText}）` : ''}`,
+        detail: `调度加成 x${dispatchMult.toFixed(2)}${supportBonusNote ? ` · ${supportBonusNote}` : ''} | 获得：${rewardSummary} | 指挥官经验 +${run.commanderExp} | 舰娘经验 +${shipExpGain}${levelUpText ? `（升级：${levelUpText}）` : ''}`,
       });
     }
 
@@ -352,6 +375,7 @@ export class ExpeditionSystem {
       run: deepClone(run),
       grantedRewards,
       dispatchMultiplier: dispatchMult,
+      supportBonusNote,
       affinityGain: affDelta,
       commanderExp: run.commanderExp,
       shipExpGain,

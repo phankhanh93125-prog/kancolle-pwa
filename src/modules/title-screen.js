@@ -119,7 +119,7 @@ function openNewJourneyModal(context) {
 
             <label class="checkbox-row" style="padding:10px 12px; background:var(--surface-alt); border-radius:var(--radius-sm); border:1px solid var(--border);">
               <input type="checkbox" id="nj-keep-custom" ${prefs.keepCustomData ? 'checked' : ''} />
-              <span><strong>保留已创建的自定义内容包、性格池与 UI 皮肤</strong>（不保留旧档已拥有舰娘与仓库装备）</span>
+              <span><strong>保留自定义建筑与 UI 皮肤</strong>（注：外置 JSON 导入的角色模板、性格池、台词与剧情包始终受保护不丢失，旧档舰队与装备将彻底清空）</span>
             </label>
 
             <button type="button" id="btn-nj-confirm" class="btn-primary port-cta-btn">

@@ -6641,6 +6641,313 @@ html[data-theme-mode="light"] .bf-aim-preview-bar {
   color: #f8fafc;
 }
 
+/* ============================================================
+   v25: 3-Stage Sortie, Custom Map Workshop, Carried Supplies,
+        Safe Retreat, Free-Recipe Construction & Lock Badges
+   ============================================================ */
+
+/* 1. Battle Top-Right Carried Supply Pill & 100% Safe Retreat Button */
+.bf-topbar-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.bf-carried-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  color: #e0f2fe;
+}
+
+.bf-carried-pill.is-depleted {
+  background: rgba(185, 28, 28, 0.85);
+  border-color: #fca5a5;
+  color: #fff;
+  animation: pulse-warn 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse-warn {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.74; }
+}
+
+.bf-safe-retreat-btn {
+  min-height: 32px;
+  padding: 0 11px;
+  border-radius: 99px;
+  border: 1.5px solid rgba(251, 191, 36, 0.75);
+  background: linear-gradient(135deg, rgba(180, 83, 9, 0.92), rgba(120, 53, 15, 0.95));
+  color: #fef3c7;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  transition: transform 0.12s ease, filter 0.15s ease;
+}
+
+.bf-safe-retreat-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.bf-safe-retreat-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 2. 3-Stage Sortie Stepper & Carried Supply Prep */
+.sortie-stepper-bar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.sortie-step-pill {
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface-elevated);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 700;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.sortie-step-pill.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.sortie-step-pill.is-done {
+  border-color: rgba(16, 185, 129, 0.45);
+  color: #10b981;
+}
+
+.sortie-logistics-box {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sortie-supply-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sortie-carried-hud {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+}
+
+/* 3. 1★ ~ 5★ Sea Control Grid & Custom Map Workshop */
+.sea-control-grid-5 {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+@media (max-width: 460px) {
+  .sea-control-grid-5 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.sea-star-card {
+  padding: 8px 6px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border-subtle);
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.sea-star-card:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.sea-star-card.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.sea-star-card.is-controlled {
+  border-color: rgba(16, 185, 129, 0.55);
+}
+
+.sea-star-card.is-locked {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sea-star-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.sea-star-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.map-workshop-panel {
+  border: 1.5px solid color-mix(in srgb, var(--accent) 42%, var(--border-subtle));
+}
+
+.ws-preview-card {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px dashed var(--border-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 4. Free-Recipe Instant Ship Construction Modal */
+.construction-slider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.construction-slider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.construction-prob-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 10px;
+}
+
+.construction-prob-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+}
+
+.construction-prob-row.is-support {
+  border-color: color-mix(in srgb, #10b981 55%, var(--border-subtle));
+  background: color-mix(in srgb, #10b981 10%, var(--bg-input));
+}
+
+.construction-prob-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 11.5px;
+}
+
+.construction-prob-label span:nth-child(2) {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.construction-prob-track {
+  width: 100%;
+  height: 5px;
+  border-radius: 99px;
+  background: rgba(148, 163, 184, 0.22);
+  overflow: hidden;
+}
+
+.construction-prob-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: var(--accent);
+  transition: width 0.16s ease;
+}
+
+.construction-prob-fill.is-support {
+  background: linear-gradient(90deg, #10b981, #34d399);
+}
+
+.construction-result-card.is-new {
+  border-color: rgba(16, 185, 129, 0.65);
+  background: color-mix(in srgb, #10b981 12%, var(--bg-surface-elevated));
+}
+
+.construction-result-card.is-duplicate {
+  border-color: rgba(245, 158, 11, 0.65);
+  background: color-mix(in srgb, #f59e0b 12%, var(--bg-surface-elevated));
+}
+
+/* 5. Item & Shipgirl Lock Badges */
+.item-lock-ico {
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.item-lock-badge,
+.ship-lock-badge {
+  font-weight: 700;
+}
+
+.stat-diff-inline-down {
+  color: #f87171;
+  font-weight: 700;
+}
+
+html[data-theme-mode="light"] .stat-diff-inline-down {
+  color: #b91c1c;
+}
+
+
 
 
 

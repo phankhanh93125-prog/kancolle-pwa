@@ -461,7 +461,7 @@ const moduleManager = new ModuleManager({
 
 function isAnyModalOpen() {
   if (els.sheetBackdrop && !els.sheetBackdrop.hidden) return true;
-  const uiBackdrops = document.querySelectorAll('.uikit-sheet-backdrop');
+  const uiBackdrops = document.querySelectorAll('.uikit-sheet-backdrop, .uikit-tactical-backdrop');
   for (const bd of uiBackdrops) {
     if (!bd.hidden && !bd.closest('[hidden]') && window.getComputedStyle(bd).display !== 'none') {
       return true;
@@ -485,14 +485,11 @@ const SWIPE_LOCKED_MODULE_IDS = new Set([
   'character-console',
 ]);
 
-function getTopLevelModules() {
-  return moduleManager.list().filter((m) => !m.isSubpage);
-}
-
 function isSwipeBlockedNow() {
   if (isAnyModalOpen()) return true;
   if (swipeLockedByModule) return true;
-  if (combat && combat.isActive()) return true;
+  if (combat && (combat.isActive() || combat.isInBattleScreen())) return true;
+  if (document.body.classList.contains('is-immersive-battle')) return true;
   const active = moduleManager.getActive();
   if (!active) return false;
   if (active.isSubpage || active.lockSwipe || SWIPE_LOCKED_MODULE_IDS.has(active.id)) {
@@ -556,6 +553,14 @@ function hasHorizontallyScrollableAncestor(target, boundary) {
   let node = target instanceof Element ? target : null;
   while (node && node !== boundary && node !== document.body) {
     if (node.dataset?.noSwipe === 'true') return true;
+    if (
+      node.classList?.contains('tactical-grid-3x4') ||
+      node.classList?.contains('map-workshop-panel') ||
+      node.classList?.contains('uikit-tactical-modal') ||
+      node.classList?.contains('uikit-sheet')
+    ) {
+      return true;
+    }
     const tag = node.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'OPTION') return true;
     const style = window.getComputedStyle(node);
@@ -637,23 +642,25 @@ function attachStageSwipeNavigation() {
       const dy = endY - touchState.startY;
       touchState = null;
 
-      // Strict anti-mistouch guards:
-      // 1) Vertical scroll dominant (|deltaY| >= |deltaX|) -> ignore
-      // 2) Horizontal distance < 60px -> ignore
+      // Strict anti-mistouch guards
       if (Math.abs(dy) >= Math.abs(dx)) return;
-      if (Math.abs(dx) < 60) return;
+      if (Math.abs(dx) < 64) return;
 
-      const list = getTopLevelModules();
+      // Strictly align horizontal swipe to the 4 bottom navigation tabs
       const curId = moduleManager.getActive()?.id;
-      const curIdx = list.findIndex((m) => m.id === curId);
+      const curIdx = BOTTOM_NAV_ORDER.indexOf(curId);
       if (curIdx < 0) return;
 
-      if (dx <= -60 && curIdx < list.length - 1) {
-        // Swipe left -> Next top-level module
-        moduleManager.mount(list[curIdx + 1].id, { transition: 'left' });
-      } else if (dx >= 60 && curIdx > 0) {
-        // Swipe right -> Previous top-level module
-        moduleManager.mount(list[curIdx - 1].id, { transition: 'right' });
+      if (dx <= -64 && curIdx < BOTTOM_NAV_ORDER.length - 1) {
+        const nextId = BOTTOM_NAV_ORDER[curIdx + 1];
+        if (moduleManager.has(nextId)) {
+          moduleManager.mount(nextId, { transition: 'left' });
+        }
+      } else if (dx >= 64 && curIdx > 0) {
+        const prevId = BOTTOM_NAV_ORDER[curIdx - 1];
+        if (moduleManager.has(prevId)) {
+          moduleManager.mount(prevId, { transition: 'right' });
+        }
       }
     },
     { passive: true }
@@ -1054,14 +1061,15 @@ const RUNTIME_IDB_NAMESPACES = Object.freeze([
  * or Save-Slot Restore so ZERO old ships, items, formations, dockyard queues, sea control,
  * or medals can leak from IndexedDB. Never deletes manual save slots (`save-slots`).
  */
-async function clearAllRuntimePersistence({ keepCustomData = true } = {}) {
+async function clearAllRuntimePersistence({ keepCustomData = true, preserveImportedLibrary = true } = {}) {
   saves.cancelPendingAutoSaves();
   await clearActiveSortieState({ storage, combat });
 
   const idbClears = RUNTIME_IDB_NAMESPACES.map((ns) => storage.namespace(ns).clearLarge());
-  // Reset sea-control progress without wiping user's custom saved routes when keepCustomData is true
+  // Reset 1★~5★ & legacy sea-control progress without wiping user's saved Map Workshop blueprints
   idbClears.push(storage.namespace('core-sortie-routes').removeLarge('sea-control-v1'));
-  if (!keepCustomData) {
+  idbClears.push(storage.namespace('core-sortie-routes').removeLarge('sea-control-v2'));
+  if (!keepCustomData && !preserveImportedLibrary) {
     idbClears.push(storage.namespace('core-sortie-routes').clearLarge());
     idbClears.push(storage.namespace('core-content-studio').clearLarge());
     idbClears.push(storage.namespace('core-story-packs').clearLarge());
@@ -1097,11 +1105,12 @@ async function resetAllInMemoryState({ keepCustomData = true, preserveCustomBuil
   entities.clear();
   inventory.deserialize(
     {
-      version: 5,
+      version: 6,
       customSlotsByCharacter: {},
       equipped: {},
       items: [],
       salvageParts: 0,
+      retrofitCores: 0,
     },
     { persist: false }
   );
@@ -1123,7 +1132,7 @@ async function resetAllInMemoryState({ keepCustomData = true, preserveCustomBuil
   buildings.deserialize(
     {
       version: 2,
-      dormitory: { level: 1, capacity: 3, maxCapacity: 10, residents: [], lastSettledAt: now },
+      dormitory: { level: 1, capacity: 3, maxCapacity: 12, residents: [], lastSettledAt: now },
       dockyard: { level: 1, capacity: 2, maxCapacity: 6, queue: [], completedRepairs: 0, constructedCount: 0 },
       customBuildings: keepCustomData ? preserveCustomBuildings : [],
       medals: { unlockedIds: [], unlockedAt: {} },
@@ -1131,7 +1140,7 @@ async function resetAllInMemoryState({ keepCustomData = true, preserveCustomBuil
     },
     { persist: false }
   );
-  routeGenerator.deserializeSeaControl({ version: 1, zones: {} }, { persist: false });
+  routeGenerator.deserializeSeaControl({ version: 2, zones: {} }, { persist: false });
 }
 
 function captureFullWorldSnapshot() {
@@ -1159,8 +1168,12 @@ function buildSaveSummary(trigger = 'manual') {
   const flagsCount = Object.keys(storyPacks.getAllFlags()).length;
   const seaOv = typeof routeGenerator.getSeaControlOverview === 'function' ? routeGenerator.getSeaControlOverview() : null;
   const seaSummary = seaOv
-    ? seaOv.zones.map((z) => `${z.code} ${z.progress}%`).join(' / ')
-    : '1-1 0%';
+    ? seaOv.zones
+        .filter((z) => z.unlocked || z.progress > 0)
+        .slice(0, 3)
+        .map((z) => `${z.code} ${z.progress}%`)
+        .join(' / ')
+    : '1★ 0%';
   const medalsOv = typeof buildings.getMedalsOverview === 'function' ? buildings.getMedalsOverview() : null;
   return {
     trigger,
@@ -1172,6 +1185,7 @@ function buildSaveSummary(trigger = 'manual') {
     characters: entities.list({ kind: 'character' }).length,
     items: inventory.listItems().length,
     salvageParts: typeof inventory.getSalvageParts === 'function' ? inventory.getSalvageParts() : 0,
+    retrofitCores: typeof inventory.getRetrofitCores === 'function' ? inventory.getRetrofitCores() : 0,
     medalsUnlocked: medalsOv ? medalsOv.unlockedCount : 0,
     seaSummary,
     flagsCount,
@@ -1204,7 +1218,7 @@ async function restoreFullWorldSnapshot(rawData, { syncAutoSave = true, sourceNa
 
   try {
     // 1. Wipe all live IndexedDB runtime records & in-memory state first (never touches manual save-slots!)
-    await clearAllRuntimePersistence({ keepCustomData: false });
+    await clearAllRuntimePersistence({ keepCustomData: false, preserveImportedLibrary: false });
     await resetAllInMemoryState({ keepCustomData: false, preserveCustomBuildings: [] });
 
     // 2. Restore EVERY subsystem unconditionally in strict dependency order with { persist: false }
@@ -1297,13 +1311,17 @@ async function startNewJourney(prefs = {}) {
 
   let chosen = null;
   try {
-    // Snapshot user-created custom templates/buildings BEFORE wiping runtime storage when keepCustomData is checked
+    // CRITICAL PROTECTION BOUNDARY:
+    // ALWAYS preserve user-imported external JSON content libraries (custom character/equipment/enemy templates,
+    // custom personality/trait pools, dialogue packs, and custom story/encounter packs) across New Game,
+    // while strictly wiping ALL gameplay save progress!
     const preservedCustomBuildings = keepCustomData ? buildings.listCustomBuildings() : [];
-    const prevContentSnap = keepCustomData ? contentManager.serialize() : null;
-    const prevStorySnap = keepCustomData ? storyPacks.serialize() : null;
+    const prevContentSnap = contentManager.serialize();
+    const prevStorySnap = storyPacks.serialize();
+    const prevPersonalitySnap = personalityPool.serialize();
 
-    // 1. Thoroughly purge ALL old runtime data from IndexedDB & localStorage (manual save-slots remain untouched!)
-    await clearAllRuntimePersistence({ keepCustomData });
+    // 1. Purge ALL old runtime progress from IndexedDB & localStorage (manual save-slots & imported libraries protected!)
+    await clearAllRuntimePersistence({ keepCustomData, preserveImportedLibrary: true });
 
     // 2. Thoroughly reset ALL in-memory engines & UI caches (ships, gear, 3x4 formation, dockyard, sea control, medals, logs)
     await resetAllInMemoryState({ keepCustomData, preserveCustomBuildings });
@@ -1340,59 +1358,46 @@ async function startNewJourney(prefs = {}) {
       { persist: false }
     );
 
-    // 5. Handle custom data preservation vs clean wipe (always clear progress flags, playHistory & sea discovery logs)
+    // 5. Restore protected external JSON content libraries cleanly while resetting all story flags & discovery progress
     if (!keepCustomData) {
       theme.resetTheme();
-      personalityPool.deserialize({ primary: [], secondary: [] }, { persist: false });
-      contentManager.deserialize(
-        {
-          version: 1,
-          customEnemies: [],
-          customDialogues: [],
-          customGifts: [],
-          customEquipment: [],
-          encounteredEnemyNames: ['前哨巡逻编队'],
-          clearedRouteIds: [],
-          updatedAt: now,
-        },
-        { persist: false }
-      );
-      storyPacks.deserialize({ version: 1, flags: {}, packs: [], playHistory: [] }, { persist: false });
-      await storyPacks.ensureStarterStoryPacks();
-    } else {
-      contentManager.deserialize(
-        {
-          version: 1,
-          customEnemies: prevContentSnap?.customEnemies || [],
-          customDialogues: prevContentSnap?.customDialogues || [],
-          customGifts: prevContentSnap?.customGifts || [],
-          customEquipment: prevContentSnap?.customEquipment || [],
-          encounteredEnemyNames: ['前哨巡逻编队'],
-          clearedRouteIds: [],
-          updatedAt: now,
-        },
-        { persist: false }
-      );
-      storyPacks.deserialize(
-        {
-          version: 1,
-          flags: {},
-          packs: prevStorySnap?.packs || [],
-          playHistory: [],
-        },
-        { persist: false }
-      );
     }
+    personalityPool.deserialize(prevPersonalitySnap || { primary: [], secondary: [] }, { persist: false });
+    contentManager.deserialize(
+      {
+        version: 1,
+        customEnemies: prevContentSnap?.customEnemies || [],
+        customDialogues: prevContentSnap?.customDialogues || [],
+        customGifts: prevContentSnap?.customGifts || [],
+        customEquipment: prevContentSnap?.customEquipment || [],
+        encounteredEnemyNames: ['前哨巡逻编队'],
+        clearedRouteIds: [],
+        updatedAt: now,
+      },
+      { persist: false }
+    );
+    storyPacks.deserialize(
+      {
+        version: 1,
+        flags: {},
+        packs: prevStorySnap?.packs || [],
+        playHistory: [],
+      },
+      { persist: false }
+    );
+    // Suppress any forced built-in intro story popup on New Game
+    storyPacks.clearActiveTheatreSession();
 
-    // 6. Seed strictly clean starter inventory & starter shipgirls from scratch (zero old ships/gear/slots/salvage)
+    // 6. Seed strictly clean 2-digit starter inventory & starter shipgirls from scratch
     entities.clear();
     inventory.deserialize(
       {
-        version: 5,
+        version: 6,
         customSlotsByCharacter: {},
         equipped: {},
         salvageParts: 0,
-        items: STARTER_ITEMS.map((it) => ({ ...it, level: 0, createdAt: now, updatedAt: now })),
+        retrofitCores: 0,
+        items: STARTER_ITEMS.map((it) => ({ ...it, level: 0, statScaleVersion: 2, createdAt: now, updatedAt: now })),
       },
       { persist: false }
     );
@@ -1404,8 +1409,10 @@ async function startNewJourney(prefs = {}) {
       persistRosterFn: null,
       silent: true,
     });
+    // Ensure theatre stays clean & silent on New Game entry
+    storyPacks.clearActiveTheatreSession();
 
-    // 7. Apply Starter Fleet Archetype preference (3-ship active fleet + fresh 3x4 formation + themed bonus gear)
+    // 7. Apply Starter Fleet Archetype preference (3-ship active fleet + fresh 3x4 formation + 2-digit themed bonus gear)
     const archetypeConfig = {
       balanced: {
         label: '均衡编队',
@@ -1423,13 +1430,15 @@ async function startNewJourney(prefs = {}) {
             category: ITEM_CATEGORIES.EXTENSION,
             subGroup: 'weapon',
             subCategory: 'torpedo',
+            equipmentType: 'torpedo',
             iconKey: 'torpedo',
             rarity: ITEM_RARITIES.UNCOMMON,
+            statScaleVersion: 2,
             tags: ['开局补给', '主战武器', '鱼雷'],
             description: '雷击先锋开局特配高爆鱼雷发射管，显著提升雷击与机动先攻。',
             bonuses: [
-              { stat: 'torpedo', layer: 'baseAdd', value: 18 },
-              { stat: 'evasion', layer: 'baseAdd', value: 6 },
+              { stat: 'torpedo', layer: 'baseAdd', value: 7 },
+              { stat: 'evasion', layer: 'baseAdd', value: 4 },
             ],
           },
           {
@@ -1437,13 +1446,15 @@ async function startNewJourney(prefs = {}) {
             category: ITEM_CATEGORIES.EXTENSION,
             subGroup: 'tactical',
             subCategory: 'sonar',
+            equipmentType: 'sonar',
             iconKey: 'sonar',
             rarity: ITEM_RARITIES.UNCOMMON,
+            statScaleVersion: 2,
             tags: ['开局补给', '战术辅助', '声呐'],
             description: '雷击先锋开局特配反潜声呐，提前捕捉敌方水下潜艇。',
             bonuses: [
-              { stat: 'asw', layer: 'baseAdd', value: 18 },
-              { stat: 'recon', layer: 'baseAdd', value: 6 },
+              { stat: 'asw', layer: 'baseAdd', value: 7 },
+              { stat: 'recon', layer: 'baseAdd', value: 4 },
             ],
           },
         ],
@@ -1451,20 +1462,22 @@ async function startNewJourney(prefs = {}) {
       battleship: {
         label: '重炮主力',
         formationId: 'line_ahead',
-        members: ['char_template_03', 'char_pack_bb_08', 'char_pack_ca_04'],
+        members: ['char_template_03', 'char_pack_ca_04', 'char_pack_ar_07'],
         bonusGear: [
           {
             name: '主力双联穿甲重炮',
             category: ITEM_CATEGORIES.EXTENSION,
             subGroup: 'weapon',
             subCategory: 'main_gun',
+            equipmentType: 'main_gun',
             iconKey: 'main_gun',
             rarity: ITEM_RARITIES.RARE,
+            statScaleVersion: 2,
             tags: ['开局补给', '主战武器', '主炮'],
-            description: '重炮主力开局特配大口径主炮，大幅增强齐射火力与穿透威慑。',
+            description: '重炮主力开局特配大口径主炮，大幅增强齐射火力与破甲能力。',
             bonuses: [
-              { stat: 'firepower', layer: 'baseAdd', value: 22 },
-              { stat: 'armor', layer: 'baseAdd', value: 6 },
+              { stat: 'firepower', layer: 'baseAdd', value: 10 },
+              { stat: 'armor', layer: 'baseAdd', value: 4 },
             ],
           },
           {
@@ -1472,13 +1485,15 @@ async function startNewJourney(prefs = {}) {
             category: ITEM_CATEGORIES.ARMOR,
             subGroup: 'core',
             subCategory: 'armor',
+            equipmentType: 'armor',
             iconKey: 'armor',
             rarity: ITEM_RARITIES.RARE,
+            statScaleVersion: 2,
             tags: ['开局补给', '核心必装', '防护'],
             description: '重炮主力开局特配高强度舰体装甲，大幅提高前排耐久与防弹能力。',
             bonuses: [
-              { stat: 'armor', layer: 'baseAdd', value: 18 },
-              { stat: 'maxHp', layer: 'baseAdd', value: 22 },
+              { stat: 'armor', layer: 'baseAdd', value: 9 },
+              { stat: 'maxHp', layer: 'baseAdd', value: 10 },
             ],
           },
         ],
@@ -1486,21 +1501,23 @@ async function startNewJourney(prefs = {}) {
       carrier: {
         label: '航空制空',
         formationId: 'diamond',
-        members: ['char_pack_cv_05', 'char_pack_ca_04', 'char_pack_cl_07'],
+        members: ['char_pack_cv_05', 'char_pack_ca_04', 'char_pack_ao_08'],
         bonusGear: [
           {
             name: '制空舰载俯冲轰炸机队',
             category: ITEM_CATEGORIES.EXTENSION,
             subGroup: 'weapon',
             subCategory: 'aircraft',
+            equipmentType: 'aircraft',
             iconKey: 'aircraft',
             rarity: ITEM_RARITIES.RARE,
+            statScaleVersion: 2,
             tags: ['开局补给', '主战武器', '舰载机'],
             description: '航空制空开局特配舰载机联队，强化开幕空袭与全图索敌能力。',
             bonuses: [
-              { stat: 'firepower', layer: 'baseAdd', value: 16 },
-              { stat: 'recon', layer: 'baseAdd', value: 16 },
-              { stat: 'aa', layer: 'baseAdd', value: 10 },
+              { stat: 'firepower', layer: 'baseAdd', value: 9 },
+              { stat: 'recon', layer: 'baseAdd', value: 8 },
+              { stat: 'aa', layer: 'baseAdd', value: 5 },
             ],
           },
           {
@@ -1508,13 +1525,15 @@ async function startNewJourney(prefs = {}) {
             category: ITEM_CATEGORIES.EXTENSION,
             subGroup: 'tactical',
             subCategory: 'radar',
+            equipmentType: 'radar',
             iconKey: 'radar',
             rarity: ITEM_RARITIES.RARE,
+            statScaleVersion: 2,
             tags: ['开局补给', '战术辅助', '雷达'],
             description: '航空制空开局特配对空警戒雷达，提供高额防空与侦查视野。',
             bonuses: [
-              { stat: 'recon', layer: 'baseAdd', value: 16 },
-              { stat: 'aa', layer: 'baseAdd', value: 16 },
+              { stat: 'recon', layer: 'baseAdd', value: 9 },
+              { stat: 'aa', layer: 'baseAdd', value: 8 },
               { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
             ],
           },
@@ -1527,8 +1546,16 @@ async function startNewJourney(prefs = {}) {
       await inventory.createItem(gear);
     }
     if (isAbundant) {
-      await inventory.rollLootDropItem({ tier: 'elite', difficulty: 'medium', dropMultiplier: 2.0 });
-      await inventory.rollLootDropItem({ tier: 'boss', difficulty: 'medium', dropMultiplier: 2.0 });
+      await inventory.rollLootDropItem({ tier: 'elite', difficulty: 'star_2', dropMultiplier: 2.0 });
+      await inventory.rollLootDropItem({ tier: 'boss', difficulty: 'star_2', dropMultiplier: 2.0 });
+    }
+
+    // Grant starter AR / AO 1 support slot automatically so they can equip repair/supply gear immediately
+    if (entities.has('char_pack_ar_07')) {
+      await inventory.addExpandedSlot('char_pack_ar_07', 'support', { skipCost: true });
+    }
+    if (entities.has('char_pack_ao_08')) {
+      await inventory.addExpandedSlot('char_pack_ao_08', 'support', { skipCost: true });
     }
 
     const validMemberIds = chosen.members.filter((id) => entities.has(id));
@@ -1562,7 +1589,7 @@ async function startNewJourney(prefs = {}) {
   await renderTopStatusBar();
   fxStage.playSfx('success');
   showToast(
-    `欢迎就任，${commanderName}！已清空旧档并开启「${chosen.label}」· ${isAbundant ? '丰饶畅玩 (2.0x)' : '标准开荒 (1.0x)'}`,
+    `欢迎就任，${commanderName}！已重置进度并保留外置 JSON 内容库，开启「${chosen.label}」· ${isAbundant ? '丰饶畅玩 (2.0x)' : '标准开荒 (1.0x)'}`,
     'ok'
   );
   moduleManager.mount('port-hub', { transition: 'left' });
@@ -2018,9 +2045,9 @@ function openSaveVaultSheet() {
           <div class="lab-divider"></div>
 
           <div class="lab-stack-sm">
-            <strong style="font-size:13.5px;">全量存档文件备份与跨版本无损迁移（v7）</strong>
+            <strong style="font-size:13.5px;">全量存档文件备份与跨版本无损迁移（v8）</strong>
             <p class="muted-text" style="font-size:12px;">
-              导出的 JSON 包含自动存档、所有独立手动槽位与全局设置；导入旧版（v1~v6）存档将自动无损补齐装备品级、扩建槽位、3×4 阵型、海域制海权与勋章字段，各槽位完全隔离互不串档。
+              导出的 JSON 包含自动存档、所有独立手动槽位与全局设置；导入旧版（v1~v7）存档将自动无损压缩为两位数数值体系、补齐 1★~5★ 制海权与改造核心字段，各槽位完全隔离互不串档。
             </p>
             ${
               lastExportNote

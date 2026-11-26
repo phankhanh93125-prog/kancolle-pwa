@@ -180,9 +180,20 @@ export async function playBattleStepChoreography(rootEl, { turnEntry, fxStage })
 
   if (turnEntry.damageDealt > 0 && targetEl) targetEl.classList.add('is-hit');
   if (callout) {
+    const rollNote = turnEntry.d20Roll
+      ? ` [d20:${turnEntry.d20Roll.die}${turnEntry.d20Roll.modifier >= 0 ? '+' : ''}${turnEntry.d20Roll.modifier}=${turnEntry.d20Roll.total}]`
+      : '';
     if (turnEntry.damageDealt > 0) {
-      callout.textContent = `${turnEntry.isCrit ? '★ CRIT ' : ''}-${turnEntry.damageDealt} HP`;
+      const prefix = turnEntry.isCrit
+        ? '★ CRIT '
+        : turnEntry.d20Roll?.tier === 'graze'
+        ? '擦伤 '
+        : '';
+      callout.textContent = `${prefix}-${turnEntry.damageDealt} HP${rollNote}`;
       callout.className = `bf-callout is-visible ${turnEntry.isCrit ? 'is-crit' : 'is-dmg'}`;
+    } else if (turnEntry.commandId === 'field_repair' || turnEntry.commandId === 'frontline_resupply') {
+      callout.textContent = turnEntry.extraEvents?.[0] || `【${turnEntry.commandLabel}】生效`;
+      callout.className = 'bf-callout is-visible is-scan';
     } else if (turnEntry.rangeChangedTo) {
       callout.textContent = `距离拉近 → ${turnEntry.rangeChangedTo}`;
       callout.className = 'bf-callout is-visible is-scan';
@@ -224,6 +235,7 @@ export function renderFullScreenBattleView({
   onExecuteAction,
   onToggleAuto,
   onToggleSpeed,
+  onRetreat = null,
   onEnterNight,
   onFinishEarly,
   onPostBattleContinue,
@@ -236,6 +248,7 @@ export function renderFullScreenBattleView({
   const root = document.createElement('div');
   root.className = 'battle-fullscreen-root is-three-tier-stage';
   root.id = 'battle-fullscreen-stage';
+  root.dataset.noSwipe = 'true';
 
   const curSpeed = fxStage && typeof fxStage.getBattleSpeed === 'function' ? fxStage.getBattleSpeed() : 1;
   const isNight = session.phase === 'night';
@@ -244,6 +257,8 @@ export function renderFullScreenBattleView({
   const allies = fleetSummary?.members || [];
   const aliveEnemyCount = enemies.filter((e) => e.hp > 0).length;
   const strMult = Number(session.strengthMultiplier || 1.0);
+  const canSafeRetreat =
+    typeof onRetreat === 'function' && (session.status === 'active' || session.status === 'night_prompt');
 
   // Build 3x4 lookup maps for Enemy & Ally
   const enemyByCell = new Map();
@@ -273,8 +288,9 @@ export function renderFullScreenBattleView({
     enemies[0] ||
     null;
 
-  // Compact Battle Header Strip (Phase + Node + Active Buffs)
+  // Compact Battle Header Strip (Phase + Node + Carried Supplies + Top-Right 100% Safe Retreat)
   const activeBuffs = [];
+  if (session.supplyDepleted) activeBuffs.push({ text: '⚠ 补给匮乏 -25%', tone: 'danger' });
   if (session.reconStatus === 'ambushed') activeBuffs.push({ text: '⚠ 伏击', tone: 'danger' });
   else if (session.reconStatus === 'success') activeBuffs.push({ text: '索敌✓', tone: 'ok' });
   if (session.smokeTurns > 0) activeBuffs.push({ text: `烟幕${session.smokeTurns}T`, tone: 'ok' });
@@ -282,6 +298,12 @@ export function renderFullScreenBattleView({
   if (session.guardTurns > 0) activeBuffs.push({ text: `援护${session.guardTurns}T`, tone: 'ok' });
   if (session.reconCritTurns > 0) activeBuffs.push({ text: `暴击+${session.reconCritTurns}T`, tone: 'ok' });
   if (session.lockOnBonus > 0) activeBuffs.push({ text: `锁定+${session.lockOnBonus}`, tone: 'ok' });
+
+  const carriedHtml = session.carriedSupplies
+    ? `<span class="bf-carried-pill ${session.supplyDepleted ? 'is-depleted' : ''}" id="bf-carried-supplies">
+        油 ${Math.round(session.carriedSupplies.fuel)}/${Math.round(session.carriedSupplies.maxFuel)} · 弹 ${Math.round(session.carriedSupplies.ammo)}/${Math.round(session.carriedSupplies.maxAmmo)}
+      </span>`
+    : '';
 
   const topbar = document.createElement('div');
   topbar.className = 'bf-compact-topbar';
@@ -291,11 +313,24 @@ export function renderFullScreenBattleView({
         ${isNight ? `★ 夜战 R${session.round}` : `昼战 R${session.round}/${session.dayMaxRounds}`}
       </span>
       <span class="bf-node-tag">${escapeHtml(session.nodeCode)}·${escapeHtml(session.nodeName)} · 敌${aliveEnemyCount}/${enemies.length}${strMult !== 1 ? ` · ${strMult.toFixed(1)}x` : ''}</span>
+      ${carriedHtml}
     </div>
-    <div class="bf-mini-buffs">
-      ${activeBuffs.map((b) => `<span class="status-badge badge-${b.tone}">${escapeHtml(b.text)}</span>`).join('')}
+    <div class="bf-topbar-right">
+      <div class="bf-mini-buffs">
+        ${activeBuffs.map((b) => `<span class="status-badge badge-${b.tone}">${escapeHtml(b.text)}</span>`).join('')}
+      </div>
+      ${
+        canSafeRetreat
+          ? `<button type="button" id="btn-battle-safe-retreat" class="bf-safe-retreat-btn" ${busy ? 'disabled' : ''} title="100% 安全撤离当前战斗，保留当前耐久与剩余携带油弹">
+              逃跑 · 撤退
+            </button>`
+          : ''
+      }
     </div>
   `;
+  if (canSafeRetreat) {
+    topbar.querySelector('#btn-battle-safe-retreat')?.addEventListener('click', () => onRetreat());
+  }
   root.appendChild(topbar);
 
   // ============================================================
@@ -453,23 +488,32 @@ export function renderFullScreenBattleView({
   // TIER 2 (MIDDLE): Gear-Driven Tactical Command Bar + Real-Time Aim Preview
   // ============================================================
   if (session.status === 'night_prompt') {
+    const nightBlocked = Boolean(session.supplyDepleted);
     const nightCard = document.createElement('section');
     nightCard.className = 'bf-prompt-card';
     nightCard.id = 'bf-night-prompt';
     nightCard.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
         <h3 class="section-title" style="color:#fef08a;">昼战结束 · 尚余 ${aliveEnemyCount} 艘敌舰</h3>
-        <span class="status-badge badge-warn">昼夜战抉择</span>
+        <span class="status-badge ${nightBlocked ? 'badge-danger' : 'badge-warn'}">${nightBlocked ? '补给匮乏·禁夜战' : '昼夜战抉择'}</span>
       </div>
       <p class="muted-text" style="color:#cbd5e1; font-size:12px; margin:0;">
-        追击进入夜战将自动贴近至「近距离」，鱼雷突击伤害 +45%、暴击率 +25%。
+        ${
+          nightBlocked
+            ? '当前携带油弹已耗尽，处于【补给匮乏】状态，无法追击进入夜战；请结束昼战保留战果。'
+            : '追击进入夜战将自动贴近至「近距离」，鱼雷突击伤害 +38%、暴击率 +18%。'
+        }
       </p>
       <div class="lab-btn-grid">
-        <button type="button" id="btn-battle-enter-night" class="btn-primary uikit-touch-target">★ 追击进入夜战</button>
+        <button type="button" id="btn-battle-enter-night" class="btn-primary uikit-touch-target" ${nightBlocked ? 'disabled' : ''}>
+          ${nightBlocked ? '油弹匮乏（不可夜战）' : '★ 追击进入夜战'}
+        </button>
         <button type="button" id="btn-battle-end-day" class="btn-secondary uikit-touch-target">结束战斗（保留战果）</button>
       </div>
     `;
-    nightCard.querySelector('#btn-battle-enter-night').addEventListener('click', () => onEnterNight());
+    if (!nightBlocked) {
+      nightCard.querySelector('#btn-battle-enter-night').addEventListener('click', () => onEnterNight());
+    }
     nightCard.querySelector('#btn-battle-end-day').addEventListener('click', () => onFinishEarly());
     root.appendChild(nightCard);
   } else if (settlementInfo) {

@@ -63,65 +63,108 @@ const STAT_LABELS = {
 
 const SHOP_CATALOG = [
   {
+    id: 'shop_support_repair_pod',
+    name: '战地抢修吊舱',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'support',
+    equipmentType: 'support',
+    supportRole: 'repair',
+    rarity: ITEM_RARITIES.RARE,
+    currency: 'silver',
+    price: 340,
+    description: '后勤支援装备：战斗中解锁「战地抢修」指令（恢复受损最重友舰 30% 耐久），维修舰装配额外增幅。',
+    bonuses: [
+      { stat: 'maxHp', layer: 'baseAdd', value: 5 },
+      { stat: 'armor', layer: 'baseAdd', value: 4 },
+      { stat: 'recon', layer: 'baseAdd', value: 3 },
+    ],
+  },
+  {
+    id: 'shop_support_resupply_crate',
+    name: '海上补给箱',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'support',
+    equipmentType: 'support',
+    supportRole: 'resupply',
+    rarity: ITEM_RARITIES.RARE,
+    currency: 'silver',
+    price: 340,
+    description: '后勤支援装备：战斗中解锁「前线补给」指令（补给全队携带油弹并提振士气），补给舰装配额外增幅。',
+    bonuses: [
+      { stat: 'recon', layer: 'baseAdd', value: 5 },
+      { stat: 'evasion', layer: 'baseAdd', value: 4 },
+      { stat: 'aa', layer: 'baseAdd', value: 3 },
+    ],
+  },
+  {
     id: 'shop_engine_adv',
     name: '高出力引擎',
     category: ITEM_CATEGORIES.ENGINE,
+    rarity: ITEM_RARITIES.RARE,
     currency: 'silver',
     price: 420,
-    description: '高推力改进型引擎，显著提升机动与攻击。',
+    description: '高推力改进型引擎，显著提升机动与火力。',
     bonuses: [
-      { stat: 'agility', layer: 'baseAdd', value: 16 },
-      { stat: 'attack', layer: 'baseAdd', value: 8 },
+      { stat: 'evasion', layer: 'baseAdd', value: 8 },
+      { stat: 'firepower', layer: 'baseAdd', value: 4 },
     ],
   },
   {
     id: 'shop_armor_adv',
     name: '复合装甲',
     category: ITEM_CATEGORIES.ARMOR,
+    rarity: ITEM_RARITIES.RARE,
     currency: 'silver',
     price: 420,
-    description: '轻量化复合装甲，兼顾战术稳定与爆发协同。',
+    description: '轻量化复合装甲，稳步提升装甲与耐久。',
     bonuses: [
-      { stat: 'tactics', layer: 'baseAdd', value: 12 },
-      { stat: 'burst', layer: 'baseAdd', value: 8 },
+      { stat: 'armor', layer: 'baseAdd', value: 7 },
+      { stat: 'maxHp', layer: 'baseAdd', value: 6 },
     ],
   },
   {
     id: 'shop_core_adv',
     name: '精密控制核心',
     category: ITEM_CATEGORIES.CORE,
+    rarity: ITEM_RARITIES.EPIC,
     currency: 'gold',
     price: 15,
-    description: '高阶核心部件，全面提升输出并提供 +2 检定加成。',
+    description: '高阶核心部件，均衡强化火力、侦查并提供 +2 检定加成。',
     bonuses: [
-      { stat: 'attack', layer: 'baseAdd', value: 14 },
-      { stat: 'burst', layer: 'baseAdd', value: 14 },
+      { stat: 'firepower', layer: 'baseAdd', value: 7 },
+      { stat: 'recon', layer: 'baseAdd', value: 6 },
       { stat: 'checkBonus', layer: 'flatFinal', value: 2 },
     ],
   },
   {
     id: 'shop_ext_gamma',
-    name: '通用扩展装备 · 丙型组件',
+    name: '通用扩展装备 · 丙型主炮',
     category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'weapon',
+    equipmentType: 'main_gun',
+    rarity: ITEM_RARITIES.RARE,
     currency: 'silver',
     price: 360,
-    description: '可装入任意自定义槽位的通用组件，均衡强化火力与战术。',
+    description: '可装入主炮扩建槽位的制式舰炮，均衡强化火力与防空。',
     bonuses: [
-      { stat: 'attack', layer: 'baseAdd', value: 10 },
-      { stat: 'tactics', layer: 'baseAdd', value: 10 },
+      { stat: 'firepower', layer: 'baseAdd', value: 7 },
+      { stat: 'aa', layer: 'baseAdd', value: 4 },
       { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
     ],
   },
   {
     id: 'shop_ext_amp',
-    name: '通用扩展装备 · 精密增幅器',
+    name: '通用扩展装备 · 精密火控雷达',
     category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'tactical',
+    equipmentType: 'radar',
+    rarity: ITEM_RARITIES.EPIC,
     currency: 'gold',
     price: 18,
-    description: '高级通用扩展模块，大幅提升爆发、幸运与检定稳定度。',
+    description: '高级火控侦察雷达，大幅提升侦查、火力与检定稳定度。',
     bonuses: [
-      { stat: 'burst', layer: 'baseAdd', value: 16 },
-      { stat: 'luck', layer: 'baseAdd', value: 12 },
+      { stat: 'recon', layer: 'baseAdd', value: 8 },
+      { stat: 'firepower', layer: 'baseAdd', value: 6 },
       { stat: 'checkBonus', layer: 'flatFinal', value: 2 },
     ],
   },
@@ -129,12 +172,13 @@ const SHOP_CATALOG = [
     id: 'shop_outfit_formal',
     name: '礼仪常服',
     category: ITEM_CATEGORIES.OUTFIT,
+    rarity: ITEM_RARITIES.RARE,
     currency: 'silver',
     price: 300,
-    description: '端庄典雅的定制服装，提升幸运与战术表现。',
+    description: '端庄典雅的定制服装，提升机动与侦查表现。',
     bonuses: [
-      { stat: 'luck', layer: 'baseAdd', value: 12 },
-      { stat: 'tactics', layer: 'baseAdd', value: 8 },
+      { stat: 'evasion', layer: 'baseAdd', value: 5 },
+      { stat: 'recon', layer: 'baseAdd', value: 5 },
     ],
   },
   {
@@ -143,9 +187,9 @@ const SHOP_CATALOG = [
     category: ITEM_CATEGORIES.CONSUMABLE,
     currency: 'silver',
     price: 80,
-    description: '使用后立即为指定角色恢复 25 点 HP 与 10 点士气。',
+    description: '使用后立即为指定角色恢复 18 点 HP 与 10 点士气。',
     bonuses: [
-      { stat: 'hp', layer: 'baseAdd', value: 25 },
+      { stat: 'hp', layer: 'baseAdd', value: 18 },
       { stat: 'morale', layer: 'baseAdd', value: 10 },
     ],
   },
@@ -167,9 +211,9 @@ const SHOP_CATALOG = [
     category: ITEM_CATEGORIES.CONSUMABLE,
     currency: 'gold',
     price: 5,
-    description: '高级整备物资，使用后恢复 60 点 HP、35 点士气与 50 点 AP。',
+    description: '高级整备物资，使用后恢复 45 点 HP、35 点士气与 50 点 AP。',
     bonuses: [
-      { stat: 'hp', layer: 'baseAdd', value: 60 },
+      { stat: 'hp', layer: 'baseAdd', value: 45 },
       { stat: 'morale', layer: 'baseAdd', value: 35 },
       { stat: 'ap', layer: 'baseAdd', value: 50 },
     ],
@@ -186,24 +230,39 @@ const DEFAULT_SUPPLY_POOL = {
   entries: [
     {
       id: 'drop_ext_std',
-      name: '通用扩展装备 · 补给型',
+      name: '通用扩展装备 · 轻型双联主炮',
       rewardType: 'item',
       category: ITEM_CATEGORIES.EXTENSION,
-      weight: 35,
+      weight: 32,
       bonuses: [
-        { stat: 'attack', layer: 'baseAdd', value: 11 },
-        { stat: 'agility', layer: 'baseAdd', value: 7 },
+        { stat: 'firepower', layer: 'baseAdd', value: 6 },
+        { stat: 'evasion', layer: 'baseAdd', value: 3 },
       ],
     },
     {
       id: 'drop_ext_tac',
-      name: '通用扩展装备 · 侦察型',
+      name: '通用扩展装备 · 侦察电探',
       rewardType: 'item',
       category: ITEM_CATEGORIES.EXTENSION,
-      weight: 28,
+      weight: 26,
       bonuses: [
-        { stat: 'tactics', layer: 'baseAdd', value: 12 },
-        { stat: 'luck', layer: 'baseAdd', value: 8 },
+        { stat: 'recon', layer: 'baseAdd', value: 7 },
+        { stat: 'aa', layer: 'baseAdd', value: 4 },
+      ],
+    },
+    {
+      id: 'drop_ext_support',
+      name: '战地抢修吊舱',
+      rewardType: 'item',
+      category: ITEM_CATEGORIES.EXTENSION,
+      subGroup: 'support',
+      equipmentType: 'support',
+      supportRole: 'repair',
+      rarity: ITEM_RARITIES.RARE,
+      weight: 12,
+      bonuses: [
+        { stat: 'maxHp', layer: 'baseAdd', value: 5 },
+        { stat: 'armor', layer: 'baseAdd', value: 4 },
       ],
     },
     {
@@ -211,10 +270,10 @@ const DEFAULT_SUPPLY_POOL = {
       name: '外勤便装',
       rewardType: 'item',
       category: ITEM_CATEGORIES.OUTFIT,
-      weight: 16,
+      weight: 14,
       bonuses: [
-        { stat: 'agility', layer: 'baseAdd', value: 10 },
-        { stat: 'luck', layer: 'baseAdd', value: 8 },
+        { stat: 'evasion', layer: 'baseAdd', value: 5 },
+        { stat: 'recon', layer: 'baseAdd', value: 4 },
       ],
     },
     {
@@ -222,10 +281,11 @@ const DEFAULT_SUPPLY_POOL = {
       name: '强化型核心部件',
       rewardType: 'item',
       category: ITEM_CATEGORIES.CORE,
+      rarity: ITEM_RARITIES.EPIC,
       weight: 8,
       bonuses: [
-        { stat: 'attack', layer: 'baseAdd', value: 12 },
-        { stat: 'burst', layer: 'baseAdd', value: 12 },
+        { stat: 'firepower', layer: 'baseAdd', value: 7 },
+        { stat: 'torpedo', layer: 'baseAdd', value: 6 },
         { stat: 'checkBonus', layer: 'flatFinal', value: 2 },
       ],
     },
@@ -233,7 +293,7 @@ const DEFAULT_SUPPLY_POOL = {
       id: 'drop_mat_bundle',
       name: '钢材与铝材补给箱（钢+140 铝+70）',
       rewardType: 'material',
-      weight: 25,
+      weight: 22,
       resourceRewards: { steel: 140, bauxite: 70 },
     },
   ],
@@ -420,6 +480,10 @@ function renderShopTab(host) {
       await inventory.createItem({
         name: offer.name,
         category: offer.category,
+        rarity: offer.rarity || ITEM_RARITIES.COMMON,
+        subGroup: offer.subGroup || undefined,
+        equipmentType: offer.equipmentType || undefined,
+        supportRole: offer.supportRole || undefined,
         tags: ['商店购入'],
         description: offer.description,
         quantity: 1,
@@ -631,10 +695,14 @@ function renderGachaTab(host) {
         await inventory.createItem({
           name: picked.name,
           category: picked.category || ITEM_CATEGORIES.EXTENSION,
+          rarity: picked.rarity || ITEM_RARITIES.COMMON,
+          subGroup: picked.subGroup || undefined,
+          equipmentType: picked.equipmentType || undefined,
+          supportRole: picked.supportRole || undefined,
           tags: ['补给池获取'],
           description: '通过随机补给池获取的部件/装备，可在角色控制台装入对应槽位。',
           quantity: 1,
-          bonuses: picked.bonuses || [{ stat: 'attack', layer: 'baseAdd', value: 8 }],
+          bonuses: picked.bonuses || [{ stat: 'firepower', layer: 'baseAdd', value: 5 }],
         });
         drops.push({
           name: picked.name,
@@ -766,7 +834,7 @@ export function openEquipmentOutfitEditorSheet(
             <div class="form-group">
               <label class="form-label" for="eq-ed-subcat">1. 装备 / 服装类别</label>
               <select id="eq-ed-subcat" class="form-select">
-                ${['核心三件套', '主战武器', '战术辅助', '舰娘服装']
+                ${['核心三件套', '主战武器', '战术辅助', '后勤支援', '舰娘服装']
                   .map(
                     (grp) => `
                   <optgroup label="${escapeHtml(grp)}">
@@ -1203,6 +1271,7 @@ export function openEquipmentDetailModal(itemId, context = workshopState.context
                     <span class="rarity-pill is-rarity-${rarityId}">${escapeHtml(rDef.label)}</span>
                     <strong style="font-size:15px;">${escapeHtml(item.name)}</strong>
                     ${lv > 0 ? `<span class="wh-lv-pill">+${lv}</span>` : ''}
+                    ${item.locked ? '<span class="status-badge badge-warn item-lock-badge">🔒 已锁定</span>' : ''}
                     ${isConsumable ? `<span class="wh-qty-pill">×${item.quantity}</span>` : ''}
                   </div>
                   <div class="cc-stat-sub" style="margin-top:3px;">
@@ -1294,10 +1363,19 @@ export function openEquipmentDetailModal(itemId, context = workshopState.context
               }
               ${
                 !isConsumable
+                  ? `<button type="button" id="btn-tm-do-lock" class="${item.locked ? 'btn-primary' : 'btn-secondary'} uikit-touch-target">
+                      ${item.locked ? '🔓 解除锁定' : '🔒 锁定防误拆'}
+                    </button>`
+                  : ''
+              }
+              ${
+                !isConsumable
                   ? '<button type="button" id="btn-tm-do-edit" class="btn-secondary uikit-touch-target">编辑品级/词条</button>'
                   : ''
               }
-              <button type="button" id="btn-tm-do-disassemble" class="btn-danger uikit-touch-target">拆解回收余料</button>
+              <button type="button" id="btn-tm-do-disassemble" class="btn-danger uikit-touch-target" ${item.locked ? 'disabled' : ''}>
+                ${item.locked ? '🔒 已锁定（不可拆解）' : '拆解回收余料'}
+              </button>
             </div>
           </div>
         `;
@@ -1364,6 +1442,17 @@ export function openEquipmentDetailModal(itemId, context = workshopState.context
           }
         });
 
+        body.querySelector('#btn-tm-do-lock')?.addEventListener('click', async () => {
+          try {
+            const res = await inventory.toggleItemLock(item.id);
+            uiKit.showToast(res.locked ? `🔒 已锁定「${item.name}」，防止误拆/误删` : `🔓 已解除「${item.name}」锁定`, 'info');
+            renderInner();
+            if (typeof onUpdated === 'function') onUpdated();
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '切换锁定失败', 'warn');
+          }
+        });
+
         body.querySelector('#btn-tm-do-edit')?.addEventListener('click', () => {
           close();
           openEquipmentOutfitEditorSheet(ctx, {
@@ -1375,6 +1464,10 @@ export function openEquipmentDetailModal(itemId, context = workshopState.context
         });
 
         body.querySelector('#btn-tm-do-disassemble')?.addEventListener('click', async () => {
+          if (item.locked) {
+            uiKit.showToast('该装备已锁定，请先解除锁定后再拆解', 'warn');
+            return;
+          }
           const ok = await uiKit.confirmDialog({
             title: `拆解回收「${item.name}」`,
             message: '拆解后将移除该物品并返还钢材/铝材/银条及「拆解余料」，确认继续吗？',
@@ -1382,14 +1475,18 @@ export function openEquipmentDetailModal(itemId, context = workshopState.context
             tone: 'danger',
           });
           if (!ok) return;
-          const res = await inventory.disassembleSingleItem(item.id, { resources });
-          await persistCharacterRoster({ storage: rootStorage, entities });
-          uiKit.showToast(
-            `已拆解「${item.name}」：钢+${res.yield.steel} 铝+${res.yield.bauxite} 银+${res.yield.silver} 余料+${res.yield.salvageParts}`,
-            'ok'
-          );
-          close();
-          if (typeof onUpdated === 'function') onUpdated();
+          try {
+            const res = await inventory.disassembleSingleItem(item.id, { resources });
+            await persistCharacterRoster({ storage: rootStorage, entities });
+            uiKit.showToast(
+              `已拆解「${item.name}」：钢+${res.yield.steel} 铝+${res.yield.bauxite} 银+${res.yield.silver} 余料+${res.yield.salvageParts}`,
+              'ok'
+            );
+            close();
+            if (typeof onUpdated === 'function') onUpdated();
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '拆解失败', 'warn');
+          }
         });
       };
 
@@ -1408,6 +1505,7 @@ function renderWarehouseEnhanceTab(host) {
   });
   const idleCleanable = inventory.getIdleUnenhancedItems();
   const salvageParts = inventory.getSalvageParts();
+  const retrofitCores = typeof inventory.getRetrofitCores === 'function' ? inventory.getRetrofitCores() : 0;
 
   const groupCounts = { [WAREHOUSE_GROUPS.ALL]: allItems.length };
   for (const g of WAREHOUSE_GROUP_DEFS) {
@@ -1423,6 +1521,7 @@ function renderWarehouseEnhanceTab(host) {
       <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
         <h2 class="section-title">装备与服装仓库（${items.length}/${allItems.length}）</h2>
         <span class="status-badge badge-ok" id="sw-salvage-parts-badge">拆解余料 ${salvageParts}</span>
+        <span class="status-badge badge-warn" id="sw-retrofit-cores-badge">改造核心 ${retrofitCores}</span>
       </div>
       <button type="button" id="btn-sw-new-custom-eq" class="btn-primary uikit-touch-target" style="padding:0 12px;">+ 新建装备/服装</button>
     </div>
@@ -1534,6 +1633,7 @@ function renderWarehouseEnhanceTab(host) {
           <div class="wh-compact-main">
             <div class="wh-compact-title-row">
               <span class="rarity-pill is-rarity-${rarityId}">${escapeHtml(rDef.shortLabel)}</span>
+              ${item.locked ? '<span class="item-lock-ico" title="已锁定防误拆">🔒</span>' : ''}
               <strong class="wh-item-name">${escapeHtml(item.name)}</strong>
               ${lv > 0 ? `<span class="wh-lv-pill">+${lv}</span>` : ''}
               ${canPromoteHint ? '<span class="status-badge badge-ok" style="font-size:10px; padding:1px 6px;">可升阶</span>' : ''}
@@ -1725,6 +1825,8 @@ export default {
       context.bus.on('inventory:enhanced', () => renderWorkshop()),
       context.bus.on('inventory:promoted', () => renderWorkshop()),
       context.bus.on('inventory:salvage-changed', () => renderWorkshop()),
+      context.bus.on('inventory:retrofit-cores-changed', () => renderWorkshop()),
+      context.bus.on('inventory:item-locked', () => renderWorkshop()),
       context.bus.on('inventory:cleaned', () => renderWorkshop()),
       context.bus.on('inventory:item-created', () => renderWorkshop()),
       context.bus.on('inventory:item-updated', () => renderWorkshop()),

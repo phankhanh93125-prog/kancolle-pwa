@@ -32,7 +32,7 @@ import {
   openCharacterCardById,
   persistCharacterRoster,
 } from './character-console.js';
-import { openDockyardTacticalModal } from './port-facilities.js';
+import { openDockyardTacticalModal, openShipConstructionModal } from './port-facilities.js';
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -2345,7 +2345,15 @@ async function renderPortHub() {
           <strong>船坞整备 · Lv.${dock.level}</strong>
           <span class="status-badge ${dock.queue.length > 0 ? 'badge-warn' : 'badge-ok'}">${dock.queue.length}/${dock.capacity}渠位</span>
         </div>
-        <span class="port-building-sub">战术浮窗快速入渠维修 · 新舰建造</span>
+        <span class="port-building-sub">战术浮窗快速入渠维修 · 渠位扩建</span>
+      </button>
+
+      <button type="button" class="port-building-tile is-featured" id="btn-open-construction" data-open-facility="construction">
+        <div class="port-building-head">
+          <strong>自由舰船建造</strong>
+          <span class="status-badge badge-ok">即时出坞</span>
+        </div>
+        <span class="port-building-sub">四项资源滑块 · 8舰种含AR/AO · 重复转改造核心</span>
       </button>
 
       <button type="button" class="port-building-tile" id="btn-open-expedition" data-open-facility="expedition">
@@ -2353,7 +2361,7 @@ async function renderPortHub() {
           <strong>远征派遣</strong>
           <span class="status-badge ${activeExps.length > 0 ? 'badge-warn' : 'badge-muted'}">${activeExps.length}支执行</span>
         </div>
-        <span class="port-building-sub">离线计时后勤 · 调度 x${cmdProfile.effects.expeditionRewardMultiplier.toFixed(2)}</span>
+        <span class="port-building-sub">离线计时后勤 · 调度 x${cmdProfile.effects.expeditionRewardMultiplier.toFixed(2)}（AR/AO增产）</span>
       </button>
 
       <button type="button" class="port-building-tile" id="btn-open-workshop-hub" data-open-facility="workshop">
@@ -2361,7 +2369,7 @@ async function renderPortHub() {
           <strong>仓库工坊</strong>
           <span class="status-badge badge-ok">${itemCount} 件</span>
         </div>
-        <span class="port-building-sub">强化+10与白→橙升阶 · 拆解余料</span>
+        <span class="port-building-sub">强化+10与白→橙升阶 · 拆解余料与锁定</span>
       </button>
 
       <button type="button" class="port-building-tile" id="btn-open-compendium-hub" data-open-facility="compendium">
@@ -2377,7 +2385,7 @@ async function renderPortHub() {
           <strong>舰娘角色卡</strong>
           <span class="status-badge badge-muted">${charCount} 名</span>
         </div>
-        <span class="port-building-sub">八维属性 · 分舰种槽位上限扩建</span>
+        <span class="port-building-sub">二位数曲线八维 · 舰娘锁定与槽位扩建</span>
       </button>
 
       ${customBlds
@@ -2409,6 +2417,9 @@ async function renderPortHub() {
   });
   bldCard.querySelector('#btn-open-dockyard').addEventListener('click', () => {
     openDockyardTacticalModal(portState.context);
+  });
+  bldCard.querySelector('#btn-open-construction').addEventListener('click', () => {
+    openShipConstructionModal(portState.context, { onConstructed: () => renderPortHub() });
   });
   bldCard.querySelector('#btn-open-expedition').addEventListener('click', () => {
     if (modules.has('port-expedition')) modules.mount('port-expedition', { transition: 'left' });
@@ -2500,6 +2511,9 @@ export default {
 
     portState.unsubs = [
       context.bus.on('port:open-commander', () => openCommanderSheet()),
+      context.bus.on('port:open-construction', () =>
+        openShipConstructionModal(portState.context, { onConstructed: () => renderPortHub() })
+      ),
       context.bus.on('medal:unlocked', () => renderPortHub()),
       context.bus.on('story:theatre-updated', () => renderPortHub()),
       context.bus.on('story:packs-changed', () => renderPortHub()),

@@ -26,10 +26,13 @@ import {
   computeOpeningAirstrikeOutcome,
   computeOpeningTorpedoOutcome,
   computeRangeRowCombatModifiers,
+  computeSymmetricDamage,
   getGearDrivenTacticalActions,
   getSameRowAndAdjacentAura,
   getShipClassProfile,
   getShipClassTacticalActions,
+  normalizeStarTierId,
+  resolveD20CombatRoll,
   resolveShipClass,
 } from './stat-rules.js';
 import { NODE_TYPES, SEA_DIFFICULTIES, buildEnemyUnitByClass } from './route-generator.js';
@@ -860,8 +863,8 @@ export class TacticalCombatEngine {
   }
 
   /**
-   * Initialize a new mixed-initiative tactical combat engagement with dynamic enemy scaling,
-   * pre-battle Recon/Ambush check, Opening Airstrike, and Opening Torpedo phases.
+   * Initialize a new mixed-initiative tactical combat engagement with 1★~5★ symmetric enemy stats,
+   * carried sortie supplies, pre-battle Recon/Ambush check, Opening Airstrike, and Opening Torpedo phases.
    */
   startEncounter({
     characterId = null,
@@ -872,6 +875,8 @@ export class TacticalCombatEngine {
     difficulty = null,
     nodeDepthRatio = null,
     strengthMultiplier = 1.0,
+    carriedSupplies = null,
+    resupplyUsesRemaining = 2,
     rng = Math.random,
   }) {
     const memberIds =
@@ -886,7 +891,7 @@ export class TacticalCombatEngine {
     const flagshipId = memberIds[0] || String(characterId || '');
     const activeFormationId = formationId || this._formation?.getActiveFormation()?.id || 'line_ahead';
     const fleetSize = Math.max(1, memberIds.length);
-    const diffId = difficulty || node?.difficulty || node?.enemyTemplate?.difficulty || 'low';
+    const diffId = normalizeStarTierId(difficulty || node?.difficulty || node?.enemyTemplate?.difficulty || 'star_1');
     const depthRatio = clamp(
       Number(nodeDepthRatio ?? node?.depthRatio ?? node?.enemyTemplate?.depthRatio ?? 0.35),
       0,
@@ -900,131 +905,84 @@ export class TacticalCombatEngine {
       strengthMultiplier: strMult,
     });
 
+    const tierCfg = SEA_DIFFICULTIES[diffId] || SEA_DIFFICULTIES.star_1;
     const rawTpl = node?.enemyTemplate || node?.enemy || {
       name: node?.name || '未知敌方编队',
       tier: node?.type || 'encounter',
+      difficulty: diffId,
+      star: tierCfg.star || 1,
       forcedEngagement: node?.type === 'boss',
-      hp: 68,
-      maxHp: 68,
-      armor: 5,
-      attackPower: 12,
+      hp: tierCfg.enemyHpRange[0],
+      maxHp: tierCfg.enemyHpRange[0],
+      armor: tierCfg.enemyArmorRange[0],
+      attackPower: tierCfg.enemyAtkRange[0],
       airThreat: 0,
       subThreat: 0,
       threatLabel: '常规水面编队',
-      scanDc: 13,
-      evadeDc: 13,
-      shellingDc: 13,
-      torpedoDc: 14,
+      scanDc: tierCfg.baseDc,
+      evadeDc: tierCfg.baseDc,
+      shellingDc: tierCfg.baseDc,
+      torpedoDc: tierCfg.baseDc + 1,
       weakness: 'shelling',
       weaknessLabel: '炮击弱点',
     };
 
-    const tierCfg = SEA_DIFFICULTIES[diffId] || SEA_DIFFICULTIES.low;
     let rawSquad =
       Array.isArray(rawTpl.squad) && rawTpl.squad.length > 0
         ? deepClone(rawTpl.squad)
         : [
-            {
-              id: 'en_1',
-              name: rawTpl.name || node?.name || '敌方旗舰',
-              shipClass:
-                rawTpl.tier === 'boss'
-                  ? 'BOSS'
-                  : rawTpl.subThreat > 0
-                  ? 'SS'
-                  : rawTpl.airThreat > 0
-                  ? 'CV'
-                  : 'BB',
-              role:
-                rawTpl.tier === 'boss'
-                  ? 'boss'
-                  : rawTpl.subThreat > 0
-                  ? 'sub'
-                  : rawTpl.airThreat > 0
-                  ? 'carrier'
-                  : 'flagship',
-              tier: rawTpl.tier || node?.type || 'encounter',
-              hp: Math.round(Number(rawTpl.maxHp ?? rawTpl.hp ?? 68)),
-              maxHp: Math.round(Number(rawTpl.maxHp ?? rawTpl.hp ?? 68)),
-              armor: Number(rawTpl.armor ?? 5),
-              attackPower: Number(rawTpl.attackPower ?? 12),
-              airThreat: Number(rawTpl.airThreat ?? 0),
-              subThreat: Number(rawTpl.subThreat ?? 0),
-              weakness: rawTpl.weakness || 'shelling',
-              weaknessLabel: rawTpl.weaknessLabel || '炮击弱点',
-              threatLabel: rawTpl.threatLabel || '常规水面编队',
-            },
+            buildEnemyUnitByClass(
+              rawTpl.tier === 'boss'
+                ? 'BOSS'
+                : rawTpl.subThreat > 0
+                ? 'SS'
+                : rawTpl.airThreat > 0
+                ? 'CV'
+                : 'CL',
+              0,
+              tierCfg,
+              {
+                type: rawTpl.tier || node?.type || NODE_TYPES.ENCOUNTER,
+                baseName: rawTpl.name || node?.name || '敌方旗舰',
+                depthRatio,
+                strengthMultiplier: strMult,
+                rng,
+              }
+            ),
           ];
-
-    // Dynamically expand enemy squad size for medium/high seas, deep nodes, or large player fleets (up to 6~12 ships)
-    const isBoss = (rawTpl.tier || node?.type) === NODE_TYPES.BOSS;
-    const isElite = (rawTpl.tier || node?.type) === NODE_TYPES.ELITE;
-    const targetMinCount =
-      diffId === 'high'
-        ? isBoss
-          ? 8
-          : isElite || depthRatio >= 0.45
-          ? 6
-          : 4
-        : diffId === 'medium'
-        ? isBoss
-          ? 6
-          : isElite || depthRatio >= 0.55
-          ? 5
-          : 3
-        : isBoss
-        ? 4
-        : 1;
-    const fleetTargetCount = clamp(
-      Math.max(rawSquad.length, targetMinCount + Math.floor(Math.max(0, fleetSize - 4) * 0.6)),
-      1,
-      12
-    );
-
-    const reinforcePool =
-      node?.lane === 'stealth'
-        ? ['SS', 'DD', 'CL', 'CA']
-        : diffId === 'high' || isBoss
-        ? ['CA', 'DD', 'CV', 'BB', 'CL', 'SS']
-        : ['DD', 'CL', 'CA', 'CV'];
-    while (rawSquad.length < fleetTargetCount) {
-      const nextCls = reinforcePool[rawSquad.length % reinforcePool.length];
-      rawSquad.push(
-        buildEnemyUnitByClass(nextCls, rawSquad.length, tierCfg, {
-          type: rawTpl.tier || node?.type || NODE_TYPES.ENCOUNTER,
-          baseHp: Number(rawTpl.maxHp ?? rawTpl.hp ?? 75) / Math.max(1, rawSquad.length * 0.55),
-          baseArmor: Number(rawTpl.armor ?? 6),
-          baseAtk: Number(rawTpl.attackPower ?? 14),
-          depthRatio,
-          strengthMultiplier: strMult,
-          rng,
-        })
-      );
-    }
 
     const enemies = rawSquad.map((u, idx) => {
       const cls = inferEnemyShipClass(u);
       const defaults = getDefaultEnemyStatsByClass(cls);
-      const scaledHp = Math.max(24, Math.round(Number(u.maxHp ?? u.hp ?? 55) * (0.65 + dynScale.statScale * 0.42)));
-      const scaledArmor = Math.max(1, Math.round(Number(u.armor ?? 4) * dynScale.armorScale));
-      const scaledAtk = Math.max(6, Math.round(Number(u.attackPower ?? 11) * dynScale.atkScale));
+      const alreadyStarCalibrated = Number(u.star || 0) >= 1;
+      const unitHp = alreadyStarCalibrated
+        ? Math.max(18, Math.round(Number(u.maxHp ?? u.hp ?? 35)))
+        : Math.max(20, Math.round(Number(u.maxHp ?? u.hp ?? 38) * (0.85 + (strMult - 1) * 0.25)));
+      const unitArmor = alreadyStarCalibrated
+        ? Math.max(4, Math.round(Number(u.armor ?? 12)))
+        : Math.max(6, Math.round(Number(u.armor ?? 12) * (0.9 + (strMult - 1) * 0.2)));
+      const unitAtk = alreadyStarCalibrated
+        ? Math.max(10, Math.round(Number(u.attackPower ?? 20)))
+        : Math.max(12, Math.round(Number(u.attackPower ?? 20) * (0.9 + (strMult - 1) * 0.2)));
+
       return {
         id: String(u.id || `en_${idx + 1}`),
         name: String(u.name || `敌舰 #${idx + 1}`),
         shipClass: cls,
         role: u.role || (cls === 'BOSS' ? 'boss' : cls === 'SS' ? 'sub' : cls === 'CV' ? 'carrier' : cls === 'CA' ? 'cruiser' : 'escort'),
         tier: u.tier || rawTpl.tier || 'encounter',
-        hp: scaledHp,
-        maxHp: scaledHp,
-        armor: scaledArmor,
-        attackPower: scaledAtk,
-        evasion: Math.round(Number(u.evasion ?? defaults.evasion) * (0.95 + (strMult - 1) * 0.08)),
-        aa: Math.round(Number(u.aa ?? defaults.aa) * (0.92 + (strMult - 1) * 0.16)),
-        asw: Math.round(Number(u.asw ?? defaults.asw) * (0.92 + (strMult - 1) * 0.16)),
-        torpedo: Math.round(Number(u.torpedo ?? defaults.torpedo) * (0.92 + (strMult - 1) * 0.16)),
+        star: Number(u.star || tierCfg.star || 1),
+        hp: unitHp,
+        maxHp: unitHp,
+        armor: unitArmor,
+        attackPower: unitAtk,
+        evasion: clamp(Math.round(Number(u.evasion ?? Math.round(defaults.evasion * 0.55))), 8, 120),
+        aa: clamp(Math.round(Number(u.aa ?? Math.round(defaults.aa * 0.55))), 6, 120),
+        asw: clamp(Math.round(Number(u.asw ?? Math.round(defaults.asw * 0.55))), 6, 110),
+        torpedo: clamp(Math.round(Number(u.torpedo ?? unitAtk)), 6, 150),
         stealth: Math.round(Number(u.stealth ?? defaults.stealth)),
-        airThreat: Number(u.airThreat ?? (cls === 'CV' || cls === 'BOSS' ? 24 : 0)),
-        subThreat: Number(u.subThreat ?? (cls === 'SS' ? 22 : 0)),
+        airThreat: Number(u.airThreat ?? (cls === 'CV' || cls === 'BOSS' ? Math.round(unitAtk * 0.7) : 0)),
+        subThreat: Number(u.subThreat ?? (cls === 'SS' ? Math.round(unitAtk * 0.7) : 0)),
         weakness: u.weakness || (cls === 'SS' ? 'asw' : cls === 'CV' ? 'aa' : 'shelling'),
         weaknessLabel:
           u.weaknessLabel ||
@@ -1054,6 +1012,15 @@ export class TacticalCombatEngine {
         ? this._resources.getDropMultiplier()
         : 1.0;
 
+    const trackedSupplies = carriedSupplies
+      ? {
+          fuel: Math.max(0, Math.round(Number(carriedSupplies.fuel) || 0)),
+          ammo: Math.max(0, Math.round(Number(carriedSupplies.ammo) || 0)),
+          maxFuel: Math.max(1, Math.round(Number(carriedSupplies.maxFuel ?? carriedSupplies.fuel) || 100)),
+          maxAmmo: Math.max(1, Math.round(Number(carriedSupplies.maxAmmo ?? carriedSupplies.ammo) || 100)),
+        }
+      : null;
+
     this._session = {
       id: `cmb_${Date.now().toString(36)}`,
       characterId: flagshipId,
@@ -1064,11 +1031,15 @@ export class TacticalCombatEngine {
       nodeName: node?.name || rawTpl.name || '交战海域',
       nodeLane: node?.lane || 'main',
       difficulty: diffId,
+      star: tierCfg.star || 1,
       depthRatio,
       strengthMultiplier: strMult,
       resourceDropMultiplier: resDropMult,
       lootBonus: Number((dynScale.lootBonus * resDropMult).toFixed(2)),
       seaCondition: seaCondition ? deepClone(seaCondition) : null,
+      carriedSupplies: trackedSupplies,
+      supplyDepleted: Boolean(trackedSupplies && (trackedSupplies.fuel <= 0 || trackedSupplies.ammo <= 0)),
+      resupplyUsesRemaining: Math.max(0, Math.min(2, Math.floor(Number(resupplyUsesRemaining ?? 2)))),
       round: 1,
       turn: 1,
       phase: 'day',
@@ -1093,10 +1064,10 @@ export class TacticalCombatEngine {
       enemy: {
         ...deepClone(rawTpl),
         forcedEngagement: Boolean(rawTpl.forcedEngagement || node?.type === 'boss'),
-        scanDc: Number(rawTpl.scanDc ?? 13),
-        evadeDc: Number(rawTpl.evadeDc ?? 13),
-        shellingDc: Number(rawTpl.shellingDc ?? 13),
-        torpedoDc: Number(rawTpl.torpedoDc ?? 14),
+        scanDc: Number(rawTpl.scanDc ?? tierCfg.baseDc),
+        evadeDc: Number(rawTpl.evadeDc ?? tierCfg.baseDc),
+        shellingDc: Number(rawTpl.shellingDc ?? tierCfg.baseDc),
+        torpedoDc: Number(rawTpl.torpedoDc ?? tierCfg.baseDc + 1),
         scanned: false,
       },
       turnQueue: [],
@@ -1153,6 +1124,73 @@ export class TacticalCombatEngine {
       forcedEngagement: this._session.enemy.forcedEngagement,
     });
     return this.getSession();
+  }
+
+  /**
+   * 100% Guaranteed Safe Retreat (逃跑) from any combat encounter (including BOSS).
+   * Preserves current ship HP & remaining carried supplies; forfeits only unfinished battle loot.
+   */
+  retreatFromCombat() {
+    if (!this._session) return { ok: false, reason: '当前无进行中的战斗' };
+    const session = this._session;
+    session.status = 'retreated';
+    session.autoDelegateRound = false;
+    session.turnsLog.unshift({
+      turn: session.turn,
+      round: session.round,
+      phase: session.phase,
+      side: 'ally',
+      commandId: 'safe_retreat',
+      commandLabel: '紧急撤退',
+      visualStyle: 'evade',
+      actorId: session.characterId,
+      actorName: '全舰队',
+      actorClass: 'FLEET',
+      targetEnemyId: '',
+      targetEnemyName: session.enemy?.name || '',
+      outcomeTag: 'retreated',
+      text: '【100% 安全撤退】舰队拉起烟幕有序脱离战区，保留当前耐久与剩余携带油弹！',
+      source: 'local',
+      degraded: false,
+      damageDealt: 0,
+      damageTaken: 0,
+      isCrit: false,
+    });
+    this._emit('combat:retreated', {
+      sessionId: session.id,
+      carriedSupplies: session.carriedSupplies ? deepClone(session.carriedSupplies) : null,
+      resupplyUsesRemaining: session.resupplyUsesRemaining,
+    });
+    return { ok: true, session: this.getSession() };
+  }
+
+  /**
+   * Deduct action fuel/ammo from carried sortie supplies (never soft-locks; sets `supplyDepleted` at 0).
+   */
+  async _consumeCombatSupplies(session, { fuel = 0, ammo = 0, reason = '战术行动' } = {}) {
+    if (session.carriedSupplies) {
+      if (fuel > 0) {
+        session.carriedSupplies.fuel = Math.max(0, Math.round(session.carriedSupplies.fuel - fuel));
+      }
+      if (ammo > 0) {
+        session.carriedSupplies.ammo = Math.max(0, Math.round(session.carriedSupplies.ammo - ammo));
+      }
+      session.supplyDepleted =
+        session.carriedSupplies.fuel <= 0 || session.carriedSupplies.ammo <= 0;
+      return { ok: true, depleted: session.supplyDepleted };
+    }
+    // Fallback for standalone combat without carried supplies pool
+    const costMap = {};
+    if (fuel > 0) costMap.fuel = fuel;
+    if (ammo > 0) costMap.ammo = ammo;
+    if (Object.keys(costMap).length > 0 && this._resources) {
+      const spend = await this._resources.spendBatch(costMap, { reason });
+      if (!spend.ok) {
+        session.supplyDepleted = true;
+        return { ok: true, depleted: true };
+      }
+    }
+    return { ok: true, depleted: Boolean(session.supplyDepleted) };
   }
 
   markOpeningPlayed() {
@@ -1314,6 +1352,7 @@ export class TacticalCombatEngine {
     return getGearDrivenTacticalActions(equippedMap, {
       phase: this._session.phase,
       shipType: target.shipType,
+      resupplyUsesRemaining: this._session.resupplyUsesRemaining ?? 2,
     });
   }
 
@@ -1379,7 +1418,8 @@ export class TacticalCombatEngine {
 
   /**
    * Smart gear-aware auto-delegate AI decision for the currently acting shipgirl.
-   * Strictly picks ONLY among currently unlocked gear-driven / basic commands!
+   * Strictly picks ONLY among currently unlocked gear-driven / basic commands,
+   * automatically utilizing AR/AO `field_repair` and `frontline_resupply` when needed!
    */
   pickAutoActionForActor(actor = null) {
     const session = this._session;
@@ -1390,6 +1430,26 @@ export class TacticalCombatEngine {
         .filter((a) => a.unlocked)
         .map((a) => a.id)
     );
+    const fleet = this._getFleetCombatContext(session);
+    const livingAllies = fleet.members.filter((m) => m.alive);
+    const injuredAlly = livingAllies.find((m) => m.hp / Math.max(1, m.maxHp) < 0.68);
+    const carriedAmmoRatio = session.carriedSupplies
+      ? session.carriedSupplies.ammo / Math.max(1, session.carriedSupplies.maxAmmo)
+      : 1;
+    const carriedFuelRatio = session.carriedSupplies
+      ? session.carriedSupplies.fuel / Math.max(1, session.carriedSupplies.maxFuel)
+      : 1;
+
+    // Prioritize Support Gear (AR field repair & AO frontline resupply)
+    if (injuredAlly && unlockedIds.has('field_repair')) return 'field_repair';
+    if (
+      unlockedIds.has('frontline_resupply') &&
+      (session.resupplyUsesRemaining ?? 0) > 0 &&
+      (session.supplyDepleted || carriedAmmoRatio < 0.45 || carriedFuelRatio < 0.4 || (fleet.avgMorale || 80) < 62)
+    ) {
+      return 'frontline_resupply';
+    }
+
     const aliveEnemies = session.enemies.filter((e) => e.hp > 0);
     const hasSub = aliveEnemies.some((e) => e.role === 'sub' || e.shipClass === 'SS' || e.subThreat > 0);
     const hasAirIntent = aliveEnemies.some((e) => e.nextIntent?.id === 'airstrike');
@@ -1410,12 +1470,19 @@ export class TacticalCombatEngine {
 
   /**
    * Transition from Day Battle prompt into Night Battle Pursuit!
+   * Blocked when fleet is in `supplyDepleted` (补给匮乏) state.
    */
   enterNightBattle({ rng = Math.random } = {}) {
     if (!this._session || this._session.status !== 'night_prompt') {
       return { ok: false, reason: '当前不在昼夜战转换时机' };
     }
     const session = this._session;
+    if (session.supplyDepleted) {
+      return {
+        ok: false,
+        reason: '当前处于【补给匮乏】状态（携带油弹耗尽），无法发动夜战追击！',
+      };
+    }
     session.phase = 'night';
     session.status = 'active';
     session.round += 1;
@@ -1443,7 +1510,7 @@ export class TacticalCombatEngine {
   }
 
   /**
-   * Execute ONE enemy unit's class-based AI turn when it is up next in the unified turnQueue.
+   * Execute ONE enemy unit's class-based AI turn using exact symmetric d20 roll + `50 / (50 + effArmor)` formula.
    */
   executeEnemyTurn({ rng = Math.random } = {}) {
     if (!this._session || this._session.status !== 'active') {
@@ -1468,6 +1535,8 @@ export class TacticalCombatEngine {
     let damageTaken = 0;
     let targetAlly = null;
     let text = '';
+    let enemyD20 = null;
+    let enemyIsCrit = false;
 
     if (intent.id === 'enemy_guard') {
       const comrade =
@@ -1476,13 +1545,12 @@ export class TacticalCombatEngine {
         en;
       en.guardingEnemyId = comrade.id;
       en.guardTurns = 2;
-      en.armorBraceBonus = Math.max(en.armorBraceBonus || 0, 3);
-      text = `【敌方重巡援护】[${en.shipClass}]${en.name} 前出掩护「${comrade.name}」（2回合分担 50% 伤害 · 护甲 +3）！`;
+      en.armorBraceBonus = Math.max(en.armorBraceBonus || 0, 6);
+      text = `【敌方重巡援护】[${en.shipClass}]${en.name} 前出掩护「${comrade.name}」（2回合分担 50% 伤害 · 护甲 +6）！`;
     } else if (intent.id === 'brace_armor') {
-      en.armorBraceBonus = Math.max(en.armorBraceBonus || 0, 4);
-      text = `【敌方装甲强化】[${en.shipClass}]${en.name} 收缩阵型强化护甲（护甲 +4）！`;
+      en.armorBraceBonus = Math.max(en.armorBraceBonus || 0, 8);
+      text = `【敌方装甲强化】[${en.shipClass}]${en.name} 收缩阵型强化护甲（护甲 +8）！`;
     } else {
-      // Honor pre-telegraphed locked target if still alive, else smart re-pick (free all-grid targeting)
       targetAlly =
         livingAllies.find((m) => m.id === intent.targetAllyId) ||
         selectSmartAllyTarget(livingAllies, en, rng);
@@ -1518,23 +1586,38 @@ export class TacticalCombatEngine {
         }
       }
 
-      const skillMult =
-        intent.id === 'salvo'
-          ? 1.2
-          : intent.id === 'airstrike'
-          ? 1.12
-          : intent.id === 'torpedo_ambush' || intent.id === 'torpedo_salvo'
-          ? 1.15
-          : intent.id === 'focus_fire'
-          ? 1.08
-          : 1.0;
+      // Symmetric d20 Hit / Graze / Crit roll for enemy attack
+      const allyEvaEff =
+        (targetAlly.evasion || 20) * (session.supplyDepleted ? 0.75 : 1) +
+        (session.smokeTurns > 0 ? 14 : 0) +
+        (session.evasionBuffTurns > 0 ? 10 : 0);
+      const enemyAcc = Math.round((en.attackPower || 20) * 0.65 + (en.evasion || 20) * 0.35);
+      const extraEnemyMod = (en.suppressedTurns > 0 ? -3 : 0) + (rangeRowMod.hitMod || 0);
+      enemyD20 = resolveD20CombatRoll({
+        attackerAcc: enemyAcc,
+        defenderEva: allyEvaEff,
+        commanderLuck: 0,
+        extraMod: extraEnemyMod,
+        rng,
+      });
+      enemyIsCrit = enemyD20.isCrit;
 
-      let rawAtk = en.attackPower * skillMult * rangeRowMod.dmgMult;
-      if (en.suppressedTurns > 0) rawAtk *= 0.65;
-      if (session.smokeTurns > 0) rawAtk *= 0.62;
-      if (session.evasionBuffTurns > 0) rawAtk *= 0.72;
+      let skillMult =
+        intent.id === 'salvo'
+          ? 1.15
+          : intent.id === 'airstrike'
+          ? 1.08
+          : intent.id === 'torpedo_ambush' || intent.id === 'torpedo_salvo'
+          ? 1.12
+          : intent.id === 'focus_fire'
+          ? 1.05
+          : 0.96;
+
+      if (en.suppressedTurns > 0) skillMult *= 0.72;
+      if (session.smokeTurns > 0) skillMult *= 0.72;
+      if (session.evasionBuffTurns > 0) skillMult *= 0.78;
       if (session.phase === 'night' && (intent.id === 'torpedo_ambush' || intent.id === 'torpedo_salvo')) {
-        rawAtk *= 1.18;
+        skillMult *= 1.15;
       }
 
       let auraAaNote = '';
@@ -1545,41 +1628,56 @@ export class TacticalCombatEngine {
             orig &&
             Math.abs((targetAlly.gridRow ?? 0) - orig.row) <= 1 &&
             Math.abs((targetAlly.gridCol ?? 0) - orig.col) <= 1;
-          rawAtk *= inShieldNet ? 0.34 : 0.48;
-          if (inShieldNet) auraAaNote = '（防空警戒网邻格护盾 -66%）';
+          skillMult *= inShieldNet ? 0.38 : 0.55;
+          if (inShieldNet) auraAaNote = '（防空警戒网邻格护盾 -62%）';
         }
         if (escortAura.aaReduction > 0) {
-          rawAtk *= 1 - escortAura.aaReduction;
+          skillMult *= 1 - escortAura.aaReduction;
           auraAaNote = auraAaNote || `（同排/邻格防空减伤 -${Math.round(escortAura.aaReduction * 100)}%）`;
         }
         const aaRes = computeOpeningAirstrikeOutcome({
-          attackerAirPower: Math.max(40, en.attackPower * 2.5),
-          defenderAa: freshFleet.effective?.aa || 45,
+          attackerAirPower: Math.max(18, en.attackPower * 1.4),
+          defenderAa: freshFleet.effective?.aa || 22,
           aaAlertActive: session.aaAlertTurns > 0,
           rng,
         });
-        rawAtk *= clamp(aaRes.passThrough + 0.18, 0.36, 1.05);
+        skillMult *= clamp(aaRes.passThrough + 0.2, 0.42, 1.0);
       } else if (intent.id === 'torpedo_ambush' || intent.id === 'torpedo_salvo') {
-        const aswFactor = clamp(1 - (freshFleet.effective?.asw || 40) * 0.0032, 0.52, 1.0);
-        rawAtk *= aswFactor;
+        const aswFactor = clamp(1 - (freshFleet.effective?.asw || 20) * 0.004, 0.58, 1.0);
+        skillMult *= aswFactor;
       }
 
-      const armorPen = intent.id === 'torpedo_ambush' || intent.id === 'airstrike' ? 0.55 : 0.15;
-      const effAllyArmor = (targetAlly.armor || 30) * (1 - armorPen);
-      const armorMit = clamp(1 - effAllyArmor * 0.0045, 0.52, 0.96);
-      const dmg = Math.max(3, Math.round(rawAtk * armorMit));
+      const armorPen =
+        intent.id === 'torpedo_ambush' || intent.id === 'torpedo_salvo'
+          ? 0.4
+          : intent.id === 'salvo' || intent.id === 'heavy_shelling'
+          ? 0.35
+          : intent.id === 'airstrike'
+          ? 0.35
+          : 0.15;
+
+      const dmgRes = computeSymmetricDamage({
+        attack: Math.max(8, en.attackPower * 0.72),
+        armor: targetAlly.armor || 16,
+        armorPen,
+        skillMult,
+        rangeMult: rangeRowMod.dmgMult,
+        rollMult: enemyD20.rollMult,
+      });
+      const dmg = dmgRes.damage;
+      const rollTag = `1d20(${enemyD20.die})${enemyD20.modifier >= 0 ? '+' : ''}${enemyD20.modifier}=${enemyD20.total}·${enemyD20.tierLabel}`;
 
       if (guardedBy) {
-        const sharedDmg = Math.max(2, Math.round(dmg * guardShareRatio));
-        const residualDmg = Math.max(1, Math.round(dmg * (1 - guardShareRatio - 0.15)));
+        const sharedDmg = Math.max(1, Math.round(dmg * guardShareRatio));
+        const residualDmg = Math.max(1, Math.round(dmg * (1 - guardShareRatio - 0.12)));
         this._entities.adjustStat(guardedBy.id, 'hp', -sharedDmg, { min: 0, max: guardedBy.maxHp });
         this._entities.adjustStat(targetAlly.id, 'hp', -residualDmg, { min: 0, max: targetAlly.maxHp });
         damageTaken = sharedDmg + residualDmg;
-        text = `【敌方行动】[${en.shipClass}]${en.name} 发动【${intent.label}】瞄准「${targetAlly.name}」${auraAaNote}→「${guardedBy.name}」${guardSourceLabel}分担伤害（${guardedBy.name} -${sharedDmg} / ${targetAlly.name} -${residualDmg}）！`;
+        text = `【敌方行动】[${en.shipClass}]${en.name}【${intent.label}】(${rollTag}) 瞄准「${targetAlly.name}」${auraAaNote}→「${guardedBy.name}」${guardSourceLabel}分担（${guardedBy.name} -${sharedDmg} / ${targetAlly.name} -${residualDmg}）！`;
       } else {
         this._entities.adjustStat(targetAlly.id, 'hp', -dmg, { min: 0, max: targetAlly.maxHp });
         damageTaken = dmg;
-        text = `【敌方行动】[${en.shipClass}]${en.name} 发动【${intent.label}】命中「${targetAlly.name}」${auraAaNote}（${rangeRowMod.label}），造成 ${dmg} 点伤害！`;
+        text = `【敌方行动】[${en.shipClass}]${en.name}【${intent.label}】(${rollTag}) 攻击「${targetAlly.name}」${auraAaNote}（${rangeRowMod.label}），造成 ${dmg} 点${enemyIsCrit ? '暴击' : enemyD20.tier === 'graze' ? '擦伤' : ''}伤害！`;
       }
     }
 
@@ -1619,13 +1717,14 @@ export class TacticalCombatEngine {
       targetAllyName: targetAlly?.name || null,
       targetEnemyId: en.id,
       targetEnemyName: en.name,
-      outcomeTag: 'enemy-action',
+      outcomeTag: enemyD20?.tier === 'graze' ? 'enemy-graze' : enemyIsCrit ? 'enemy-crit' : 'enemy-action',
       text,
       source: 'local',
       degraded: false,
       damageDealt: 0,
       damageTaken,
-      isCrit: false,
+      isCrit: enemyIsCrit,
+      d20Roll: enemyD20,
       roundCompleted,
       enteredNightPrompt,
       enemyCounterEvents: [],
@@ -1644,6 +1743,7 @@ export class TacticalCombatEngine {
       intentLabel: intent.label,
       targetAllyId: targetAlly?.id || null,
       damage: damageTaken,
+      d20Roll: enemyD20,
     });
 
     return {
@@ -1731,22 +1831,20 @@ export class TacticalCombatEngine {
       }
     }
 
-    // 1. Spend per-action resource cost (discounted by Commander `dispatch`)
+    // 1. Deduct per-action cost from carried sortie supplies (never soft-locks; activates supplyDepleted at 0)
     const dispatchDisc = this._commander ? this._commander.getSortieStepDiscount() : 0;
     const costScale = Math.max(0.55, 1 - dispatchDisc);
-    const costMap = {};
-    if (actionDef.cost?.fuel > 0) costMap.fuel = Math.max(1, Math.round(actionDef.cost.fuel * costScale));
-    if (actionDef.cost?.ammo > 0) costMap.ammo = Math.max(2, Math.round(actionDef.cost.ammo * costScale));
-    if (Object.keys(costMap).length > 0) {
-      const spend = await this._resources.spendBatch(costMap, {
+    const fuelSpend = actionDef.cost?.fuel > 0 ? Math.max(1, Math.round(actionDef.cost.fuel * costScale)) : 0;
+    const ammoSpend = actionDef.cost?.ammo > 0 ? Math.max(1, Math.round(actionDef.cost.ammo * costScale)) : 0;
+    if (fuelSpend > 0 || ammoSpend > 0) {
+      await this._consumeCombatSupplies(session, {
+        fuel: fuelSpend,
+        ammo: ammoSpend,
         reason: `[${actor.name}] 战术指令「${actionDef.label}」`,
       });
-      if (!spend.ok) {
-        return { ok: false, reason: spend.reason };
-      }
     }
 
-    // 2. Perform 1D20 check (with free all-grid range-row hit & damage modifiers)
+    // 2. Perform 1D20 roll (exact symmetric hit/graze/crit + smooth 50/(50+effArmor) for offensive actions)
     const seaMods = session.seaCondition?.mods || {};
     const cmdTactics = this._commander ? this._commander.getTacticsCheckBonus() : 0;
     const cmdLuckFx = this._commander ? this._commander.getLuckEffects() : { luck: 0, edgeCheckMod: 0 };
@@ -1754,6 +1852,7 @@ export class TacticalCombatEngine {
     const eqBonus = this._inventory ? this._inventory.getCharacterEquipmentBonuses(actor.id).checkBonus : 0;
     const classProfile = getShipClassProfile(actor.shipType);
     const isNight = session.phase === 'night';
+    const depletedMult = session.supplyDepleted ? 0.75 : 1.0;
 
     const rangeRowMod = computeRangeRowCombatModifiers({
       engagementRange: session.range,
@@ -1773,54 +1872,61 @@ export class TacticalCombatEngine {
       actionId === 'tactical_shelling' ||
       actionId === 'carrier_airstrike';
 
-    let statVal = Number(actor[actionDef.statKey] ?? 50);
-    let dc = session.enemy.shellingDc || 13;
+    let statVal = Number(actor[actionDef.statKey] ?? 24);
+    let dc = session.enemy.shellingDc || 12;
     let extraMod =
       (seaMods.checkBonus || 0) +
       cmdTactics +
       session.lockOnBonus +
-      (isOffensiveAction ? rangeRowMod.hitMod : 0);
+      Math.round(eqBonus) +
+      (isOffensiveAction ? rangeRowMod.hitMod : 0) +
+      (session.supplyDepleted && isOffensiveAction ? -2 : 0);
 
     if (actionId === 'radar_scan' || actionId === 'carrier_recon') {
-      dc = (session.enemy.scanDc || 13) + (seaMods.scanDcDelta || 0);
+      dc = (session.enemy.scanDc || 12) + (seaMods.scanDcDelta || 0);
       if (classProfile.code === 'CL') extraMod += classProfile.combat.scanCheckBonus || 2;
       if (classProfile.code === 'CV') extraMod += 2;
     } else if (actionId === 'evade_maneuver' || actionId === 'evade_retreat' || actionId === 'full_ahead' || actionId === 'smoke_screen') {
-      dc = session.enemy.evadeDc || 13;
+      dc = session.enemy.evadeDc || 12;
       extraMod += (seaMods.evadeBonus || 0);
     } else if (actionId === 'torpedo_strike') {
-      dc = session.enemy.torpedoDc || 14;
+      dc = session.enemy.torpedoDc || 13;
       extraMod += (cmdLuckFx.edgeCheckMod || 0) + (isNight ? 3 : 0);
     } else if (actionId === 'depth_asw') {
-      dc = 12;
+      dc = 11;
       extraMod += targetEnemy.role === 'sub' || targetEnemy.shipClass === 'SS' || targetEnemy.subThreat > 0 || (targetEnemy.stealth || 0) >= 22 ? 4 : 1;
     } else if (actionId === 'carrier_airstrike') {
       statVal = Math.round(actor.firepower * 0.65 + actor.recon * 0.55);
-      dc = session.enemy.shellingDc || 13;
+      dc = session.enemy.shellingDc || 12;
     }
 
-    const checkResult = this._statRules.performCheck({
-      actorId: actor.id,
-      actorName: actor.name,
-      statKey: actionDef.statKey,
-      baseStatValue: statVal,
-      effectiveStatValue: statVal,
-      equipmentCheckBonus: eqBonus,
-      moraleValue: actor.morale ?? 70,
-      dc,
-      extraModifier: extraMod,
+    const allyD20 = resolveD20CombatRoll({
+      attackerAcc: Math.round((statVal * 0.7 + (actor.recon || 18) * 0.3) * depletedMult),
+      defenderEva: Math.round(targetEnemy.evasion || 20),
       commanderLuck: cmdLuck,
+      extraMod,
       rng,
     });
 
-    const isSuccess = checkResult.outcome === 'crit-success' || checkResult.outcome === 'success';
-    const isCritRoll = checkResult.outcome === 'crit-success';
+    const checkResult = {
+      die: allyD20.die,
+      modifier: allyD20.modifier,
+      total: allyD20.total,
+      dc: 11,
+      outcome: allyD20.isCrit ? 'crit-success' : allyD20.tier === 'hit' ? 'success' : 'failure',
+      tier: allyD20.tier,
+      tierLabel: allyD20.tierLabel,
+      rollMult: allyD20.rollMult,
+    };
+
+    const isSuccess = allyD20.tier === 'hit' || allyD20.tier === 'crit';
     const critChanceBonus =
-      (session.reconCritTurns > 0 ? 0.2 : 0) +
-      (session.range === ENGAGEMENT_RANGES.CLOSE && actionId === 'torpedo_strike' ? 0.15 : 0) +
-      (isNight && (actionId === 'torpedo_strike' || actionId === 'heavy_shelling' || actionId === 'tactical_shelling' || actionId === 'main_salvo') ? 0.25 : 0) +
+      (session.reconCritTurns > 0 ? 0.16 : 0) +
+      (session.range === ENGAGEMENT_RANGES.CLOSE && actionId === 'torpedo_strike' ? 0.12 : 0) +
+      (isNight && (actionId === 'torpedo_strike' || actionId === 'heavy_shelling' || actionId === 'tactical_shelling' || actionId === 'main_salvo') ? 0.18 : 0) +
       (fleet.formationMods?.critBonus || 0);
-    const isCrit = isCritRoll || (isSuccess && rng() < critChanceBonus);
+    const isCrit = allyD20.isCrit || (isSuccess && rng() < critChanceBonus);
+    const effectiveRollMult = isCrit ? 1.5 : allyD20.rollMult;
 
     // 3. Resolve action effect!
     let damageDealt = 0;
@@ -1834,42 +1940,96 @@ export class TacticalCombatEngine {
 
     const nightDmgMult =
       isNight && actionId === 'torpedo_strike'
-        ? 1.45
+        ? 1.38
         : isNight && (actionId === 'tactical_shelling' || actionId === 'heavy_shelling' || actionId === 'main_salvo' || actionId === 'basic_fire')
-        ? 1.25
+        ? 1.22
         : isNight && actionId === 'carrier_airstrike'
         ? 0.86
         : 1.0;
 
-    if (actionId === 'radar_scan' || actionId === 'carrier_recon') {
+    if (actionId === 'field_repair') {
+      const livingAllies = fleet.members.filter((m) => m.alive);
+      const injuredSorted = [...livingAllies].sort(
+        (a, b) => a.hp / Math.max(1, a.maxHp) - b.hp / Math.max(1, b.maxHp)
+      );
+      const healTarget = injuredSorted[0] || actor;
+      const arBonus = classProfile.code === 'AR' ? 0.16 : 0;
+      const healRatio = 0.28 + arBonus + (isCrit ? 0.12 : 0);
+      const healAmt = Math.max(8, Math.round(healTarget.maxHp * healRatio + (actor.armor || 16) * 0.2));
+      const beforeHp = healTarget.hp;
+      const afterHp = this._entities.adjustStat(healTarget.id, 'hp', healAmt, { min: 0, max: healTarget.maxHp });
+      const actualHeal = Math.max(0, Math.round(afterHp - beforeHp));
+      outcomeTag = 'support-repair';
+      extraEvents.push(
+        `紧急抢修「${healTarget.name}」恢复 ${actualHeal} HP（${Math.round(afterHp)}/${healTarget.maxHp}）${classProfile.code === 'AR' ? ' · 维修舰专精加成' : ''}`
+      );
+      this._emit('fx:play', {
+        type: 'float-text',
+        payload: { text: `抢修 ${healTarget.name} +${actualHeal} HP`, tone: 'ok' },
+      });
+    } else if (actionId === 'frontline_resupply') {
+      if ((session.resupplyUsesRemaining ?? 0) <= 0) {
+        return { ok: false, reason: '本次出征「前线补给」次数已用尽（需返港补满）' };
+      }
+      session.resupplyUsesRemaining = Math.max(0, (session.resupplyUsesRemaining ?? 2) - 1);
+      const aoBonus = classProfile.code === 'AO' ? 1.25 : 1.0;
+      let fuelGain = 0;
+      let ammoGain = 0;
+      if (session.carriedSupplies) {
+        const addFuel = Math.round(Math.max(28, session.carriedSupplies.maxFuel * 0.34) * aoBonus);
+        const addAmmo = Math.round(Math.max(32, session.carriedSupplies.maxAmmo * 0.38) * aoBonus);
+        const prevF = session.carriedSupplies.fuel;
+        const prevA = session.carriedSupplies.ammo;
+        session.carriedSupplies.fuel = Math.min(session.carriedSupplies.maxFuel, prevF + addFuel);
+        session.carriedSupplies.ammo = Math.min(session.carriedSupplies.maxAmmo, prevA + addAmmo);
+        fuelGain = session.carriedSupplies.fuel - prevF;
+        ammoGain = session.carriedSupplies.ammo - prevA;
+        session.supplyDepleted =
+          session.carriedSupplies.fuel <= 0 || session.carriedSupplies.ammo <= 0;
+      }
+      const moraleBoost = Math.round(12 * aoBonus);
+      for (const m of fleet.members) {
+        if (m.alive) {
+          this._entities.adjustStat(m.id, 'morale', moraleBoost, { min: 0, max: 100 });
+        }
+      }
+      outcomeTag = 'support-resupply';
+      extraEvents.push(
+        `前线补给生效：携带油 +${fuelGain}、弹 +${ammoGain}、全队士气 +${moraleBoost}（剩余 ${session.resupplyUsesRemaining}/2 次）${classProfile.code === 'AO' ? ' · 补给舰专精加成' : ''}`
+      );
+      this._emit('fx:play', {
+        type: 'float-text',
+        payload: { text: `前线补给 油+${fuelGain} 弹+${ammoGain}`, tone: 'ok' },
+      });
+    } else if (actionId === 'radar_scan' || actionId === 'carrier_recon') {
       scannedNow = true;
       for (const en of session.enemies) {
         en.scanned = true;
       }
-      session.lockOnBonus = Math.min(8, session.lockOnBonus + (isCrit ? 5 : 4));
+      session.lockOnBonus = Math.min(6, session.lockOnBonus + (isCrit ? 3 : 2));
       if (actionId === 'carrier_recon' || isCrit) {
         session.reconCritTurns = Math.max(session.reconCritTurns, 2);
-        extraEvents.push('全队暴击率 +20%（2回合）');
+        extraEvents.push('全队暴击率 +16%（2回合）');
       }
       outcomeTag = 'scan-ok';
       this._emit('combat:scan', { success: true, label: `雷达校射锁定 +${session.lockOnBonus}` });
-      extraEvents.push(`敌舰意图与弱点已全面揭露 · 全队命中锁定 +${session.lockOnBonus}`);
+      extraEvents.push(`敌舰意图与弱点已全面揭露 · 全队命中修正 +${session.lockOnBonus}`);
     } else if (actionId === 'smoke_screen') {
       session.smokeTurns = Math.max(session.smokeTurns, isCrit ? 3 : 2);
       outcomeTag = 'buff-smoke';
-      extraEvents.push(`全队烟幕屏障生效（${session.smokeTurns}回合 · 敌方伤害 -38%）`);
+      extraEvents.push(`全队烟幕屏障生效（${session.smokeTurns}回合 · 敌方命中与伤害大幅下降）`);
       this._emit('fx:play', { type: 'float-text', payload: { text: '烟幕展开 · 全队闪避UP', tone: 'ok' } });
     } else if (actionId === 'aa_alert') {
       session.aaAlertTurns = Math.max(session.aaAlertTurns, isCrit ? 3 : 2);
       session.aaShieldOrigin = { row: actor.gridRow ?? 0, col: actor.gridCol ?? 0, actorId: actor.id };
       outcomeTag = 'buff-aa';
-      extraEvents.push(`「${actor.name}」展开防空警戒网（${session.aaAlertTurns}回合 · 自身及邻格队友空袭减伤 -66%）`);
+      extraEvents.push(`「${actor.name}」展开防空警戒网（${session.aaAlertTurns}回合 · 自身及邻格队友空袭减伤 -62%）`);
       this._emit('fx:play', { type: 'float-text', payload: { text: '防空警戒网护盾开启', tone: 'ok' } });
     } else if (actionId === 'vanguard_guard') {
       session.guardActorId = actor.id;
       session.guardTurns = Math.max(session.guardTurns, isCrit ? 3 : 2);
       outcomeTag = 'buff-guard';
-      extraEvents.push(`「${actor.name}」进入前排援护（${session.guardTurns}回合 · 为残血队友分担 60% 伤害）`);
+      extraEvents.push(`「${actor.name}」进入前排援护（${session.guardTurns}回合 · 为残血队友分担 55% 伤害）`);
       this._emit('fx:play', { type: 'float-text', payload: { text: `${actor.name} 前排援护`, tone: 'ok' } });
     } else if (actionId === 'full_ahead') {
       if (session.range === ENGAGEMENT_RANGES.LONG) {
@@ -1904,8 +2064,8 @@ export class TacticalCombatEngine {
         outcomeTag = 'maneuver-evade';
         extraEvents.push(
           rangeChangedTo
-            ? `机动调整站位至【${rangeChangedTo}】并强化全队闪避减伤（2回合 -28%）`
-            : '执行高机动规避演练（2回合全队闪避减伤 -28%）'
+            ? `机动调整站位至【${rangeChangedTo}】并强化全队闪避减伤（2回合）`
+            : '执行高机动规避演练（2回合全队闪避减伤）'
         );
       }
       this._emit('fx:play', { type: 'float-text', payload: { text: rangeChangedTo ? `调距 → ${rangeChangedTo}` : '机动规避 UP', tone: 'accent' } });
@@ -1919,83 +2079,94 @@ export class TacticalCombatEngine {
         outcomeTag = session.enemy.forcedEngagement ? 'evade-boss-buff' : 'evade-fail';
         extraEvents.push(
           session.enemy.forcedEngagement
-            ? 'BOSS 封锁无法撤离，转为规避机动（2回合减伤 30%）'
+            ? 'BOSS 封锁无法绕过（可点击右上角「安全撤退」），转为规避机动'
             : '脱离未完全甩开敌舰，已获得 2 回合机动减伤'
         );
       }
     } else {
-      const effectiveArmor = Math.max(0, targetEnemy.armor + (targetEnemy.armorBraceBonus || 0));
+      // Exact Symmetric Smooth Armor Formula: effectiveAttack * (50 / (50 + effectiveArmor)) * skillMult * rangeMult * rollMult
+      const rawEnemyArmor = Math.max(0, targetEnemy.armor + (targetEnemy.armorBraceBonus || 0));
       let armorPen = 0.15;
-      let basePower = statVal * 0.62;
-      let critMult = 1.6;
+      let effectiveAttack = (actor.firepower || 20) * depletedMult;
+      let skillMult = 1.0;
       let weakBonus = 1.0;
 
       if (actionId === 'basic_fire') {
-        armorPen = 0.12;
-        basePower = actor.firepower * 0.52;
-        critMult = 1.45;
-        if (targetEnemy.weakness === 'shelling') weakBonus = 1.1;
+        armorPen = 0.15;
+        effectiveAttack = Math.max(actor.firepower || 16, (actor.torpedo || 14) * 0.85) * depletedMult;
+        skillMult = 0.82;
+        if (targetEnemy.weakness === 'shelling') weakBonus = 1.08;
       } else if (actionId === 'torpedo_strike') {
-        armorPen = classProfile.code === 'DD' || classProfile.code === 'SS' ? 0.6 : 0.45;
-        basePower = actor.torpedo * 0.74 + session.lockOnBonus * 2.5;
-        critMult = classProfile.code === 'DD' || classProfile.code === 'SS' ? 2.05 : 1.8;
-        if (targetEnemy.weakness === 'torpedo') weakBonus = 1.3;
+        armorPen = 0.4; // Torpedo ignores 40% effective armor
+        effectiveAttack = ((actor.torpedo || 20) + session.lockOnBonus * 1.5) * depletedMult;
+        skillMult = classProfile.code === 'DD' || classProfile.code === 'SS' ? 1.24 : 1.12;
+        if (targetEnemy.weakness === 'torpedo') weakBonus = 1.22;
       } else if (actionId === 'depth_asw') {
-        armorPen = 0.82;
-        basePower = actor.asw * 0.74;
+        armorPen = 0.55;
+        effectiveAttack = (actor.asw || 20) * depletedMult;
         const isSubOrStealth =
           targetEnemy.role === 'sub' ||
           targetEnemy.shipClass === 'SS' ||
           targetEnemy.subThreat > 0 ||
           (targetEnemy.stealth || 0) >= 22;
-        weakBonus = isSubOrStealth ? (classProfile.code === 'DD' ? 2.15 : 1.85) : 0.8;
+        skillMult = isSubOrStealth ? (classProfile.code === 'DD' ? 1.65 : 1.45) : 0.82;
         if (isSubOrStealth) {
-          targetEnemy.stealth = Math.max(0, (targetEnemy.stealth || 0) - 15);
-          extraEvents.push('声呐深弹精准锁定水下/隐蔽目标，造成巨额反潜重创！');
+          targetEnemy.stealth = Math.max(0, (targetEnemy.stealth || 0) - 12);
+          extraEvents.push('声呐深弹精准锁定水下/隐蔽目标，造成反潜重创！');
         }
       } else if (actionId === 'main_salvo') {
-        armorPen = 0.5;
-        basePower = actor.firepower * 0.78;
-        critMult = 1.85;
-        if (targetEnemy.weakness === 'shelling') weakBonus = 1.25;
+        armorPen = 0.35; // Main gun AP ignores 35% effective armor
+        effectiveAttack = (actor.firepower || 22) * depletedMult;
+        skillMult = 1.2;
+        if (targetEnemy.weakness === 'shelling') weakBonus = 1.18;
       } else if (actionId === 'fire_suppress') {
         armorPen = 0.35;
-        basePower = actor.firepower * 0.58;
+        effectiveAttack = (actor.firepower || 20) * depletedMult;
+        skillMult = 0.92;
         targetEnemy.suppressedTurns = Math.max(targetEnemy.suppressedTurns, 2);
-        extraEvents.push(`「${targetEnemy.name}」陷入火力压制（2回合攻击与命中 -35%）`);
+        extraEvents.push(`「${targetEnemy.name}」陷入火力压制（2回合攻击与命中大幅下降）`);
       } else if (actionId === 'heavy_shelling') {
-        armorPen = 0.32;
-        basePower = actor.firepower * 0.68;
-        if (targetEnemy.weakness === 'shelling') weakBonus = 1.25;
+        armorPen = 0.35;
+        effectiveAttack = (actor.firepower || 22) * depletedMult;
+        skillMult = 1.12;
+        if (targetEnemy.weakness === 'shelling') weakBonus = 1.18;
       } else if (actionId === 'tactical_shelling') {
-        armorPen = 0.22;
-        basePower = actor.firepower * 0.6;
-        if (targetEnemy.weakness === 'shelling') weakBonus = 1.2;
+        armorPen = 0.35;
+        effectiveAttack = (actor.firepower || 20) * depletedMult;
+        skillMult = 1.04;
+        if (targetEnemy.weakness === 'shelling') weakBonus = 1.15;
       } else if (actionId === 'carrier_airstrike') {
-        armorPen = 0.92;
-        basePower = (actor.firepower * 0.55 + actor.recon * 0.58) * 0.88;
-        const enemyAaMit = clamp(1 - ((targetEnemy.aa || 40) * 0.0042 + (targetEnemy.airThreat || 0) * 0.0075), 0.55, 1.0);
-        basePower *= enemyAaMit;
-        if (targetEnemy.weakness === 'aa') weakBonus = 1.3;
+        armorPen = 0.45;
+        effectiveAttack = ((actor.firepower || 20) * 0.65 + (actor.recon || 20) * 0.5) * depletedMult;
+        const enemyAaMit = clamp(50 / (50 + (targetEnemy.aa || 22) * 0.45), 0.62, 1.0);
+        skillMult = 1.2 * enemyAaMit;
+        if (targetEnemy.weakness === 'aa') weakBonus = 1.22;
       }
 
+      if (session.supplyDepleted) {
+        extraEvents.push('⚠ 补给匮乏（攻防机动 -25%）');
+      }
       if (rangeRowMod.dmgMult !== 1.0) {
         extraEvents.push(`${rangeRowMod.label}（伤害 x${rangeRowMod.dmgMult.toFixed(2)}）`);
       }
 
-      const mitigatedArmor = effectiveArmor * (1 - armorPen);
-      const rollFactor = isSuccess ? 1.05 : 0.68;
-      let rawDmg = (basePower - mitigatedArmor) * rollFactor * calcRangeMult() * nightDmgMult * weakBonus * seaDmgMult;
-      if (isCrit) rawDmg *= critMult;
-      damageDealt = Math.max(8, Math.round(rawDmg));
+      const dmgRes = computeSymmetricDamage({
+        attack: effectiveAttack,
+        armor: rawEnemyArmor,
+        armorPen,
+        skillMult: skillMult * nightDmgMult * weakBonus * seaDmgMult,
+        rangeMult: calcRangeMult(),
+        rollMult: effectiveRollMult,
+      });
+      damageDealt = dmgRes.damage;
 
       // Check if an enemy CA is actively guarding `targetEnemy`!
       const enemyGuardian = session.enemies.find(
         (e) => e.hp > 0 && e.id !== targetEnemy.id && e.guardTurns > 0 && e.guardingEnemyId === targetEnemy.id
       );
       if (enemyGuardian && actionId !== 'depth_asw' && actionId !== 'carrier_airstrike') {
-        const absorbDmg = Math.max(4, Math.round(damageDealt * 0.5));
-        const passDmg = Math.max(3, damageDealt - absorbDmg);
+        const absorbDmg = Math.max(1, Math.round(damageDealt * 0.5));
+        const passDmg = Math.max(1, damageDealt - absorbDmg);
         enemyGuardian.hp = Math.max(0, enemyGuardian.hp - absorbDmg);
         targetEnemy.hp = Math.max(0, targetEnemy.hp - passDmg);
         extraEvents.push(`敌重巡「${enemyGuardian.name}」前排援护挡下 ${absorbDmg} 点伤害`);
@@ -2012,8 +2183,10 @@ export class TacticalCombatEngine {
       this._emit('combat:hit', {
         damage: damageDealt,
         crit: isCrit,
+        graze: allyD20.tier === 'graze',
         weapon: actionDef.visualStyle,
         targetId: targetEnemy.id,
+        d20Roll: allyD20,
       });
     }
 
@@ -2094,12 +2267,13 @@ export class TacticalCombatEngine {
     const counterSummary = enemyCounterEvents.length
       ? ` 【敌方插队反击】${enemyCounterEvents.map((e) => e.text).join('；')}。`
       : '';
+    const rollSummary = `1d20(${allyD20.die})${allyD20.modifier >= 0 ? '+' : ''}${allyD20.modifier}=${allyD20.total}·${isCrit ? '暴击' : allyD20.tierLabel}`;
 
     let localTemplate = '';
     if (damageDealt > 0) {
-      localTemplate = `${actorSpeech ? `${actorSpeech} ` : ''}[${classProfile.code}]${actor.name} 对「${targetEnemy.name}」执行【${actionDef.label}】（${RANGE_META[session.range]?.label || ''} · ${checkResult.total} vs DC ${checkResult.dc}），造成 ${damageDealt} 点${isCrit ? '暴击' : ''}伤害！${extraSummary}${counterSummary}`;
+      localTemplate = `${actorSpeech ? `${actorSpeech} ` : ''}[${classProfile.code}]${actor.name} 对「${targetEnemy.name}」执行【${actionDef.label}】（${RANGE_META[session.range]?.label || ''} · ${rollSummary}），造成 ${damageDealt} 点${isCrit ? '暴击' : allyD20.tier === 'graze' ? '擦伤' : ''}伤害！${extraSummary}${counterSummary}`;
     } else {
-      localTemplate = `${actorSpeech ? `${actorSpeech} ` : ''}[${classProfile.code}]${actor.name} 执行【${actionDef.label}】（${checkResult.total} vs DC ${checkResult.dc}）。${extraSummary}${counterSummary}`;
+      localTemplate = `${actorSpeech ? `${actorSpeech} ` : ''}[${classProfile.code}]${actor.name} 执行【${actionDef.label}】。${extraSummary}${counterSummary}`;
     }
 
     const contextMeta =
@@ -2153,6 +2327,7 @@ export class TacticalCombatEngine {
       damageDealt,
       damageTaken: totalDamageTaken,
       isCrit,
+      d20Roll: allyD20,
       scannedNow,
       rangeAfter: session.range,
       rangeChangedTo,

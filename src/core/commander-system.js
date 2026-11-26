@@ -427,6 +427,33 @@ export class CommanderSystem {
   }
 
   /**
+   * Combined Logistics capability (dispatch + maintenance) governing carried sortie oil/ammo caps.
+   */
+  getLogisticsScore() {
+    const dispatch = Number(this._state.stats?.dispatch ?? 10) || 10;
+    const maintenance = Number(this._state.stats?.maintenance ?? 10) || 10;
+    return Math.round(dispatch * 0.65 + maintenance * 0.35);
+  }
+
+  /**
+   * Compute maximum carried Fuel & Ammo for a single sortie based on Commander Logistics,
+   * Port logistics facility upgrades, and Supply Ships (AO) in the active fleet.
+   */
+  getCarriedSupplyCaps({ aoCount = 0, logisticsBonus = 0 } = {}) {
+    const logScore = this.getLogisticsScore();
+    const ao = Math.max(0, Math.floor(Number(aoCount) || 0));
+    const bonus = Math.max(0, Math.round(Number(logisticsBonus) || 0));
+    const maxFuel = Math.round(220 + logScore * 14 + ao * 160 + bonus);
+    const maxAmmo = Math.round(220 + logScore * 14 + ao * 160 + bonus);
+    return {
+      logisticsScore: logScore,
+      aoCount: ao,
+      maxFuel,
+      maxAmmo,
+    };
+  }
+
+  /**
    * Grant Commander EXP (from sortie node clear or expedition completion).
    * Automatically handles multi-level ups and awards free stat points.
    */

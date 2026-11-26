@@ -36,14 +36,157 @@ export const CUSTOM_BUFF_TYPE_MAP = Object.freeze(
 );
 
 const SHIP_TYPE_BASE_TEMPLATES = {
-  驱逐舰: { maxHp: 76, firepower: 44, armor: 34, torpedo: 74, evasion: 76, recon: 60, aa: 54, asw: 74 },
-  轻巡洋舰: { maxHp: 92, firepower: 58, armor: 50, torpedo: 56, evasion: 64, recon: 70, aa: 68, asw: 64 },
-  重巡洋舰: { maxHp: 112, firepower: 72, armor: 68, torpedo: 46, evasion: 54, recon: 62, aa: 60, asw: 36 },
-  战列舰: { maxHp: 135, firepower: 88, armor: 84, torpedo: 10, evasion: 36, recon: 48, aa: 68, asw: 20 },
-  航空母舰: { maxHp: 118, firepower: 64, armor: 60, torpedo: 20, evasion: 50, recon: 84, aa: 82, asw: 38 },
-  潜艇: { maxHp: 56, firepower: 28, armor: 26, torpedo: 86, evasion: 70, recon: 58, aa: 20, asw: 44 },
-  工作舰: { maxHp: 88, firepower: 24, armor: 46, torpedo: 12, evasion: 42, recon: 66, aa: 56, asw: 40 },
+  驱逐舰: { maxHp: 24, firepower: 13, armor: 10, torpedo: 23, evasion: 24, recon: 17, aa: 15, asw: 22 },
+  轻巡洋舰: { maxHp: 28, firepower: 17, armor: 15, torpedo: 18, evasion: 20, recon: 20, aa: 20, asw: 19 },
+  重巡洋舰: { maxHp: 34, firepower: 22, armor: 21, torpedo: 15, evasion: 16, recon: 18, aa: 18, asw: 11 },
+  战列舰: { maxHp: 42, firepower: 25, armor: 25, torpedo: 8, evasion: 11, recon: 15, aa: 20, asw: 8 },
+  航空母舰: { maxHp: 38, firepower: 21, armor: 18, torpedo: 8, evasion: 16, recon: 25, aa: 24, asw: 11 },
+  潜艇: { maxHp: 19, firepower: 9, armor: 8, torpedo: 25, evasion: 23, recon: 18, aa: 8, asw: 14 },
+  维修舰: { maxHp: 32, firepower: 10, armor: 18, torpedo: 8, evasion: 14, recon: 21, aa: 20, asw: 14 },
+  补给舰: { maxHp: 30, firepower: 10, armor: 16, torpedo: 8, evasion: 15, recon: 23, aa: 19, asw: 14 },
+  工作舰: { maxHp: 32, firepower: 10, armor: 18, torpedo: 8, evasion: 14, recon: 21, aa: 20, asw: 14 },
 };
+
+export const CONSTRUCTION_RECIPE_PRESETS = Object.freeze([
+  { id: 'dd_ss', label: '驱逐/潜艇 (30/30/30/30)', fuel: 30, ammo: 30, steel: 30, bauxite: 30 },
+  { id: 'balanced', label: '标准均衡 (150/150/180/120)', fuel: 150, ammo: 150, steel: 180, bauxite: 120 },
+  { id: 'support_ar_ao', label: '后勤特化 AR/AO (240/140/240/340)', fuel: 240, ammo: 140, steel: 240, bauxite: 340 },
+  { id: 'heavy_bb', label: '主力重炮 BB/CA (400/200/550/80)', fuel: 400, ammo: 200, steel: 550, bauxite: 80 },
+  { id: 'carrier_cv', label: '航空制空 CV (320/120/320/520)', fuel: 320, ammo: 120, steel: 320, bauxite: 520 },
+]);
+
+export const CONSTRUCTION_SHIP_POOL = Object.freeze({
+  DD: [
+    { key: 'dd_fubuki', name: '吹雪型 · 白浪', shipType: '驱逐舰', roleTag: '高速雷击前锋' },
+    { key: 'dd_shimakaze', name: '岛风型 · 疾风', shipType: '驱逐舰', roleTag: '极限航速氧雷' },
+    { key: 'dd_akizuki', name: '秋月型 · 凉月', shipType: '驱逐舰', roleTag: '对空警戒驱逐' },
+    { key: 'dd_yukikaze', name: '阳炎型 · 祥瑞', shipType: '驱逐舰', roleTag: '高运高闪避前卫' },
+  ],
+  SS: [
+    { key: 'ss_i19', name: '巡潜乙型 · 潜影', shipType: '潜艇', roleTag: '隐蔽先制雷击' },
+    { key: 'ss_u511', name: '远洋潜艇 · 暗流', shipType: '潜艇', roleTag: '深水伏击猎手' },
+  ],
+  CL: [
+    { key: 'cl_sendai', name: '川内型 · 夜樱', shipType: '轻巡洋舰', roleTag: '夜战侦查领舰' },
+    { key: 'cl_yubari', name: '实验轻巡 · 夕铃', shipType: '轻巡洋舰', roleTag: '多用途反潜防空' },
+    { key: 'cl_noshiro', name: '阿贺野型 · 星镜', shipType: '轻巡洋舰', roleTag: '雷达校射核心' },
+  ],
+  CA: [
+    { key: 'ca_takao', name: '高雄型 · 苍岚', shipType: '重巡洋舰', roleTag: '重甲炮雷前排' },
+    { key: 'ca_myoko', name: '妙高型 · 曙光', shipType: '重巡洋舰', roleTag: '主力护卫重巡' },
+    { key: 'ca_prinz', name: '重巡 · 欧若拉', shipType: '重巡洋舰', roleTag: '高甲盾卫重巡' },
+  ],
+  BB: [
+    { key: 'bb_kongou', name: '高速战列 · 煌星', shipType: '战列舰', roleTag: '高速重炮主力' },
+    { key: 'bb_nagato', name: '战列舰 · 铁壁', shipType: '战列舰', roleTag: '远程穿甲齐射' },
+    { key: 'bb_yamato', name: '超弩级 · 镇海', shipType: '战列舰', roleTag: '重装旗舰主炮' },
+  ],
+  CV: [
+    { key: 'cv_akagi', name: '正规航母 · 苍穹', shipType: '航空母舰', roleTag: '制空开幕打击' },
+    { key: 'cv_shokaku', name: '翔鹤型 · 瑞羽', shipType: '航空母舰', roleTag: '远程舰载轰炸' },
+    { key: 'cv_enterprise', name: '特遣航母 · 灰隼', shipType: '航空母舰', roleTag: '全能制空核心' },
+  ],
+  AR: [
+    { key: 'ar_akashi', name: '工作维修舰 · 明石', shipType: '维修舰', roleTag: '战地抢修与锚地专精' },
+    { key: 'ar_vestal', name: '远洋维修舰 · 晨星', shipType: '维修舰', roleTag: '损伤管制与应急抢修' },
+  ],
+  AO: [
+    { key: 'ao_hayasui', name: '舰队补给舰 · 汐风', shipType: '补给舰', roleTag: '携带油弹扩容与前线补给' },
+    { key: 'ao_kamoi', name: '高速补给舰 · 潮音', shipType: '补给舰', roleTag: '远征增产与士气维持' },
+  ],
+});
+
+/**
+ * Compute live ship-class construction probability table for any 4-resource recipe (30~600 each):
+ *   - Low investment -> DD / SS
+ *   - High Steel + Fuel -> BB / CA
+ *   - High Bauxite -> CV
+ *   - Medium-High Bauxite + balanced Fuel/Steel -> boosted AR (维修舰) & AO (补给舰)
+ */
+export function computeConstructionProbabilities({ fuel = 150, ammo = 150, steel = 150, bauxite = 150 } = {}) {
+  const f = clamp(Math.round(Number(fuel) || 30), 30, 600);
+  const a = clamp(Math.round(Number(ammo) || 30), 30, 600);
+  const s = clamp(Math.round(Number(steel) || 30), 30, 600);
+  const b = clamp(Math.round(Number(bauxite) || 30), 30, 600);
+  const total = f + a + s + b;
+
+  const weights = {
+    DD: 34,
+    SS: 10,
+    CL: 22,
+    CA: 8,
+    BB: 2,
+    CV: 2,
+    AR: 3,
+    AO: 3,
+  };
+
+  // Low resource formula favors DD & SS
+  if (total <= 360) {
+    weights.DD += 36;
+    weights.SS += 22;
+    weights.CL += 12;
+  } else if (total <= 720) {
+    weights.CL += 18;
+    weights.CA += 14;
+    weights.DD += 10;
+  }
+
+  // High steel + fuel unlocks & boosts BB / CA
+  if (s >= 280 && f >= 250) {
+    weights.CA += 18;
+    weights.BB += 24 + Math.round((s - 280) * 0.09) + Math.round((f - 250) * 0.05);
+    weights.DD = Math.max(8, weights.DD - 16);
+  } else if (s >= 180) {
+    weights.CA += 12;
+    weights.BB += 8;
+  }
+
+  // High bauxite boosts CV
+  if (b >= 300) {
+    weights.CV += 28 + Math.round((b - 300) * 0.11);
+    weights.DD = Math.max(8, weights.DD - 14);
+  } else if (b >= 180) {
+    weights.CV += 10;
+  }
+
+  // Medium-high bauxite (200..460) + balanced fuel/steel (160..380) significantly boosts AR & AO!
+  const balancedFS = Math.abs(f - s) <= 130 && f >= 150 && s >= 150;
+  if (b >= 200 && balancedFS) {
+    const arBoost = b <= 460 ? 22 : 12;
+    const aoBoost = f >= 180 && a >= 100 ? 22 : 14;
+    weights.AR += arBoost;
+    weights.AO += aoBoost;
+  } else if (b >= 150 && s >= 120) {
+    weights.AR += 6;
+    weights.AO += 6;
+  }
+
+  // Ammo skew slightly favors torpedo cruisers / submarines
+  if (a >= 260 && s < 260) {
+    weights.SS += 12;
+    weights.CL += 8;
+  }
+
+  const sum = Object.values(weights).reduce((acc, v) => acc + v, 0) || 1;
+  const order = ['DD', 'CL', 'CA', 'BB', 'CV', 'SS', 'AR', 'AO'];
+  const labels = {
+    DD: '驱逐舰',
+    CL: '轻巡洋舰',
+    CA: '重巡洋舰',
+    BB: '战列舰',
+    CV: '航空母舰',
+    SS: '潜艇',
+    AR: '维修舰',
+    AO: '补给舰',
+  };
+  return order.map((cls) => ({
+    shipClass: cls,
+    shipType: labels[cls],
+    weight: weights[cls],
+    pct: Number(((weights[cls] / sum) * 100).toFixed(1)),
+  }));
+}
 
 function deepClone(v) {
   return JSON.parse(JSON.stringify(v ?? null));
@@ -81,21 +224,21 @@ export const PORT_MEDAL_DEFS = Object.freeze([
   {
     id: 'sea_control_low',
     title: '近海制海勋章',
-    desc: '近海防卫区（1-1）制海权压制达到 100%',
+    desc: '1★ 近海防卫区制海权压制达到 100%',
     luckBonus: 2,
     category: '制海',
   },
   {
     id: 'sea_control_medium',
     title: '外海制霸勋章',
-    desc: '外海破交航道（2-1）制海权压制达到 100%',
+    desc: '2★ 外海破交航道制海权压制达到 100%',
     luckBonus: 3,
     category: '制海',
   },
   {
     id: 'sea_control_high',
     title: '深海压制大十字勋章',
-    desc: '深海要塞核心区（3-1）制海权压制达到 100%',
+    desc: '3★ 及以上深海海域制海权压制达到 100%',
     luckBonus: 5,
     category: '制海',
   },
@@ -137,17 +280,6 @@ function createDefaultBuildingsState() {
 }
 
 export class PortBuildingsSystem {
-  /**
-   * @param {{
-   *   storage: import('./storage.js').StorageManager,
-   *   entities: import('./entity-system.js').EntitySystem,
-   *   inventory: import('./inventory-system.js').InventorySystem,
-   *   resources: import('./resource-manager.js').ResourceManager,
-   *   commander: import('./commander-system.js').CommanderSystem,
-   *   logs?: import('./log-system.js').LogSystem | null,
-   *   bus?: import('./event-bus.js').EventBus | null
-   * }} deps
-   */
   constructor({
     storage,
     entities,
@@ -202,9 +334,16 @@ export class PortBuildingsSystem {
       this._bus.on('sea-control:updated', (ev) => {
         if (this._autoMedalPaused) return;
         if (ev?.controlled) {
-          if (ev.difficulty === 'low') this.unlockMedal('sea_control_low');
-          if (ev.difficulty === 'medium') this.unlockMedal('sea_control_medium');
-          if (ev.difficulty === 'high') this.unlockMedal('sea_control_high');
+          if (ev.difficulty === 'low' || ev.difficulty === 'star_1') this.unlockMedal('sea_control_low');
+          if (ev.difficulty === 'medium' || ev.difficulty === 'star_2') this.unlockMedal('sea_control_medium');
+          if (
+            ev.difficulty === 'high' ||
+            ev.difficulty === 'star_3' ||
+            ev.difficulty === 'star_4' ||
+            ev.difficulty === 'star_5'
+          ) {
+            this.unlockMedal('sea_control_high');
+          }
         }
       });
       this._bus.on('formation:changed', (ev) => {
@@ -839,6 +978,8 @@ export class PortBuildingsSystem {
         shipType: cleanType,
         roleTag: rolledCombo ? `${cleanType} · ${rolledCombo.comboLabel}` : `${cleanType} · 船坞新锐`,
         avatarAssetId: null,
+        statScaleVersion: 2,
+        lv1BaseStats: { ...tpl },
         personalityCombo: rolledCombo,
         personality:
           rolledCombo?.description ||
@@ -877,6 +1018,193 @@ export class PortBuildingsSystem {
     this._emit('character:saved', { characterId: charId, name: cleanName, isEdit: false, source: 'dockyard' });
     this._emit('buildings:updated', { reason: 'dock-construct' });
     return entity;
+  }
+
+  /**
+   * Free-Recipe Instant Ship Construction (`30 ~ 600` per resource + small silver fee, zero wait time).
+   * Duplicate ships automatically convert into `改造核心 ×1` + affinity gift / silver bonus!
+   */
+  async constructShipByRecipe({
+    fuel = 150,
+    ammo = 150,
+    steel = 180,
+    bauxite = 120,
+    customName = '',
+    rng = Math.random,
+  } = {}) {
+    const f = clamp(Math.round(Number(fuel) || 30), 30, 600);
+    const a = clamp(Math.round(Number(ammo) || 30), 30, 600);
+    const s = clamp(Math.round(Number(steel) || 30), 30, 600);
+    const b = clamp(Math.round(Number(bauxite) || 30), 30, 600);
+    const silverFee = 60;
+
+    const spend = await this._resources.spendBatch(
+      { fuel: f, ammo: a, steel: s, bauxite: b, silver: silverFee },
+      { reason: `自由配方舰船建造（${f}/${a}/${s}/${b} + 银条${silverFee}）` }
+    );
+    if (!spend.ok) throw new Error(spend.reason);
+
+    const probs = computeConstructionProbabilities({ fuel: f, ammo: a, steel: s, bauxite: b });
+    const totalW = probs.reduce((acc, p) => acc + p.weight, 0) || 1;
+    let roll = rng() * totalW;
+    let chosenClass = probs[0];
+    for (const p of probs) {
+      roll -= p.weight;
+      if (roll <= 0) {
+        chosenClass = p;
+        break;
+      }
+    }
+
+    const pool = CONSTRUCTION_SHIP_POOL[chosenClass.shipClass] || CONSTRUCTION_SHIP_POOL.DD;
+    const blueprint = pool[Math.floor(rng() * pool.length)] || pool[0];
+    const finalName = String(customName || '').trim() || blueprint.name;
+    const shipType = blueprint.shipType;
+
+    // Duplicate detection (match by templateKey or exact name when customName is not overridden)
+    const existingList = this._entities.list({ kind: 'character' });
+    const dupMatch = !String(customName || '').trim()
+      ? existingList.find(
+          (c) =>
+            (c.meta?.blueprintKey && c.meta.blueprintKey === blueprint.key) ||
+            c.name === finalName
+        )
+      : null;
+
+    if (dupMatch) {
+      const coresTotal = this._inventory ? await this._inventory.addRetrofitCores(1) : 1;
+      const silverRefund = 120;
+      await this._resources.add('silver', silverRefund, { reason: `重复舰娘「${finalName}」自动转化补给` });
+      let giftName = '港区誓约花束礼盒';
+      if (this._inventory) {
+        await this._inventory.createItem({
+          id: `item_consumable_gift_bouquet`,
+          name: giftName,
+          category: 'consumable',
+          rarity: 'rare',
+          stackByName: true,
+          quantity: 1,
+          tags: ['好感礼物', '建造转化'],
+          description: '重复舰船建造自动转化的精致礼盒，可在仓库/互动中使用提升舰娘好感与士气。',
+          bonuses: [
+            { stat: 'affinity', layer: 'baseAdd', value: 8 },
+            { stat: 'morale', layer: 'baseAdd', value: 15 },
+          ],
+        });
+      }
+      this._state.dockyard.constructedCount += 1;
+      await this.persist();
+
+      if (this._logs) {
+        this._logs.add({
+          category: LOG_CATEGORIES.CHARACTER,
+          title: `建造重复转化：「${finalName}」（${shipType}）`,
+          detail: `已拥有该舰 → 自动转化为「改造核心 ×1」（累计 ${coresTotal}）+「${giftName} ×1」+ 银条 ${silverRefund}`,
+        });
+      }
+      const res = {
+        isDuplicate: true,
+        shipName: finalName,
+        shipType,
+        classCode: chosenClass.shipClass,
+        roleTag: blueprint.roleTag,
+        recipe: { fuel: f, ammo: a, steel: s, bauxite: b, silver: silverFee },
+        retrofitCoreGained: 1,
+        retrofitCoresTotal: coresTotal,
+        giftName,
+        silverBonus: silverRefund,
+      };
+      this._emit('buildings:ship-constructed', res);
+      this._emit('buildings:updated', { reason: 'dock-construct-dup' });
+      return res;
+    }
+
+    // Fresh new shipgirl registration with 2-digit Lv.1 stats
+    const tpl = SHIP_TYPE_BASE_TEMPLATES[shipType] || SHIP_TYPE_BASE_TEMPLATES['驱逐舰'];
+    const initialAffBonus = this._commander ? this._commander.getInitialAffinityBonus() : 0;
+    const charId = `char_build_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`;
+    const rolledCombo = this._personalityPool ? this._personalityPool.rollCombination() : null;
+
+    const entity = this._entities.register({
+      id: charId,
+      kind: 'character',
+      name: finalName,
+      tags: [shipType, chosenClass.shipClass, '自由建造', ...(rolledCombo ? [rolledCombo.primaryName, rolledCombo.secondaryName] : [])],
+      stats: {
+        ...tpl,
+        hp: tpl.maxHp,
+        morale: 85,
+        ap: 100,
+        maxAp: 100,
+        affinity: clamp(24 + initialAffBonus, 0, 100),
+        level: 1,
+        exp: 0,
+        maxExp: 100,
+      },
+      statBounds: {
+        hp: { min: 0, max: 500 },
+        morale: { min: 0, max: 100 },
+        ap: { min: 0, max: 100 },
+        affinity: { min: 0, max: 100 },
+      },
+      meta: {
+        shipType,
+        blueprintKey: blueprint.key,
+        roleTag: rolledCombo ? `${blueprint.roleTag} · ${rolledCombo.comboLabel}` : blueprint.roleTag,
+        avatarAssetId: null,
+        statScaleVersion: 2,
+        lv1BaseStats: { ...tpl },
+        personalityCombo: rolledCombo,
+        personality: rolledCombo?.description || '由港区自由配方建造成型的全新舰娘，期待与指挥官并肩航行。',
+        speechHabit: rolledCombo?.speechHabit || `「${shipType} ${finalName}，建造完成！请指挥官多多指教！」`,
+      },
+    });
+
+    if (this._inventory) {
+      if (this._inventory.getItem('item_core_engine_01')) {
+        await this._inventory.equipItem(charId, 'engine', 'item_core_engine_01');
+      }
+      if (this._inventory.getItem('item_core_armor_01')) {
+        await this._inventory.equipItem(charId, 'armor', 'item_core_armor_01');
+      }
+      if (this._inventory.getItem('item_core_core_01')) {
+        await this._inventory.equipItem(charId, 'core', 'item_core_core_01');
+      }
+      // Give AR / AO 1 starter support slot automatically so they can equip repair/supply gear right away
+      if (chosenClass.shipClass === 'AR' || chosenClass.shipClass === 'AO') {
+        await this._inventory.addExpandedSlot(charId, 'support', { skipCost: true });
+      }
+      const effMaxHp = Math.round(this._entities.getEffectiveStat(charId, 'maxHp', { round: 'round' }).final);
+      this._entities.setStat(charId, 'hp', effMaxHp, { min: 0, max: effMaxHp });
+    }
+
+    this._state.dockyard.constructedCount += 1;
+    await this.persist();
+
+    if (this._logs) {
+      this._logs.add({
+        category: LOG_CATEGORIES.CHARACTER,
+        actorId: charId,
+        actorName: finalName,
+        title: `舰船建造完成：「${finalName}」（${shipType}）`,
+        detail: `配方 ${f}/${a}/${s}/${b} | 耐久 ${tpl.maxHp} · 火力 ${tpl.firepower} · 装甲 ${tpl.armor}`,
+      });
+    }
+
+    const res = {
+      isDuplicate: false,
+      entity,
+      shipName: finalName,
+      shipType,
+      classCode: chosenClass.shipClass,
+      roleTag: blueprint.roleTag,
+      comboLabel: rolledCombo?.comboLabel || '',
+      recipe: { fuel: f, ammo: a, steel: s, bauxite: b, silver: silverFee },
+    };
+    this._emit('character:saved', { characterId: charId, name: finalName, isEdit: false, source: 'construction' });
+    this._emit('buildings:ship-constructed', res);
+    this._emit('buildings:updated', { reason: 'dock-construct' });
+    return res;
   }
 
   // ------------------------------------------------------------

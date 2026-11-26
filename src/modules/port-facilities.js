@@ -19,6 +19,10 @@ import {
   getTacticalGridSymbolSvg,
   resolveShipClass,
 } from '../core/stat-rules.js';
+import {
+  CONSTRUCTION_RECIPE_PRESETS,
+  computeConstructionProbabilities,
+} from '../core/port-buildings.js';
 import { openCharacterCardById, persistCharacterRoster } from './character-console.js';
 
 function formatDurationZh(sec) {
@@ -486,10 +490,12 @@ function createDockyardModule() {
     buildCard.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
         <h2 class="section-title">新舰建造登记台</h2>
-        <span class="status-badge badge-ok">同舰不同随机性格</span>
+        <button type="button" id="btn-dock-open-free-build" class="btn-primary uikit-touch-target" style="padding:0 12px; min-height:34px; font-size:12px;">
+          自由配方建造（即时出坞）
+        </button>
       </div>
       <p class="muted-text" style="font-size:12px;">
-        消耗 燃油80 / 弹药60 / 钢材100 / 铝材50 建造新舰娘，自动配备基础适航核心并从性格池随机生成「主性格 × 副特质」。
+        上方「自由配方建造」支持 30~600 四项资源滑块、8 舰种实时概率与重复舰自动转化「改造核心」；下方可手动定向登记自定义舰娘。
       </p>
       <div class="lab-kv-grid">
         <input id="dock-new-name" class="form-input" type="text" placeholder="新舰名称（如：驱逐新锐号）">
@@ -497,8 +503,12 @@ function createDockyardModule() {
           ${SHIP_TYPE_PRESETS.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('')}
         </select>
       </div>
-      <button type="button" id="btn-dock-construct" class="btn-primary uikit-touch-target">开始建造并登记入港</button>
+      <button type="button" id="btn-dock-construct" class="btn-secondary uikit-touch-target">定向命名登记入港</button>
     `;
+
+    buildCard.querySelector('#btn-dock-open-free-build')?.addEventListener('click', () => {
+      openShipConstructionModal(state.context, { onConstructed: () => render() });
+    });
 
     buildCard.querySelector('#btn-dock-construct').addEventListener('click', async () => {
       const name = buildCard.querySelector('#dock-new-name').value.trim();
@@ -1291,9 +1301,10 @@ export function openDockyardTacticalModal(context) {
             </div>
 
             <div class="lab-btn-grid">
-              <button type="button" id="btn-tm-dock-fullpage" class="btn-secondary uikit-touch-target">新舰建造 / 完整船坞页</button>
-              <button type="button" id="btn-tm-dock-close" class="btn-secondary uikit-touch-target">关闭浮窗</button>
+              <button type="button" id="btn-tm-dock-free-build" class="btn-primary uikit-touch-target">自由配方舰船建造</button>
+              <button type="button" id="btn-tm-dock-fullpage" class="btn-secondary uikit-touch-target">完整船坞页</button>
             </div>
+            <button type="button" id="btn-tm-dock-close" class="btn-secondary uikit-touch-target">关闭浮窗</button>
           </div>
         `;
 
@@ -1345,11 +1356,288 @@ export function openDockyardTacticalModal(context) {
           });
         });
 
+        body.querySelector('#btn-tm-dock-free-build')?.addEventListener('click', () => {
+          close();
+          openShipConstructionModal(context);
+        });
         body.querySelector('#btn-tm-dock-fullpage')?.addEventListener('click', () => {
           close();
           if (modules?.has('port-dockyard')) modules.mount('port-dockyard', { transition: 'left' });
         });
         body.querySelector('#btn-tm-dock-close')?.addEventListener('click', () => close());
+      };
+
+      renderInner();
+    },
+  });
+}
+
+/**
+ * Centered Frosted-Glass Free-Recipe Instant Ship Construction Modal.
+ * Features 4-resource sliders (30~600), recipe presets, live 8-class probability bars
+ * (including boosted AR 维修舰 & AO 补给舰 formulas), zero wait time, and duplicate -> 改造核心 conversion.
+ */
+export function openShipConstructionModal(context, { onConstructed = null } = {}) {
+  if (!context) return null;
+  const { buildings, entities, resources, inventory, rootStorage, uiKit } = context;
+  const openFn = typeof uiKit.openTacticalModal === 'function' ? uiKit.openTacticalModal : uiKit.openModal;
+
+  const recipe = {
+    fuel: 240,
+    ammo: 140,
+    steel: 240,
+    bauxite: 340,
+    customName: '',
+  };
+  let lastResult = null;
+  const SILVER_FEE = 60;
+
+  return openFn({
+    title: '自由配方舰船建造（零等待即时出坞）',
+    subtitle: '自由调配 30~600 四项资源，实时查看 8 舰种概率；重复舰自动转化为「改造核心 + 礼物/银条」',
+    wide: true,
+    renderContent: (body, close) => {
+      const renderInner = () => {
+        const probs = computeConstructionProbabilities(recipe);
+        const stock = {
+          fuel: Math.floor(resources.get('fuel')?.amount ?? 0),
+          ammo: Math.floor(resources.get('ammo')?.amount ?? 0),
+          steel: Math.floor(resources.get('steel')?.amount ?? 0),
+          bauxite: Math.floor(resources.get('bauxite')?.amount ?? 0),
+          silver: Math.floor(resources.get('silver')?.amount ?? 0),
+        };
+        const canAfford =
+          stock.fuel >= recipe.fuel &&
+          stock.ammo >= recipe.ammo &&
+          stock.steel >= recipe.steel &&
+          stock.bauxite >= recipe.bauxite &&
+          stock.silver >= SILVER_FEE;
+        const coresOwned = inventory?.getRetrofitCores ? inventory.getRetrofitCores() : 0;
+
+        body.innerHTML = `
+          <div class="module-stack" id="free-construction-modal">
+            <!-- Quick Recipe Presets -->
+            <div class="surface-card lab-stack-sm" style="background:var(--surface-alt);">
+              <div class="section-header-row" style="margin-bottom:0;">
+                <strong style="font-size:13px;">快捷建造配方推荐</strong>
+                <span class="status-badge badge-ok">改造核心库存 ${coresOwned}</span>
+              </div>
+              <div class="chip-row" id="build-preset-row">
+                ${CONSTRUCTION_RECIPE_PRESETS.map(
+                  (p) => `
+                  <button type="button" class="preset-chip" data-build-preset="${escapeHtml(p.id)}">
+                    ${escapeHtml(p.label)}
+                  </button>
+                `
+                ).join('')}
+              </div>
+            </div>
+
+            <!-- 4 Resource Sliders (30 ~ 600) -->
+            <div class="surface-card lab-stack-sm">
+              <div class="section-header-row" style="margin-bottom:0;">
+                <strong style="font-size:13px;">四项资源投入（30 ~ 600）</strong>
+                <span class="status-badge ${stock.silver >= SILVER_FEE ? 'badge-muted' : 'badge-danger'}">
+                  建坞费 银条 ${SILVER_FEE}/${stock.silver}
+                </span>
+              </div>
+              ${[
+                { key: 'fuel', label: '燃油', stock: stock.fuel },
+                { key: 'ammo', label: '弹药', stock: stock.ammo },
+                { key: 'steel', label: '钢材', stock: stock.steel },
+                { key: 'bauxite', label: '铝材', stock: stock.bauxite },
+              ]
+                .map(
+                  (r) => `
+                <div class="construction-slider-row">
+                  <div class="construction-slider-head">
+                    <label for="build-sl-${r.key}"><strong>${r.label}</strong></label>
+                    <span class="${r.stock < recipe[r.key] ? 'stat-diff-inline-down' : 'muted-text'}" data-build-val="${r.key}">
+                      投入 <strong>${recipe[r.key]}</strong> / 库存 ${r.stock}
+                    </span>
+                  </div>
+                  <input id="build-sl-${r.key}" data-build-slider="${r.key}" type="range" min="30" max="600" step="10" value="${recipe[r.key]}" style="width:100%;">
+                </div>
+              `
+                )
+                .join('')}
+
+              <div class="form-group" style="margin-top:4px;">
+                <label class="form-label" for="build-custom-name">自定义新舰命名（留空则按舰种随机抽选名舰）</label>
+                <input id="build-custom-name" class="form-input" type="text" placeholder="留空自动命名，或输入专属舰名..." value="${escapeHtml(recipe.customName)}">
+              </div>
+            </div>
+
+            <!-- Live 8-Class Probability Bars -->
+            <div class="surface-card lab-stack-sm">
+              <div class="section-header-row" style="margin-bottom:0;">
+                <strong style="font-size:13px;">实时舰种建造概率预估（含 AR 维修舰 / AO 补给舰）</strong>
+              </div>
+              <div class="construction-prob-grid" id="build-prob-grid">
+                ${probs
+                  .map((p) => {
+                    const isSupport = p.shipClass === 'AR' || p.shipClass === 'AO';
+                    return `
+                  <div class="construction-prob-row ${isSupport ? 'is-support' : ''}">
+                    <div class="construction-prob-label">
+                      <span class="ship-class-ico">${getShipClassSvg(p.shipClass, { size: 15 })}</span>
+                      <span>${escapeHtml(p.shipType)} (${escapeHtml(p.shipClass)})</span>
+                      <strong>${p.pct.toFixed(1)}%</strong>
+                    </div>
+                    <div class="construction-prob-track">
+                      <div class="construction-prob-fill ${isSupport ? 'is-support' : ''}" style="width:${Math.min(100, Math.max(2, p.pct * 1.4))}%"></div>
+                    </div>
+                  </div>
+                `;
+                  })
+                  .join('')}
+              </div>
+            </div>
+
+            ${
+              lastResult
+                ? `
+              <div class="surface-card construction-result-card ${lastResult.isDuplicate ? 'is-duplicate' : 'is-new'}" id="build-result-card">
+                ${
+                  lastResult.isDuplicate
+                    ? `
+                  <div class="section-header-row" style="margin-bottom:4px;">
+                    <strong>♻ 重复舰船自动转化 · ${escapeHtml(lastResult.shipName)}</strong>
+                    <span class="status-badge badge-warn">${escapeHtml(lastResult.shipType)} (${escapeHtml(lastResult.classCode)})</span>
+                  </div>
+                  <p class="muted-text" style="font-size:12px; margin:0;">
+                    港区已有该舰，自动转化为：<strong>改造核心 ×${lastResult.retrofitCoreGained}</strong>（累计 ${lastResult.retrofitCoresTotal}）、<strong>${escapeHtml(lastResult.giftName)} ×1</strong>、<strong>银条 +${lastResult.silverBonus}</strong>！
+                  </p>
+                `
+                    : `
+                  <div class="section-header-row" style="margin-bottom:4px;">
+                    <strong>★ 建造成功！${escapeHtml(lastResult.shipName)} 已即时出坞</strong>
+                    <span class="status-badge badge-ok">${escapeHtml(lastResult.shipType)} (${escapeHtml(lastResult.classCode)})</span>
+                  </div>
+                  <p class="muted-text" style="font-size:12px; margin:0;">
+                    ${escapeHtml(lastResult.roleTag || '')} · 已自动配备基础适航核心组件${lastResult.classCode === 'AR' || lastResult.classCode === 'AO' ? '与后勤支援槽位' : ''}，随时可编队出征！
+                  </p>
+                  ${
+                    lastResult.entity?.id
+                      ? `<button type="button" id="btn-build-view-ship" class="btn-secondary uikit-touch-target" style="margin-top:6px;">查看「${escapeHtml(lastResult.shipName)}」角色档案</button>`
+                      : ''
+                  }
+                `
+                }
+              </div>
+            `
+                : ''
+            }
+
+            <div class="lab-btn-grid">
+              <button type="button" id="btn-do-free-construct" class="btn-primary uikit-touch-target" ${canAfford ? '' : 'disabled'}>
+                ${canAfford ? `立即建造（消耗 银条 ${SILVER_FEE}）` : '资源或银条不足'}
+              </button>
+              <button type="button" id="btn-close-free-construct" class="btn-secondary uikit-touch-target">关闭船台</button>
+            </div>
+          </div>
+        `;
+
+        // Bind preset chips
+        body.querySelectorAll('[data-build-preset]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const pid = btn.getAttribute('data-build-preset');
+            const p = CONSTRUCTION_RECIPE_PRESETS.find((x) => x.id === pid);
+            if (!p) return;
+            recipe.fuel = p.fuel;
+            recipe.ammo = p.ammo;
+            recipe.steel = p.steel;
+            recipe.bauxite = p.bauxite;
+            renderInner();
+          });
+        });
+
+        // Bind sliders without losing drag smoothness — update live probability grid & labels on input
+        body.querySelectorAll('[data-build-slider]').forEach((sl) => {
+          sl.addEventListener('input', () => {
+            const key = sl.getAttribute('data-build-slider');
+            recipe[key] = Number(sl.value) || 30;
+            const valEl = body.querySelector(`[data-build-val="${key}"]`);
+            if (valEl) {
+              const curStock = stock[key] ?? 0;
+              valEl.className = curStock < recipe[key] ? 'stat-diff-inline-down' : 'muted-text';
+              valEl.innerHTML = `投入 <strong>${recipe[key]}</strong> / 库存 ${curStock}`;
+            }
+            const nextProbs = computeConstructionProbabilities(recipe);
+            const probGrid = body.querySelector('#build-prob-grid');
+            if (probGrid) {
+              probGrid.innerHTML = nextProbs
+                .map((p) => {
+                  const isSupport = p.shipClass === 'AR' || p.shipClass === 'AO';
+                  return `
+                    <div class="construction-prob-row ${isSupport ? 'is-support' : ''}">
+                      <div class="construction-prob-label">
+                        <span class="ship-class-ico">${getShipClassSvg(p.shipClass, { size: 15 })}</span>
+                        <span>${escapeHtml(p.shipType)} (${escapeHtml(p.shipClass)})</span>
+                        <strong>${p.pct.toFixed(1)}%</strong>
+                      </div>
+                      <div class="construction-prob-track">
+                        <div class="construction-prob-fill ${isSupport ? 'is-support' : ''}" style="width:${Math.min(100, Math.max(2, p.pct * 1.4))}%"></div>
+                      </div>
+                    </div>
+                  `;
+                })
+                .join('');
+            }
+            const buildBtn = body.querySelector('#btn-do-free-construct');
+            if (buildBtn) {
+              const okNow =
+                stock.fuel >= recipe.fuel &&
+                stock.ammo >= recipe.ammo &&
+                stock.steel >= recipe.steel &&
+                stock.bauxite >= recipe.bauxite &&
+                stock.silver >= SILVER_FEE;
+              buildBtn.disabled = !okNow;
+              buildBtn.textContent = okNow ? `立即建造（消耗 银条 ${SILVER_FEE}）` : '资源或银条不足';
+            }
+          });
+        });
+
+        body.querySelector('#build-custom-name')?.addEventListener('input', (e) => {
+          recipe.customName = e.target.value;
+        });
+
+        body.querySelector('#btn-do-free-construct')?.addEventListener('click', async () => {
+          try {
+            const res = await buildings.constructShipByRecipe({
+              fuel: recipe.fuel,
+              ammo: recipe.ammo,
+              steel: recipe.steel,
+              bauxite: recipe.bauxite,
+              customName: recipe.customName,
+            });
+            await persistCharacterRoster({
+              storage: rootStorage,
+              entities,
+              activeCharacterId: res.entity?.id || undefined,
+            });
+            lastResult = res;
+            recipe.customName = '';
+            if (res.isDuplicate) {
+              uiKit.showToast(`重复舰「${res.shipName}」已转化为改造核心 ×1 + 礼盒与银条！`, 'ok');
+            } else {
+              uiKit.showToast(`建造成功！「${res.shipName}」（${res.shipType}）已即时入港！`, 'ok');
+            }
+            renderInner();
+            if (typeof onConstructed === 'function') onConstructed(res);
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '建造失败', 'warn');
+          }
+        });
+
+        body.querySelector('#btn-build-view-ship')?.addEventListener('click', () => {
+          if (lastResult?.entity?.id) {
+            close();
+            openCharacterCardById(lastResult.entity.id, context);
+          }
+        });
+
+        body.querySelector('#btn-close-free-construct')?.addEventListener('click', () => close());
       };
 
       renderInner();

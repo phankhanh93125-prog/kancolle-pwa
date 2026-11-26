@@ -1,33 +1,46 @@
 /**
- * Procedural Random Sortie Route Generator & Custom Route Repository (`route-generator.js`).
+ * Procedural 1★~5★ Sea Chart & Custom Map Workshop Engine (`route-generator.js`).
  *
- * Capabilities:
- *   - Procedurally generates 3~6 node sortie routes by difficulty tier ('low' | 'medium' | 'high')
- *   - Supports 5 standardized node types: resource, weather, encounter, elite, boss
- *   - Attaches random sea-state modifier affixes (seaCondition) affecting combat/checks/step costs
- *   - Manages persisted custom fixed routes alongside built-in presets in IndexedDB
+ * v25 Upgrades:
+ *   - All fixed preset sea charts removed (100% procedural & Custom Map Workshop driven).
+ *   - 5-Star Sea Tiers (`star_1`..`star_5`) with exact symmetric 2-digit combat stat standards
+ *     and 0%~100% Sea Control progression (reaching 100% unlocks the next star tier + expedition/patrol yield bonus).
+ *   - Lossless migration of legacy `low/medium/high` sea control keys (`low`->`star_1`, `medium`->`star_2`, `high`->`star_3`).
+ *   - Custom Map Workshop: star 1★~5★, scale (short/medium/long), sea condition (风平浪静/浓雾夜海/狂风巨浪/顺风航流/强电磁干扰),
+ *     node mix, enemy fleet bias, deterministic seed code save/load (`encodeMapSeed` / `decodeMapSeed`),
+ *     and live estimated supply & loot drop preview (`estimateRouteProfile`).
+ *   - Supports Combat, Salvage (refills carried supplies/parts), Temporary Anchorage (AR free bonus repair),
+ *     Elite Ambush, Boss Flagship, and Random Maritime Encounters (`story_event`) invoking imported JSON story packs.
  */
 
-import { clamp, weightedPick } from './calc-engine.js';
+import { clamp } from './calc-engine.js';
+import {
+  STAR_SEA_TIERS,
+  STAR_SEA_TIER_ORDER,
+  normalizeStarTierId,
+} from './stat-rules.js';
 
 const STORAGE_NS = 'core-sortie-routes';
-const CUSTOM_ROUTES_KEY = 'custom-routes-v1';
+const CUSTOM_ROUTES_KEY = 'custom-routes-v2';
+const SEA_CONTROL_KEY = 'sea-control-v2';
 
 export const NODE_TYPES = Object.freeze({
   RESOURCE: 'resource',
   WEATHER: 'weather',
   ANCHORAGE: 'anchorage',
+  STORY_EVENT: 'story_event',
   ENCOUNTER: 'encounter',
   ELITE: 'elite',
   BOSS: 'boss',
 });
 
 export const NODE_TYPE_LABELS = Object.freeze({
-  [NODE_TYPES.RESOURCE]: '资源打捞点',
+  [NODE_TYPES.RESOURCE]: '海上物资打捞',
   [NODE_TYPES.WEATHER]: '气象/侦察点',
   [NODE_TYPES.ANCHORAGE]: '临时锚地休整',
+  [NODE_TYPES.STORY_EVENT]: '随机海遇事件',
   [NODE_TYPES.ENCOUNTER]: '常规遭遇战',
-  [NODE_TYPES.ELITE]: '精英封锁战',
+  [NODE_TYPES.ELITE]: '精英伏击战',
   [NODE_TYPES.BOSS]: '终点主力决战',
 });
 
@@ -40,112 +53,176 @@ export const BRANCH_LANE_META = Object.freeze({
   assault: {
     id: 'assault',
     label: '主力强攻航道',
-    desc: '精英敌舰密集、正面火力交锋，钢材/铝材与高额战利品加成 +50%。',
+    desc: '精英伏击密集、正面火力交锋，钢材/铝材与稀有装备掉率 +45%。',
   },
   stealth: {
     id: 'stealth',
-    label: '暗流隐蔽航道',
-    desc: '迷雾与潜艇伏击频发、考验侦查与反潜，含临时锚地休整且航行更省油。',
+    label: '暗流探索航道',
+    desc: '多打捞、临时锚地与随机海遇事件，考验侦查反潜且更省携带油弹。',
   },
 });
 
+export const MAP_SCALES = Object.freeze({
+  short: { id: 'short', label: '短程奇袭 (6节点)', nodeCount: 6, combatEst: 3 },
+  medium: { id: 'medium', label: '标准巡航 (9节点)', nodeCount: 9, combatEst: 4 },
+  long: { id: 'long', label: '远程破交 (12节点)', nodeCount: 12, combatEst: 6 },
+});
+
+export const NODE_MIX_MODES = Object.freeze({
+  balanced: { id: 'balanced', label: '均衡综合', desc: '战斗、打捞、锚地与随机海遇均衡分布' },
+  combat_heavy: { id: 'combat_heavy', label: '高烈度歼灭', desc: '更多遭遇战与精英伏击，高战利品掉落' },
+  salvage_heavy: { id: 'salvage_heavy', label: '后勤打捞线', desc: '增加物资打捞与临时锚地，适合补充油弹与练级' },
+  encounter_heavy: { id: 'encounter_heavy', label: '奇遇探索线', desc: '大幅提升随机海遇事件（自动联动外置剧情包）' },
+});
+
+export const ENEMY_BIAS_MODES = Object.freeze({
+  mixed: { id: 'mixed', label: '联合混编', desc: '水面舰、航母与潜艇综合编队' },
+  surface: { id: 'surface', label: '重炮水面群', desc: '战列/重巡为主，考验破甲与防雷' },
+  carrier: { id: 'carrier', label: '深海航空群', desc: '航母偏多，考验对空拦截与雷达' },
+  submarine: { id: 'submarine', label: '暗流潜艇群', desc: '潜艇与高速驱逐偏多，考验声呐反潜' },
+});
+
+function buildSeaDifficultyEntry(tierId) {
+  const s = STAR_SEA_TIERS[tierId] || STAR_SEA_TIERS.star_1;
+  return Object.freeze({
+    id: s.id,
+    star: s.star,
+    code: s.code,
+    label: s.label,
+    name: s.name,
+    nodeRange: s.star <= 2 ? [7, 9] : s.star <= 4 ? [9, 11] : [10, 12],
+    baseDc: 10 + s.star,
+    apCost: 8 + s.star * 3,
+    stepCost: { ...s.stepCost },
+    enemyHpRange: [...s.enemyHp],
+    enemyArmorRange: [...s.enemyArmor],
+    enemyAtkRange: [...s.enemyAtk],
+    bossMaxAtk: s.bossMaxAtk,
+    lootScale: s.lootScale,
+    goldBonus: s.goldBonus,
+    dropHint:
+      s.star === 1
+        ? '白~蓝装为主 · 新手练级与物资打捞'
+        : s.star === 2
+        ? '绿~紫装 · 后勤支援装备开始掉落'
+        : s.star === 3
+        ? '蓝~紫装为主 · 少量橙装掉落'
+        : s.star === 4
+        ? '紫~橙装高概率 · 精锐支援与核心部件'
+        : '顶级紫/橙装高爆率 · 传说武装与丰厚金条',
+  });
+}
+
+const STAR_DIFF_MAP = {
+  star_1: buildSeaDifficultyEntry('star_1'),
+  star_2: buildSeaDifficultyEntry('star_2'),
+  star_3: buildSeaDifficultyEntry('star_3'),
+  star_4: buildSeaDifficultyEntry('star_4'),
+  star_5: buildSeaDifficultyEntry('star_5'),
+};
+
+// Backward-compatible aliases so legacy callers using 'low'/'medium'/'high' still resolve cleanly
 export const SEA_DIFFICULTIES = Object.freeze({
-  low: {
-    id: 'low',
-    label: '低危海域',
-    nodeRange: [8, 10],
-    baseDc: 12,
-    apCost: 12,
-    stepCost: { fuel: 20, ammo: 18 },
-    enemyHpRange: [48, 76],
-    enemyArmorRange: [2, 5],
-    enemyAtkRange: [8, 13],
-    lootScale: 1.0,
-    goldBonus: 3,
-  },
-  medium: {
-    id: 'medium',
-    label: '中危海域',
-    nodeRange: [10, 12],
-    baseDc: 14,
-    apCost: 18,
-    stepCost: { fuel: 28, ammo: 25 },
-    enemyHpRange: [72, 114],
-    enemyArmorRange: [5, 9],
-    enemyAtkRange: [12, 18],
-    lootScale: 1.5,
-    goldBonus: 5,
-  },
-  high: {
-    id: 'high',
-    label: '高危海域',
-    nodeRange: [12, 15],
-    baseDc: 16,
-    apCost: 24,
-    stepCost: { fuel: 36, ammo: 32 },
-    enemyHpRange: [108, 160],
-    enemyArmorRange: [8, 14],
-    enemyAtkRange: [16, 24],
-    lootScale: 2.2,
-    goldBonus: 8,
-  },
+  ...STAR_DIFF_MAP,
+  low: STAR_DIFF_MAP.star_1,
+  medium: STAR_DIFF_MAP.star_2,
+  high: STAR_DIFF_MAP.star_3,
 });
 
 export const SEA_CONDITIONS = Object.freeze([
   {
     id: 'calm_sea',
     label: '风平浪静',
-    description: '海况稳定，全行动检定 +1。',
+    description: '海况稳定，全行动 d20 检定 +1，航行平稳。',
     mods: { checkBonus: 1, fuelDelta: 0, scanDcDelta: 0, evadeBonus: 0, dmgMult: 1.0 },
   },
   {
-    id: 'heavy_swell',
-    label: '高海况涌浪',
-    description: '涌浪颠簸，机动迂回 -1，炮击与鱼雷伤害 +10%。',
-    mods: { checkBonus: 0, fuelDelta: 4, scanDcDelta: 0, evadeBonus: -1, dmgMult: 1.1 },
+    id: 'dense_fog_night',
+    label: '浓雾夜海',
+    description: '能见度骤降，索敌难度提升，鱼雷与奇袭威力 +12%，迂回 +2。',
+    mods: { checkBonus: 0, fuelDelta: 0, scanDcDelta: 2, evadeBonus: 2, dmgMult: 1.12, nightFog: true },
   },
   {
-    id: 'dense_fog',
-    label: '低能见度海雾',
-    description: '视野受限，扫描 DC +1，但迂回成功率 +2。',
-    mods: { checkBonus: 0, fuelDelta: 0, scanDcDelta: 1, evadeBonus: 2, dmgMult: 1.0 },
+    id: 'heavy_storm',
+    label: '狂风巨浪',
+    description: '风浪剧烈，步进燃油 +4，机动 -1，但炮雷破甲伤害 +15%。',
+    mods: { checkBonus: -1, fuelDelta: 4, scanDcDelta: 1, evadeBonus: -1, dmgMult: 1.15 },
   },
   {
     id: 'tailwind',
     label: '顺风航流',
-    description: '航速顺畅，单步燃油消耗 -5，机动检定 +1。',
-    mods: { checkBonus: 0, fuelDelta: -5, scanDcDelta: 0, evadeBonus: 1, dmgMult: 1.0 },
+    description: '顺流加速，每步携带燃油消耗 -4，机动检定 +1。',
+    mods: { checkBonus: 0, fuelDelta: -4, scanDcDelta: 0, evadeBonus: 1, dmgMult: 1.0 },
   },
   {
     id: 'em_storm',
     label: '强电磁干扰',
-    description: '雷达波杂乱，扫描 DC +1，但锁定成功后伤害 +15%。',
+    description: '雷达波杂乱，索敌难度 +1，但锁定后的精准打击伤害 +15%。',
     mods: { checkBonus: 0, fuelDelta: 0, scanDcDelta: 1, evadeBonus: 0, dmgMult: 1.15 },
   },
 ]);
 
+export const SEA_CONTROL_ZONES = Object.freeze(
+  STAR_SEA_TIER_ORDER.map((tierId, idx) => {
+    const s = STAR_SEA_TIERS[tierId];
+    return Object.freeze({
+      id: s.id,
+      star: s.star,
+      code: s.code,
+      name: s.name,
+      difficultyLabel: s.label,
+      bossGainPct: s.bossGainPct,
+      expeditionYieldBonusPct: s.expeditionYieldBonusPct,
+      patrolYieldBonusPct: s.patrolYieldBonusPct,
+      unlockRequires: idx > 0 ? STAR_SEA_TIER_ORDER[idx - 1] : null,
+    });
+  })
+);
+
 const ROUTE_PREFIXES = {
-  low: ['近海分岔巡航', '外港警戒线', '岛礁打捞航道', '海峡双线护航'],
-  medium: ['外海双路侦察', '航道破交作战', '岛链钳形突击', '深水压制航线'],
-  high: ['深海主力破交', '双线合围决战', '要塞强袭航道', '风暴前线突破'],
+  star_1: ['近海巡逻扇区', '港外岛礁线', '海湾打捞航道', '浅海护航区'],
+  star_2: ['外海破交航线', '珊瑚礁巡弋区', '岛链钳形海域', '商路护卫线'],
+  star_3: ['深水前线扇区', '铁底海峡航道', '风暴侦察航线', '迷雾封锁区'],
+  star_4: ['外围要塞航道', '深渊强袭扇区', '联合决战海域', '高压突破线'],
+  star_5: ['深渊中枢王座', '极境最终海域', '深海核心裂隙', '决战风暴眼'],
 };
 
 const NODE_NAMES = {
-  [NODE_TYPES.RESOURCE]: ['漂流补给区', '沉船物资点', '废弃浮标库', '散落集装箱区'],
-  [NODE_TYPES.WEATHER]: ['海雾观测点', '气流异常带', '无人信标站', '暗流监测区'],
-  [NODE_TYPES.ANCHORAGE]: ['隐蔽避风锚地', '前线浮船坞锚地', '无人礁盘补给湾', '临时应急整备点'],
-  [NODE_TYPES.ENCOUNTER]: ['前哨巡逻编队', '轻型警戒编队', '游弋侦察单位', '外围拦阻编队'],
-  [NODE_TYPES.ELITE]: ['重装封锁编队', '精英护卫集群', '装甲拦截中队', '高速突击分队'],
-  [NODE_TYPES.BOSS]: ['海域主力旗舰群', '中枢要塞守卫群', '深海核心联合舰队'],
+  [NODE_TYPES.RESOURCE]: ['漂流补给箱群', '沉船物资打捞点', '废弃油料浮标', '散落军需集装箱'],
+  [NODE_TYPES.WEATHER]: ['海雾气象观测点', '洋流侦察信标', '高空无人机监测带', '暗流声呐监听站'],
+  [NODE_TYPES.ANCHORAGE]: ['隐蔽避风锚地', '前线浮船坞锚地', '无人礁盘整备湾', '临时海上补给锚地'],
+  [NODE_TYPES.STORY_EVENT]: ['神秘漂流信号', '迷雾中的旧港区遗址', '偶遇商船护航请求', '海面星光奇遇'],
+  [NODE_TYPES.ENCOUNTER]: ['深海前哨巡逻群', '轻型警戒编队', '游弋侦察舰队', '外围拦阻中队'],
+  [NODE_TYPES.ELITE]: ['深海精英伏击群', '重装封锁编队', '装甲拦截中队', '高速突击猎杀队'],
+  [NODE_TYPES.BOSS]: ['海域深海旗舰群', '中枢要塞守卫旗舰', '深渊核心联合舰队'],
 };
 
 function deepClone(v) {
   return JSON.parse(JSON.stringify(v ?? null));
 }
 
+function hashSeedString(seedStr = '') {
+  let h = 2166136261 >>> 0;
+  const s = String(seedStr || 'KANCOLLE');
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h || 133791;
+}
+
+export function createSeededRng(seedStr) {
+  let state = hashSeedString(seedStr);
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+}
+
 function randInt(min, max, rng = Math.random) {
   const lo = Math.ceil(min);
   const hi = Math.floor(max);
+  if (hi <= lo) return lo;
   return Math.floor(rng() * (hi - lo + 1)) + lo;
 }
 
@@ -153,19 +230,116 @@ function pickRandom(arr, rng = Math.random) {
   return arr[Math.floor(rng() * arr.length)];
 }
 
+/**
+ * Encode / Decode compact shareable Map Workshop seed code:
+ * Format: `S{1..5}-{S|M|L}-{condIdx}-{mixIdx}-{biasIdx}-{4charSalt}`
+ */
+const SCALE_CODE = { short: 'S', medium: 'M', long: 'L' };
+const SCALE_FROM_CODE = { S: 'short', M: 'medium', L: 'long' };
+const MIX_LIST = ['balanced', 'combat_heavy', 'salvage_heavy', 'encounter_heavy'];
+const BIAS_LIST = ['mixed', 'surface', 'carrier', 'submarine'];
+
+export function encodeMapSeed({
+  starLevel = 1,
+  scale = 'medium',
+  seaConditionId = 'random',
+  nodeMix = 'balanced',
+  enemyBias = 'mixed',
+  salt = '',
+} = {}) {
+  const s = clamp(Math.floor(Number(starLevel) || 1), 1, 5);
+  const sc = SCALE_CODE[scale] || 'M';
+  const condIdx = seaConditionId === 'random' ? 'R' : Math.max(0, SEA_CONDITIONS.findIndex((c) => c.id === seaConditionId));
+  const mixIdx = Math.max(0, MIX_LIST.indexOf(nodeMix));
+  const biasIdx = Math.max(0, BIAS_LIST.indexOf(enemyBias));
+  const cleanSalt =
+    String(salt || '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '')
+      .slice(0, 5) || Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `S${s}-${sc}-${condIdx}-${mixIdx}-${biasIdx}-${cleanSalt}`;
+}
+
+export function decodeMapSeed(seedCode = '') {
+  const raw = String(seedCode || '').trim().toUpperCase();
+  const parts = raw.split('-');
+  if (parts.length < 6 || !parts[0].startsWith('S')) {
+    return null;
+  }
+  const starLevel = clamp(parseInt(parts[0].slice(1), 10) || 1, 1, 5);
+  const scale = SCALE_FROM_CODE[parts[1]] || 'medium';
+  const condRaw = parts[2];
+  const seaConditionId =
+    condRaw === 'R'
+      ? 'random'
+      : SEA_CONDITIONS[clamp(parseInt(condRaw, 10) || 0, 0, SEA_CONDITIONS.length - 1)]?.id || 'random';
+  const nodeMix = MIX_LIST[clamp(parseInt(parts[3], 10) || 0, 0, MIX_LIST.length - 1)] || 'balanced';
+  const enemyBias = BIAS_LIST[clamp(parseInt(parts[4], 10) || 0, 0, BIAS_LIST.length - 1)] || 'mixed';
+  const salt = parts[5] || '0000';
+  return {
+    starLevel,
+    difficulty: `star_${starLevel}`,
+    scale,
+    seaConditionId,
+    nodeMix,
+    enemyBias,
+    salt,
+    seedCode: `S${starLevel}-${SCALE_CODE[scale]}-${condRaw === 'R' ? 'R' : clamp(parseInt(condRaw, 10) || 0, 0, SEA_CONDITIONS.length - 1)}-${MIX_LIST.indexOf(nodeMix)}-${BIAS_LIST.indexOf(enemyBias)}-${salt}`,
+  };
+}
+
+/**
+ * Live preview helper for Custom Map Workshop UI (estimated oil/ammo & loot drop).
+ */
+export function estimateRouteProfile({
+  starLevel = 1,
+  difficulty = null,
+  scale = 'medium',
+  seaConditionId = 'random',
+  nodeMix = 'balanced',
+} = {}) {
+  const diffId = difficulty ? normalizeStarTierId(difficulty) : `star_${clamp(Math.floor(Number(starLevel) || 1), 1, 5)}`;
+  const tier = SEA_DIFFICULTIES[diffId] || SEA_DIFFICULTIES.star_1;
+  const scaleMeta = MAP_SCALES[scale] || MAP_SCALES.medium;
+  const cond = SEA_CONDITIONS.find((c) => c.id === seaConditionId) || null;
+  const stepFuel = Math.max(8, tier.stepCost.fuel + (cond?.mods?.fuelDelta || 0));
+  const stepAmmo = tier.stepCost.ammo;
+  // Main path traverses roughly 60%~70% of total branching nodes
+  const pathSteps = Math.max(4, Math.round(scaleMeta.nodeCount * 0.65));
+  const combatFactor = nodeMix === 'combat_heavy' ? 1.2 : nodeMix === 'salvage_heavy' ? 0.8 : 1.0;
+  const estFuel = Math.round(stepFuel * pathSteps);
+  const estAmmo = Math.round(stepAmmo * Math.max(3, Math.round(scaleMeta.combatEst * combatFactor)));
+  return {
+    difficulty: tier.id,
+    star: tier.star,
+    tierLabel: tier.label,
+    nodeCount: scaleMeta.nodeCount,
+    pathSteps,
+    stepFuel,
+    stepAmmo,
+    estFuel,
+    estAmmo,
+    dropHint: tier.dropHint,
+    enemySummary: `攻 ${tier.enemyAtkRange[0]}~${tier.enemyAtkRange[1]} · 甲 ${tier.enemyArmorRange[0]}~${tier.enemyArmorRange[1]} · 耐久 ${tier.enemyHpRange[0]}~${tier.enemyHpRange[1]}`,
+  };
+}
+
+/**
+ * Symmetric 2-digit enemy class multipliers matching player ship classes cleanly.
+ */
 const ENEMY_CLASS_ARCHETYPES = Object.freeze({
   BOSS: {
     shipClass: 'BOSS',
     role: 'boss',
     title: '深海要塞旗舰',
-    hpMult: 1.45,
-    armorMult: 1.35,
-    atkMult: 1.28,
-    evasion: [44, 58],
-    aa: [55, 78],
-    asw: [35, 55],
-    torpedo: [50, 72],
-    stealth: 18,
+    hpMult: 1.25,
+    armorMult: 1.15,
+    atkMult: 1.14,
+    evaMult: 0.78,
+    aaMult: 1.1,
+    aswMult: 0.75,
+    torpMult: 0.9,
+    stealth: 16,
     weakness: 'torpedo',
     weaknessLabel: '鱼雷/破甲弱点',
   },
@@ -173,13 +347,13 @@ const ENEMY_CLASS_ARCHETYPES = Object.freeze({
     shipClass: 'BB',
     role: 'battleship',
     title: '深海战列舰',
-    hpMult: 1.18,
-    armorMult: 1.25,
-    atkMult: 1.15,
-    evasion: [36, 48],
-    aa: [42, 62],
-    asw: [20, 35],
-    torpedo: [15, 28],
+    hpMult: 1.14,
+    armorMult: 1.16,
+    atkMult: 1.1,
+    evaMult: 0.62,
+    aaMult: 0.85,
+    aswMult: 0.45,
+    torpMult: 0.35,
     stealth: 10,
     weakness: 'torpedo',
     weaknessLabel: '鱼雷弱点',
@@ -188,14 +362,14 @@ const ENEMY_CLASS_ARCHETYPES = Object.freeze({
     shipClass: 'CV',
     role: 'carrier',
     title: '深海航母',
-    hpMult: 0.96,
-    armorMult: 0.88,
-    atkMult: 1.05,
-    evasion: [52, 66],
-    aa: [58, 82],
-    asw: [22, 36],
-    torpedo: [10, 20],
-    stealth: 16,
+    hpMult: 1.0,
+    armorMult: 0.86,
+    atkMult: 1.02,
+    evaMult: 0.85,
+    aaMult: 1.15,
+    aswMult: 0.48,
+    torpMult: 0.25,
+    stealth: 14,
     weakness: 'aa',
     weaknessLabel: '防空/空袭弱点',
   },
@@ -203,13 +377,13 @@ const ENEMY_CLASS_ARCHETYPES = Object.freeze({
     shipClass: 'CA',
     role: 'cruiser',
     title: '深海重巡洋舰',
-    hpMult: 0.92,
-    armorMult: 1.08,
-    atkMult: 0.96,
-    evasion: [54, 68],
-    aa: [44, 64],
-    asw: [34, 48],
-    torpedo: [46, 62],
+    hpMult: 0.96,
+    armorMult: 1.02,
+    atkMult: 0.98,
+    evaMult: 0.92,
+    aaMult: 0.9,
+    aswMult: 0.65,
+    torpMult: 0.82,
     stealth: 14,
     weakness: 'shelling',
     weaknessLabel: '炮击弱点',
@@ -218,14 +392,14 @@ const ENEMY_CLASS_ARCHETYPES = Object.freeze({
     shipClass: 'CL',
     role: 'escort',
     title: '深海轻巡洋舰',
-    hpMult: 0.72,
-    armorMult: 0.78,
-    atkMult: 0.82,
-    evasion: [64, 78],
-    aa: [50, 70],
-    asw: [52, 72],
-    torpedo: [54, 70],
-    stealth: 18,
+    hpMult: 0.82,
+    armorMult: 0.82,
+    atkMult: 0.88,
+    evaMult: 1.05,
+    aaMult: 1.0,
+    aswMult: 1.05,
+    torpMult: 0.92,
+    stealth: 16,
     weakness: 'shelling',
     weaknessLabel: '炮击弱点',
   },
@@ -233,14 +407,14 @@ const ENEMY_CLASS_ARCHETYPES = Object.freeze({
     shipClass: 'DD',
     role: 'destroyer',
     title: '深海高速驱逐舰',
-    hpMult: 0.58,
-    armorMult: 0.56,
-    atkMult: 0.78,
-    evasion: [74, 94],
-    aa: [34, 52],
-    asw: [56, 78],
-    torpedo: [68, 88],
-    stealth: 24,
+    hpMult: 0.72,
+    armorMult: 0.66,
+    atkMult: 0.84,
+    evaMult: 1.24,
+    aaMult: 0.78,
+    aswMult: 1.1,
+    torpMult: 1.12,
+    stealth: 20,
     weakness: 'shelling',
     weaknessLabel: '炮击弱点',
   },
@@ -248,41 +422,63 @@ const ENEMY_CLASS_ARCHETYPES = Object.freeze({
     shipClass: 'SS',
     role: 'sub',
     title: '深海猎杀潜艇',
-    hpMult: 0.52,
-    armorMult: 0.48,
-    atkMult: 0.86,
-    evasion: [66, 86],
-    aa: [10, 20],
-    asw: [25, 40],
-    torpedo: [76, 98],
-    stealth: 36,
+    hpMult: 0.66,
+    armorMult: 0.58,
+    atkMult: 0.9,
+    evaMult: 1.18,
+    aaMult: 0.35,
+    aswMult: 0.5,
+    torpMult: 1.22,
+    stealth: 28,
     weakness: 'asw',
     weaknessLabel: '反潜弱点',
   },
 });
 
+/**
+ * Build a single enemy ship unit strictly calibrated to the 1★~5★ symmetric 2-digit combat spec.
+ */
 export function buildEnemyUnitByClass(shipClass, idx, tierCfg, {
   type = NODE_TYPES.ENCOUNTER,
-  baseHp = 60,
-  baseArmor = 6,
-  baseAtk = 14,
   baseName = '',
   depthRatio = 0,
   strengthMultiplier = 1.0,
   rng = Math.random,
 } = {}) {
+  const tierId = normalizeStarTierId(tierCfg?.id || 'star_1');
+  const starSpec = STAR_SEA_TIERS[tierId] || STAR_SEA_TIERS.star_1;
   const arch = ENEMY_CLASS_ARCHETYPES[shipClass] || ENEMY_CLASS_ARCHETYPES.DD;
-  const depthScale = 1 + clamp(Number(depthRatio) || 0, 0, 1) * 0.35;
-  const strMult = clamp(Number(strengthMultiplier) || 1.0, 0.5, 3.5);
-  const tierFactor = tierCfg?.id === 'high' ? 1.22 : tierCfg?.id === 'medium' ? 1.08 : 0.94;
+  const depthScale = 1 + clamp(Number(depthRatio) || 0, 0, 1) * 0.14;
+  const strMult = clamp(Number(strengthMultiplier) || 1.0, 0.5, 2.5);
+  const tierMult = type === NODE_TYPES.BOSS ? 1.12 : type === NODE_TYPES.ELITE ? 1.05 : 0.96;
 
-  const unitHp = Math.max(22, Math.round(baseHp * 0.52 * arch.hpMult * depthScale * strMult));
-  const unitArmor = Math.max(1, Math.round(baseArmor * arch.armorMult * (0.85 + strMult * 0.25)));
-  const unitAtk = Math.max(6, Math.round(baseAtk * 0.78 * arch.atkMult * (0.82 + strMult * 0.32)));
-  const evasion = Math.round(randInt(arch.evasion[0], arch.evasion[1], rng) * (0.94 + depthRatio * 0.14));
-  const aa = Math.round(randInt(arch.aa[0], arch.aa[1], rng) * tierFactor);
-  const asw = Math.round(randInt(arch.asw[0], arch.asw[1], rng) * tierFactor);
-  const torpedo = Math.round(randInt(arch.torpedo[0], arch.torpedo[1], rng) * tierFactor);
+  const rawHp = randInt(starSpec.enemyHp[0], starSpec.enemyHp[1], rng);
+  const rawArmor = randInt(starSpec.enemyArmor[0], starSpec.enemyArmor[1], rng);
+  const rawAtk = randInt(starSpec.enemyAtk[0], starSpec.enemyAtk[1], rng);
+
+  const maxAtkCap = arch.shipClass === 'BOSS' || type === NODE_TYPES.BOSS ? starSpec.bossMaxAtk : starSpec.enemyAtk[1];
+  const unitHp = clamp(
+    Math.round(rawHp * arch.hpMult * depthScale * tierMult * strMult),
+    Math.round(starSpec.enemyHp[0] * 0.7),
+    Math.round(starSpec.enemyHp[1] * (arch.shipClass === 'BOSS' ? 1.22 : 1.05) * strMult)
+  );
+  const unitArmor = clamp(
+    Math.round(rawArmor * arch.armorMult * (0.9 + strMult * 0.1)),
+    Math.max(4, Math.round(starSpec.enemyArmor[0] * 0.65)),
+    Math.round(starSpec.enemyArmor[1] * (arch.shipClass === 'BOSS' ? 1.1 : 1.02))
+  );
+  const unitAtk = clamp(
+    Math.round(rawAtk * arch.atkMult * depthScale * tierMult * (0.85 + strMult * 0.15)),
+    Math.max(10, Math.round(starSpec.enemyAtk[0] * 0.8)),
+    Math.round(maxAtkCap * Math.max(1, strMult * 0.95))
+  );
+
+  // Symmetric secondary attributes aligned to the same 2-digit combat band
+  const baseSec = Math.round((rawAtk + rawArmor) * 0.5);
+  const evasion = clamp(Math.round(baseSec * arch.evaMult), 10, 115);
+  const aa = clamp(Math.round(baseSec * arch.aaMult), 8, 120);
+  const asw = clamp(Math.round(baseSec * arch.aswMult), 8, 105);
+  const torpedo = clamp(Math.round(rawAtk * arch.torpMult), 8, maxAtkCap);
 
   const labelIdx = idx === 0 && baseName ? `${baseName} · 旗舰` : `${arch.title} #${idx + 1}`;
   return {
@@ -291,6 +487,7 @@ export function buildEnemyUnitByClass(shipClass, idx, tierCfg, {
     shipClass: arch.shipClass,
     role: arch.role,
     tier: type,
+    star: starSpec.star,
     hp: unitHp,
     maxHp: unitHp,
     armor: unitArmor,
@@ -299,9 +496,9 @@ export function buildEnemyUnitByClass(shipClass, idx, tierCfg, {
     aa,
     asw,
     torpedo,
-    stealth: arch.stealth,
-    airThreat: arch.shipClass === 'CV' || arch.shipClass === 'BOSS' ? Math.round(aa * 0.45) : 0,
-    subThreat: arch.shipClass === 'SS' ? Math.round(torpedo * 0.42) : 0,
+    stealth: Math.round(arch.stealth + starSpec.star * 4),
+    airThreat: arch.shipClass === 'CV' || arch.shipClass === 'BOSS' ? Math.round(unitAtk * 0.72) : 0,
+    subThreat: arch.shipClass === 'SS' ? Math.round(torpedo * 0.68) : 0,
     weakness: arch.weakness,
     weaknessLabel: arch.weaknessLabel,
     threatLabel:
@@ -321,82 +518,97 @@ export function buildEnemyTemplate(
   type,
   tierCfg,
   rng = Math.random,
-  { lane = 'main', depthRatio = 0, fleetSize = 3, strengthMultiplier = 1.0 } = {}
+  { lane = 'main', depthRatio = 0, fleetSize = 3, strengthMultiplier = 1.0, enemyBias = 'mixed' } = {}
 ) {
   const isBoss = type === NODE_TYPES.BOSS;
   const isElite = type === NODE_TYPES.ELITE;
-  const diffId = tierCfg?.id || 'low';
-  const hpMult = isBoss ? 1.55 : isElite ? 1.25 : 0.95;
-  const atkMult = isBoss ? 1.3 : isElite ? 1.12 : 0.9;
-  const armorBonus = isBoss ? 5 : isElite ? 3 : 0;
-
-  const maxHp = Math.round(randInt(tierCfg.enemyHpRange[0], tierCfg.enemyHpRange[1], rng) * hpMult);
-  const armor = randInt(tierCfg.enemyArmorRange[0], tierCfg.enemyArmorRange[1], rng) + armorBonus;
-  const attackPower = Math.round(randInt(tierCfg.enemyAtkRange[0], tierCfg.enemyAtkRange[1], rng) * atkMult);
-  const weakness = lane === 'stealth' ? 'asw' : rng() < 0.5 ? 'shelling' : 'torpedo';
-
-  // Dynamic squad count: medium/high seas & deeper nodes scale up to 6~12 enemy ships!
+  const diffId = normalizeStarTierId(tierCfg?.id || 'star_1');
+  const tier = SEA_DIFFICULTIES[diffId] || SEA_DIFFICULTIES.star_1;
+  const star = tier.star || 1;
   const depthStep = clamp(Number(depthRatio) || 0, 0, 1);
-  const fleetAdj = Math.max(0, Math.round((Number(fleetSize) || 3) - 3) * 0.45);
+
+  const fleetAdj = Math.max(0, Math.round((Number(fleetSize) || 3) - 3) * 0.35);
   let minShips = 2;
   let maxShips = 3;
-  if (diffId === 'high') {
-    minShips = isBoss ? 8 : isElite || depthStep >= 0.45 ? 6 : 4;
-    maxShips = isBoss ? 12 : isElite || depthStep >= 0.45 ? 10 : 7;
-  } else if (diffId === 'medium') {
-    minShips = isBoss ? 6 : isElite || depthStep >= 0.5 ? 5 : 3;
-    maxShips = isBoss ? 10 : isElite || depthStep >= 0.5 ? 8 : 5;
+  if (star >= 5) {
+    minShips = isBoss ? 6 : isElite ? 5 : 4;
+    maxShips = isBoss ? 9 : isElite ? 7 : 6;
+  } else if (star >= 4) {
+    minShips = isBoss ? 5 : isElite ? 4 : 3;
+    maxShips = isBoss ? 8 : isElite ? 6 : 5;
+  } else if (star >= 3) {
+    minShips = isBoss ? 4 : isElite ? 3 : 3;
+    maxShips = isBoss ? 6 : isElite ? 5 : 4;
+  } else if (star === 2) {
+    minShips = isBoss ? 3 : isElite ? 3 : 2;
+    maxShips = isBoss ? 5 : isElite ? 4 : 3;
   } else {
-    minShips = isBoss ? 4 : isElite ? 3 : 2;
-    maxShips = isBoss ? 6 : isElite ? 4 : 3;
+    minShips = isBoss ? 3 : 2;
+    maxShips = isBoss ? 4 : 3;
   }
-  const squadCount = clamp(Math.round(randInt(minShips, maxShips, rng) + fleetAdj), 2, 12);
+  const squadCount = clamp(Math.round(randInt(minShips, maxShips, rng) + fleetAdj), 2, 10);
 
   const baseName =
-    lane === 'stealth' && !isBoss
+    enemyBias === 'submarine' || (lane === 'stealth' && !isBoss)
       ? pickRandom(['深海潜艇猎杀群', '暗流隐蔽伏击队', '水下静默雷击群'], rng)
+      : enemyBias === 'carrier' && !isBoss
+      ? pickRandom(['深海机动航空编队', '海空压制打击群', '黑翼航母特遣队'], rng)
+      : enemyBias === 'surface' && !isBoss
+      ? pickRandom(['深海重炮主力舰队', '铁甲炮雷突击队', '前线战列编队'], rng)
       : pickRandom(NODE_NAMES[type] || NODE_NAMES[NODE_TYPES.ENCOUNTER], rng);
 
-  // Compose realistic mixed enemy fleet classes (BOSS / BB / CV / CA / CL / DD / SS)
   const classPlan = [];
   if (isBoss) {
     classPlan.push('BOSS');
-    if (squadCount >= 2) classPlan.push('CV');
-    if (squadCount >= 3) classPlan.push('CA');
+    if (enemyBias === 'carrier') {
+      if (squadCount >= 2) classPlan.push('CV');
+      if (squadCount >= 3) classPlan.push('CV');
+    } else if (enemyBias === 'submarine') {
+      if (squadCount >= 2) classPlan.push('SS');
+      if (squadCount >= 3) classPlan.push('DD');
+    } else if (enemyBias === 'surface') {
+      if (squadCount >= 2) classPlan.push('BB');
+      if (squadCount >= 3) classPlan.push('CA');
+    } else {
+      if (squadCount >= 2) classPlan.push('CV');
+      if (squadCount >= 3) classPlan.push('CA');
+    }
     if (squadCount >= 4) classPlan.push('BB');
     if (squadCount >= 5) classPlan.push('DD');
-    if (squadCount >= 6) classPlan.push('SS');
-  } else if (lane === 'stealth') {
+  } else if (enemyBias === 'submarine' || lane === 'stealth') {
     classPlan.push('SS');
     if (squadCount >= 2) classPlan.push('DD');
     if (squadCount >= 3) classPlan.push('SS');
-    if (squadCount >= 4) classPlan.push('CL');
-  } else if (lane === 'assault' || isElite) {
-    classPlan.push(rng() < 0.55 ? 'BB' : 'CV');
-    if (squadCount >= 2) classPlan.push('CA');
+  } else if (enemyBias === 'carrier') {
+    classPlan.push('CV');
+    if (squadCount >= 2) classPlan.push('CL');
     if (squadCount >= 3) classPlan.push('CV');
-    if (squadCount >= 4) classPlan.push('DD');
+  } else if (enemyBias === 'surface' || lane === 'assault' || isElite) {
+    classPlan.push(rng() < 0.6 ? 'BB' : 'CA');
+    if (squadCount >= 2) classPlan.push('CA');
+    if (squadCount >= 3) classPlan.push(star >= 3 ? 'CV' : 'CL');
   } else {
     classPlan.push(rng() < 0.5 ? 'CL' : 'CA');
     if (squadCount >= 2) classPlan.push('DD');
   }
 
   const fillerPool =
-    lane === 'stealth'
-      ? ['SS', 'DD', 'CL', 'CA']
-      : diffId === 'high' || isBoss
+    enemyBias === 'submarine' || lane === 'stealth'
+      ? ['SS', 'DD', 'CL']
+      : enemyBias === 'carrier'
+      ? ['CV', 'CL', 'DD', 'CA']
+      : enemyBias === 'surface'
+      ? ['BB', 'CA', 'CL', 'DD']
+      : star >= 3 || isBoss
       ? ['BB', 'CV', 'CA', 'CL', 'DD', 'SS']
-      : ['CA', 'CL', 'DD', 'CV', 'SS'];
+      : ['CA', 'CL', 'DD', 'SS'];
   while (classPlan.length < squadCount) {
     classPlan.push(pickRandom(fillerPool, rng));
   }
 
   const squad = classPlan.map((cls, idx) =>
-    buildEnemyUnitByClass(cls, idx, tierCfg, {
+    buildEnemyUnitByClass(cls, idx, tier, {
       type,
-      baseHp: maxHp,
-      baseArmor: armor,
-      baseAtk: attackPower,
       baseName: idx === 0 ? baseName : '',
       depthRatio: depthStep,
       strengthMultiplier,
@@ -404,6 +616,7 @@ export function buildEnemyTemplate(
     })
   );
 
+  const lead = squad[0];
   const airThreat = squad.reduce((m, u) => Math.max(m, u.airThreat || 0), 0);
   const subThreat = squad.reduce((m, u) => Math.max(m, u.subThreat || 0), 0);
   const hasCarriers = squad.some((u) => u.shipClass === 'CV' || u.shipClass === 'BOSS');
@@ -417,328 +630,76 @@ export function buildEnemyTemplate(
       ? `机动航空编队（${squad.length}舰）`
       : `水面炮雷舰队（${squad.length}舰）`;
 
-  const weaknessLabel =
-    weakness === 'asw' ? '反潜弱点' : weakness === 'shelling' ? '炮击弱点' : '鱼雷弱点';
-
-  const isAmbush = lane === 'stealth' ? rng() < 0.65 : !isBoss && rng() < (diffId === 'high' ? 0.25 : 0.14);
-  const stealthRating = Math.round(
-    (lane === 'stealth' ? 42 : 24) +
-      (hasSubs ? 16 : 0) +
-      (diffId === 'high' ? 14 : diffId === 'medium' ? 8 : 0) +
-      depthStep * 14
-  );
+  const weakness = lead?.weakness || (hasSubs ? 'asw' : 'shelling');
+  const weaknessLabel = lead?.weaknessLabel || '炮击弱点';
+  const isAmbush =
+    isElite ? rng() < 0.38 : lane === 'stealth' ? rng() < 0.45 : !isBoss && rng() < (star >= 4 ? 0.24 : 0.12);
+  const stealthRating = Math.round(16 + star * 7 + (hasSubs ? 10 : 0) + (lane === 'stealth' ? 10 : 0) + depthStep * 8);
 
   return {
     name: baseName,
     tier: type,
     difficulty: diffId,
+    star,
     depthRatio: Number(depthStep.toFixed(2)),
     forcedEngagement: isBoss,
     isAmbush,
     stealthRating,
     hp: squad.reduce((s, u) => s + u.hp, 0),
     maxHp: squad.reduce((s, u) => s + u.maxHp, 0),
-    armor,
-    attackPower,
+    armor: lead?.armor || tier.enemyArmorRange[0],
+    attackPower: lead?.attackPower || tier.enemyAtkRange[0],
     airThreat,
     subThreat,
     threatLabel,
-    scanDc: tierCfg.baseDc + (isBoss ? 2 : isElite ? 1 : 0),
-    evadeDc: tierCfg.baseDc + (isBoss ? 3 : isElite ? 2 : 0),
-    shellingDc: tierCfg.baseDc + (isBoss ? 2 : isElite ? 1 : 0),
-    torpedoDc: tierCfg.baseDc + (isBoss ? 4 : isElite ? 2 : 1),
+    scanDc: tier.baseDc + (isBoss ? 2 : isElite ? 1 : 0),
+    evadeDc: tier.baseDc + (isBoss ? 3 : isElite ? 2 : 0),
+    shellingDc: tier.baseDc + (isBoss ? 2 : isElite ? 1 : 0),
+    torpedoDc: tier.baseDc + (isBoss ? 3 : isElite ? 2 : 1),
     weakness,
     weaknessLabel,
     squad,
   };
 }
 
+/**
+ * Legacy export kept as an empty array: all fixed preset sea charts are removed in v25.
+ */
 export function createPresetRoutes() {
-  const lowCfg = SEA_DIFFICULTIES.low;
-  const medCfg = SEA_DIFFICULTIES.medium;
-  return [
-    {
-      id: 'preset_patrol_low',
-      name: '标准近海巡逻线（预设）',
-      description: '3 节点低危巡逻航线：资源打捞 → 常规遭遇战 → 终点主力决战，适合稳健熟悉战术指令。',
-      difficulty: 'low',
-      difficultyLabel: lowCfg.label,
-      builtIn: true,
-      generated: false,
-      seaCondition: deepClone(SEA_CONDITIONS[0]),
-      minFuel: 60,
-      minAmmo: 60,
-      apCost: lowCfg.apCost,
-      stepCost: { ...lowCfg.stepCost },
-      nodes: [
-        {
-          code: 'A',
-          name: '漂流补给区',
-          type: NODE_TYPES.RESOURCE,
-          typeLabel: NODE_TYPE_LABELS[NODE_TYPES.RESOURCE],
-          statKey: 'tactics',
-          dc: 12,
-          loot: { fuel: 55, steel: 45, silver: 80 },
-          failDamage: { hp: 5, morale: 3 },
-          affinityGain: 2,
-          enemyTemplate: null,
-        },
-        {
-          code: 'B',
-          name: '前哨巡逻编队',
-          type: NODE_TYPES.ENCOUNTER,
-          typeLabel: NODE_TYPE_LABELS[NODE_TYPES.ENCOUNTER],
-          statKey: 'attack',
-          dc: 13,
-          loot: { steel: 65, bauxite: 35, silver: 120 },
-          failDamage: { hp: 12, morale: 6 },
-          affinityGain: 3,
-          enemyTemplate: {
-            name: '前哨巡逻编队',
-            tier: NODE_TYPES.ENCOUNTER,
-            forcedEngagement: false,
-            hp: 54,
-            maxHp: 54,
-            armor: 3,
-            attackPower: 10,
-            scanDc: 12,
-            evadeDc: 12,
-            shellingDc: 12,
-            torpedoDc: 13,
-            weakness: 'torpedo',
-            weaknessLabel: '鱼雷弱点',
-          },
-        },
-        {
-          code: 'C',
-          name: '海域主力旗舰群',
-          type: NODE_TYPES.BOSS,
-          typeLabel: NODE_TYPE_LABELS[NODE_TYPES.BOSS],
-          statKey: 'attack',
-          dc: 15,
-          loot: { steel: 110, bauxite: 70, silver: 220, gold: 3 },
-          failDamage: { hp: 18, morale: 10 },
-          affinityGain: 5,
-          enemyTemplate: {
-            name: '海域主力旗舰群',
-            tier: NODE_TYPES.BOSS,
-            forcedEngagement: true,
-            hp: 78,
-            maxHp: 78,
-            armor: 6,
-            attackPower: 14,
-            scanDc: 14,
-            evadeDc: 15,
-            shellingDc: 14,
-            torpedoDc: 16,
-            weakness: 'shelling',
-            weaknessLabel: '炮击弱点',
-          },
-        },
-      ],
-    },
-    {
-      id: 'preset_strike_med',
-      name: '外海突破作战线（预设）',
-      description: '4 节点中危作战航线：气象侦察 → 常规遭遇 → 精英封锁 → 终点主力决战。',
-      difficulty: 'medium',
-      difficultyLabel: medCfg.label,
-      builtIn: true,
-      generated: false,
-      seaCondition: deepClone(SEA_CONDITIONS[2]),
-      minFuel: 100,
-      minAmmo: 100,
-      apCost: medCfg.apCost,
-      stepCost: { ...medCfg.stepCost },
-      nodes: [
-        {
-          code: 'A',
-          name: '海雾观测点',
-          type: NODE_TYPES.WEATHER,
-          typeLabel: NODE_TYPE_LABELS[NODE_TYPES.WEATHER],
-          statKey: 'tactics',
-          dc: 13,
-          loot: { fuel: 60, bauxite: 50, silver: 90 },
-          failDamage: { hp: 6, morale: 4 },
-          affinityGain: 2,
-          enemyTemplate: null,
-        },
-        {
-          code: 'B',
-          name: '游弋侦察单位',
-          type: NODE_TYPES.ENCOUNTER,
-          typeLabel: NODE_TYPE_LABELS[NODE_TYPES.ENCOUNTER],
-          statKey: 'attack',
-          dc: 14,
-          loot: { steel: 80, silver: 140 },
-          failDamage: { hp: 14, morale: 7 },
-          affinityGain: 3,
-          enemyTemplate: {
-            name: '游弋侦察单位',
-            tier: NODE_TYPES.ENCOUNTER,
-            forcedEngagement: false,
-            hp: 76,
-            maxHp: 76,
-            armor: 5,
-            attackPower: 13,
-            scanDc: 14,
-            evadeDc: 14,
-            shellingDc: 14,
-            torpedoDc: 15,
-            weakness: 'shelling',
-            weaknessLabel: '炮击弱点',
-          },
-        },
-        {
-          code: 'C',
-          name: '重装封锁编队',
-          type: NODE_TYPES.ELITE,
-          typeLabel: NODE_TYPE_LABELS[NODE_TYPES.ELITE],
-          statKey: 'burst',
-          dc: 15,
-          loot: { steel: 110, bauxite: 65, silver: 180 },
-          failDamage: { hp: 18, morale: 9 },
-          affinityGain: 4,
-          enemyTemplate: {
-            name: '重装封锁编队',
-            tier: NODE_TYPES.ELITE,
-            forcedEngagement: false,
-            hp: 102,
-            maxHp: 102,
-            armor: 8,
-            attackPower: 16,
-            scanDc: 15,
-            evadeDc: 16,
-            shellingDc: 15,
-            torpedoDc: 16,
-            weakness: 'torpedo',
-            weaknessLabel: '鱼雷弱点',
-          },
-        },
-        {
-          code: 'D',
-          name: '中枢要塞守卫群',
-          type: NODE_TYPES.BOSS,
-          typeLabel: NODE_TYPE_LABELS[NODE_TYPES.BOSS],
-          statKey: 'attack',
-          dc: 16,
-          loot: { steel: 160, bauxite: 105, silver: 320, gold: 5 },
-          failDamage: { hp: 24, morale: 12 },
-          affinityGain: 6,
-          enemyTemplate: {
-            name: '中枢要塞守卫群',
-            tier: NODE_TYPES.BOSS,
-            forcedEngagement: true,
-            hp: 132,
-            maxHp: 132,
-            armor: 10,
-            attackPower: 19,
-            scanDc: 16,
-            evadeDc: 17,
-            shellingDc: 16,
-            torpedoDc: 18,
-            weakness: 'torpedo',
-            weaknessLabel: '鱼雷弱点',
-          },
-        },
-      ],
-    },
-  ];
+  return [];
 }
 
-const SEA_CONTROL_KEY = 'sea-control-v1';
-
-export const SEA_CONTROL_ZONES = Object.freeze([
-  {
-    id: 'low',
-    code: '1-1',
-    name: '近海防卫区',
-    difficultyLabel: '低危海域',
-    bossGainPct: 35,
-    expeditionYieldBonusPct: 15,
-    patrolYieldBonusPct: 15,
-    unlockRequires: null,
-  },
-  {
-    id: 'medium',
-    code: '2-1',
-    name: '外海破交航道',
-    difficultyLabel: '中危海域',
-    bossGainPct: 35,
-    expeditionYieldBonusPct: 20,
-    patrolYieldBonusPct: 20,
-    unlockRequires: 'low',
-  },
-  {
-    id: 'high',
-    code: '3-1',
-    name: '深海要塞核心区',
-    difficultyLabel: '高危海域',
-    bossGainPct: 34,
-    expeditionYieldBonusPct: 25,
-    patrolYieldBonusPct: 25,
-    unlockRequires: 'medium',
-  },
-]);
-
 function createDefaultSeaControlState() {
-  return {
-    low: { progress: 0, clearedCount: 0, controlledAt: null },
-    medium: { progress: 0, clearedCount: 0, controlledAt: null },
-    high: { progress: 0, clearedCount: 0, controlledAt: null },
-  };
+  const out = {};
+  for (const id of STAR_SEA_TIER_ORDER) {
+    out[id] = { progress: 0, clearedCount: 0, controlledAt: null };
+  }
+  return out;
 }
 
 export class RouteGenerator {
-  /**
-   * @param {{
-   *   storage?: import('./storage.js').StorageManager | null,
-   *   bus?: import('./event-bus.js').EventBus | null
-   * }} [deps]
-   */
   constructor({ storage = null, bus = null } = {}) {
     this._scope = storage ? storage.namespace(STORAGE_NS) : null;
     this._bus = bus;
     this._customRoutes = [];
     this._seaControl = createDefaultSeaControlState();
-    // Build a deterministic 10-node branching preset sea chart alongside classic presets
-    let seed = 133791;
-    const seededRng = () => {
-      seed = (seed * 1664525 + 1013904223) % 4294967296;
-      return seed / 4294967296;
-    };
-    const presetBranch10 = this.generateRoute({
-      difficulty: 'medium',
-      nodeCount: 10,
-      rng: seededRng,
-    });
-    presetBranch10.id = 'preset_branching_10';
-    presetBranch10.name = '双线岛链分岔海域（10节点预设）';
-    presetBranch10.description =
-      '10 节点分岔雷达海图：含「主力强攻航道（高危高钢铝）」vs「暗流隐蔽航道（反潜+临时锚地）」与终点主力决战。';
-    presetBranch10.builtIn = true;
-    presetBranch10.generated = false;
-    // Guarantee first node is an encounter so players can test combat immediately on Node A too
-    if (presetBranch10.nodes[0]) {
-      const n0 = presetBranch10.nodes[0];
-      if (n0.type !== NODE_TYPES.ENCOUNTER) {
-        const eq = buildEnemyTemplate(NODE_TYPES.ENCOUNTER, SEA_DIFFICULTIES.low, seededRng, { lane: 'main' });
-        n0.type = NODE_TYPES.ENCOUNTER;
-        n0.typeLabel = NODE_TYPE_LABELS[NODE_TYPES.ENCOUNTER];
-        n0.name = eq.name;
-        n0.enemyTemplate = eq;
-      }
-    }
-    this._presets = [presetBranch10, ...createPresetRoutes()];
+    this._presets = [];
     this._hydrated = false;
   }
 
   async init() {
     if (this._hydrated) return;
     if (this._scope) {
-      const saved = await this._scope.getLarge(CUSTOM_ROUTES_KEY, []);
-      this._customRoutes = Array.isArray(saved) ? deepClone(saved) : [];
-      const savedControl = await this._scope.getLarge(SEA_CONTROL_KEY, null);
+      const saved = await this._scope.getLarge(CUSTOM_ROUTES_KEY, null);
+      if (Array.isArray(saved)) {
+        this._customRoutes = deepClone(saved);
+      } else {
+        const legacyRoutes = await this._scope.getLarge('custom-routes-v1', []);
+        this._customRoutes = Array.isArray(legacyRoutes) ? deepClone(legacyRoutes) : [];
+      }
+      const savedControl =
+        (await this._scope.getLarge(SEA_CONTROL_KEY, null)) ||
+        (await this._scope.getLarge('sea-control-v1', null));
       if (savedControl && typeof savedControl === 'object') {
         this.deserializeSeaControl(savedControl, { persist: false });
       }
@@ -756,11 +717,20 @@ export class RouteGenerator {
     await this._scope.setLarge(SEA_CONTROL_KEY, this.serializeSeaControl());
   }
 
-  isSeaZoneUnlocked(difficultyId = 'low') {
-    const def = SEA_CONTROL_ZONES.find((z) => z.id === difficultyId);
+  isSeaZoneUnlocked(difficultyId = 'star_1') {
+    const id = normalizeStarTierId(difficultyId);
+    const def = SEA_CONTROL_ZONES.find((z) => z.id === id);
     if (!def || !def.unlockRequires) return true;
     const reqState = this._seaControl[def.unlockRequires];
     return Number(reqState?.progress || 0) >= 100;
+  }
+
+  getHighestUnlockedStar() {
+    let highest = 1;
+    for (const z of SEA_CONTROL_ZONES) {
+      if (this.isSeaZoneUnlocked(z.id)) highest = Math.max(highest, z.star);
+    }
+    return highest;
   }
 
   getSeaControlOverview() {
@@ -785,7 +755,7 @@ export class RouteGenerator {
         clearedCount: Math.max(0, Math.floor(Number(st.clearedCount) || 0)),
         controlled,
         unlocked,
-        unlockHint: unlocked ? '已开放出征' : `需「${reqZone?.name || '前置海域'}」制海权达 100% 解锁`,
+        unlockHint: unlocked ? '已开放出征' : `需「${reqZone?.name || '前置星级海域'}」制海权达 100% 解锁`,
       };
     });
 
@@ -793,6 +763,7 @@ export class RouteGenerator {
       zones,
       controlledCount,
       totalZones: zones.length,
+      highestUnlockedStar: this.getHighestUnlockedStar(),
       totalExpeditionBonusPct,
       totalPatrolBonusPct,
     };
@@ -803,22 +774,23 @@ export class RouteGenerator {
     return Number((1 + ov.totalExpeditionBonusPct / 100).toFixed(2));
   }
 
-  getPatrolYieldMultiplier(difficultyId = 'low') {
+  getPatrolYieldMultiplier(difficultyId = 'star_1') {
+    const id = normalizeStarTierId(difficultyId);
     const ov = this.getSeaControlOverview();
-    const zone = ov.zones.find((z) => z.id === difficultyId);
+    const zone = ov.zones.find((z) => z.id === id);
     const localBonus = zone?.controlled ? zone.patrolYieldBonusPct : 0;
     return Number((1 + localBonus / 100).toFixed(2));
   }
 
   /**
-   * Advance Sea Control progress (0% -> 100%) upon defeating a sea zone's Boss flagship.
-   * Reaching 100% unlocks the next higher-risk sea zone & permanently boosts patrol/expedition yields!
+   * Advance 1★~5★ Sea Control progress (0% -> 100%) upon defeating a Boss flagship.
    */
-  async recordBossVictory(difficultyId = 'low', { isNight = false } = {}) {
-    const zoneDef = SEA_CONTROL_ZONES.find((z) => z.id === difficultyId) || SEA_CONTROL_ZONES[0];
+  async recordBossVictory(difficultyId = 'star_1', { isNight = false } = {}) {
+    const id = normalizeStarTierId(difficultyId);
+    const zoneDef = SEA_CONTROL_ZONES.find((z) => z.id === id) || SEA_CONTROL_ZONES[0];
     const st = this._seaControl[zoneDef.id] || { progress: 0, clearedCount: 0, controlledAt: null };
     const before = clamp(Math.round(Number(st.progress) || 0), 0, 100);
-    const gain = zoneDef.bossGainPct || 35;
+    const gain = zoneDef.bossGainPct || 34;
     const after = clamp(before + gain, 0, 100);
     const newlyControlled = before < 100 && after >= 100;
 
@@ -834,6 +806,7 @@ export class RouteGenerator {
 
     const payload = {
       difficulty: zoneDef.id,
+      star: zoneDef.star,
       zoneName: zoneDef.name,
       zoneCode: zoneDef.code,
       before,
@@ -855,7 +828,7 @@ export class RouteGenerator {
 
   serializeSeaControl() {
     return {
-      version: 1,
+      version: 2,
       zones: deepClone(this._seaControl),
     };
   }
@@ -863,8 +836,16 @@ export class RouteGenerator {
   deserializeSeaControl(snapshot, { persist = true } = {}) {
     const def = createDefaultSeaControlState();
     const rawZones = snapshot?.zones || snapshot || {};
+    // Losslessly map both new star_1..star_5 and legacy low/medium/high keys
+    const legacyFallback = {
+      star_1: rawZones.star_1 || rawZones.low,
+      star_2: rawZones.star_2 || rawZones.medium,
+      star_3: rawZones.star_3 || rawZones.high,
+      star_4: rawZones.star_4,
+      star_5: rawZones.star_5,
+    };
     for (const z of SEA_CONTROL_ZONES) {
-      const src = rawZones[z.id];
+      const src = legacyFallback[z.id];
       if (src && typeof src === 'object') {
         def[z.id] = {
           progress: clamp(Math.round(Number(src.progress) || 0), 0, 100),
@@ -878,7 +859,7 @@ export class RouteGenerator {
   }
 
   getPresetRoutes() {
-    return deepClone(this._presets);
+    return [];
   }
 
   listCustomRoutes() {
@@ -886,48 +867,111 @@ export class RouteGenerator {
   }
 
   listAllRoutes() {
-    return [...this.getPresetRoutes(), ...this.listCustomRoutes()];
+    return this.listCustomRoutes();
   }
 
   /**
-   * Procedurally generate an 8~15 node branching sortie route with:
-   *   - Mid-route Fork Choice: 「主力强攻航道 (assault)」 vs 「暗流隐蔽航道 (stealth)」
-   *   - Temporary Anchorage rest nodes (NODE_TYPES.ANCHORAGE)
-   *   - Multi-ship enemy squads (enemyTemplate.squad) for turn-by-turn tactical combat
+   * Procedurally generate a 1★~5★ branching sea chart with full Custom Map Workshop customization.
    */
   generateRoute({
-    difficulty = 'low',
+    difficulty = null,
+    starLevel = null,
+    scale = 'medium', // 'short' | 'medium' | 'long'
     nodeCount = null,
+    seaConditionId = 'random',
+    nodeMix = 'balanced',
+    enemyBias = 'mixed',
+    seedCode = null,
     commander = null,
     customEnemies = [],
     fleetSize = 3,
     strengthMultiplier = 1.0,
-    rng = Math.random,
+    rng = null,
   } = {}) {
-    const tier = SEA_DIFFICULTIES[difficulty] || SEA_DIFFICULTIES.low;
-    const totalNodes = nodeCount
-      ? clamp(Math.floor(nodeCount), 8, 15)
-      : randInt(tier.nodeRange[0], tier.nodeRange[1], rng);
+    // Decode seedCode if provided
+    let parsedSeed = null;
+    if (seedCode && String(seedCode).trim()) {
+      parsedSeed = decodeMapSeed(seedCode);
+    }
 
-    const seaCondition = deepClone(pickRandom(SEA_CONDITIONS, rng));
-    const stepFuel = Math.max(10, tier.stepCost.fuel + (seaCondition.mods.fuelDelta || 0));
+    const resolvedStar = parsedSeed
+      ? parsedSeed.starLevel
+      : starLevel
+      ? clamp(Math.floor(Number(starLevel)), 1, 5)
+      : (SEA_DIFFICULTIES[normalizeStarTierId(difficulty || 'star_1')]?.star || 1);
+    const diffId = `star_${resolvedStar}`;
+    const tier = SEA_DIFFICULTIES[diffId] || SEA_DIFFICULTIES.star_1;
+
+    const resolvedScale = parsedSeed?.scale || (MAP_SCALES[scale] ? scale : 'medium');
+    const resolvedCondId = parsedSeed?.seaConditionId || seaConditionId || 'random';
+    const resolvedMix = parsedSeed?.nodeMix || (NODE_MIX_MODES[nodeMix] ? nodeMix : 'balanced');
+    const resolvedBias = parsedSeed?.enemyBias || (ENEMY_BIAS_MODES[enemyBias] ? enemyBias : 'mixed');
+    const finalSeedCode =
+      parsedSeed?.seedCode ||
+      encodeMapSeed({
+        starLevel: resolvedStar,
+        scale: resolvedScale,
+        seaConditionId: resolvedCondId,
+        nodeMix: resolvedMix,
+        enemyBias: resolvedBias,
+      });
+
+    const activeRng = typeof rng === 'function' ? rng : createSeededRng(finalSeedCode);
+    const totalNodes = nodeCount
+      ? clamp(Math.floor(nodeCount), 6, 12)
+      : MAP_SCALES[resolvedScale]?.nodeCount || 9;
+
+    const seaCondition = deepClone(
+      resolvedCondId !== 'random'
+        ? SEA_CONDITIONS.find((c) => c.id === resolvedCondId) || SEA_CONDITIONS[0]
+        : pickRandom(SEA_CONDITIONS, activeRng)
+    );
+
+    const stepFuel = Math.max(8, tier.stepCost.fuel + (seaCondition.mods.fuelDelta || 0));
     const stepAmmo = tier.stepCost.ammo;
     const revealChance =
       commander && typeof commander.getRouteRevealChance === 'function'
         ? commander.getRouteRevealChance()
-        : 0.25;
+        : 0.28;
 
-    // Partition 8..15 total nodes into:
-    //   Entry (2 nodes: A -> B [FORK])
-    //   Upper Lane 'assault' (laneLen nodes: C1.. -> merge)
-    //   Lower Lane 'stealth' (laneLen nodes: C2.. -> merge)
-    //   Tail after merge (tailLen >= 2 nodes: ... -> BOSS)
-    const remaining = totalNodes - 2; // 6..13
-    const laneLen = clamp(Math.floor((remaining - 2) / 2), 2, 4); // 2..4 per branch
-    const tailLen = Math.max(2, remaining - laneLen * 2); // 2..5 tail nodes
+    // Branching layout: Entry (2: A->B fork), Upper 'assault' (laneLen), Lower 'stealth' (laneLen), Tail (tailLen -> BOSS)
+    const remaining = Math.max(4, totalNodes - 2);
+    const laneLen = clamp(Math.floor((remaining - 2) / 2), 1, 3);
+    const tailLen = Math.max(2, remaining - laneLen * 2);
     const maxCol = Math.max(1, 2 + laneLen + tailLen - 1);
 
     let revealedCount = 0;
+
+    const pickNonBossType = (lane, indexInLane) => {
+      const r = activeRng();
+      if (resolvedMix === 'combat_heavy') {
+        if (lane === 'assault') return r < 0.6 ? NODE_TYPES.ELITE : NODE_TYPES.ENCOUNTER;
+        return r < 0.2 ? NODE_TYPES.ANCHORAGE : r < 0.35 ? NODE_TYPES.STORY_EVENT : NODE_TYPES.ENCOUNTER;
+      }
+      if (resolvedMix === 'salvage_heavy') {
+        if (indexInLane === 1 && lane === 'stealth') return NODE_TYPES.ANCHORAGE;
+        if (r < 0.42) return NODE_TYPES.RESOURCE;
+        if (r < 0.62) return NODE_TYPES.ANCHORAGE;
+        if (r < 0.78) return NODE_TYPES.STORY_EVENT;
+        return NODE_TYPES.ENCOUNTER;
+      }
+      if (resolvedMix === 'encounter_heavy') {
+        if (r < 0.46) return NODE_TYPES.STORY_EVENT;
+        if (r < 0.64) return NODE_TYPES.RESOURCE;
+        if (r < 0.78) return NODE_TYPES.ANCHORAGE;
+        return lane === 'assault' ? NODE_TYPES.ELITE : NODE_TYPES.ENCOUNTER;
+      }
+      // balanced
+      if (lane === 'assault') {
+        if (indexInLane === 0) return NODE_TYPES.ELITE;
+        if (r < 0.45) return NODE_TYPES.ELITE;
+        if (r < 0.7) return NODE_TYPES.ENCOUNTER;
+        return NODE_TYPES.RESOURCE;
+      }
+      if (indexInLane === 0) return r < 0.55 ? NODE_TYPES.STORY_EVENT : NODE_TYPES.ENCOUNTER;
+      if (indexInLane === 1) return NODE_TYPES.ANCHORAGE;
+      return r < 0.45 ? NODE_TYPES.RESOURCE : r < 0.75 ? NODE_TYPES.STORY_EVENT : NODE_TYPES.WEATHER;
+    };
 
     const makeNode = ({ code, type, lane = 'main', col = 0, forceReveal = false }) => {
       const isCombat = type === NODE_TYPES.ENCOUNTER || type === NODE_TYPES.ELITE || type === NODE_TYPES.BOSS;
@@ -938,67 +982,82 @@ export class RouteGenerator {
           : [];
       let enemyTemplate = null;
       if (isCombat) {
-        if (matchingCustom.length > 0 && rng() < 0.35 && lane !== 'stealth') {
-          const picked = deepClone(pickRandom(matchingCustom, rng));
+        if (matchingCustom.length > 0 && activeRng() < 0.3 && lane !== 'stealth') {
+          const picked = deepClone(pickRandom(matchingCustom, activeRng));
           if (!Array.isArray(picked.squad) || picked.squad.length === 0) {
-            picked.squad = buildEnemyTemplate(type, tier, rng, {
+            picked.squad = buildEnemyTemplate(type, tier, activeRng, {
               lane,
               depthRatio,
               fleetSize,
               strengthMultiplier,
+              enemyBias: resolvedBias,
             }).squad;
           }
           picked.depthRatio = depthRatio;
           picked.difficulty = tier.id;
+          picked.star = tier.star;
           enemyTemplate = picked;
         } else {
-          enemyTemplate = buildEnemyTemplate(type, tier, rng, {
+          enemyTemplate = buildEnemyTemplate(type, tier, activeRng, {
             lane,
             depthRatio,
             fleetSize,
             strengthMultiplier,
+            enemyBias: resolvedBias,
           });
         }
       }
-      const name = isCombat ? enemyTemplate.name : pickRandom(NODE_NAMES[type] || NODE_NAMES[NODE_TYPES.RESOURCE], rng);
-      const intelRevealed = forceReveal || type === NODE_TYPES.BOSS || type === NODE_TYPES.ANCHORAGE || rng() < revealChance;
+      const name = isCombat ? enemyTemplate.name : pickRandom(NODE_NAMES[type] || NODE_NAMES[NODE_TYPES.RESOURCE], activeRng);
+      const intelRevealed =
+        forceReveal ||
+        type === NODE_TYPES.BOSS ||
+        type === NODE_TYPES.ANCHORAGE ||
+        type === NODE_TYPES.STORY_EVENT ||
+        activeRng() < revealChance;
       if (intelRevealed) revealedCount += 1;
 
-      const laneBonus = lane === 'assault' ? 1.55 : 1.0;
-      const scale = tier.lootScale * laneBonus * (type === NODE_TYPES.BOSS ? 2.1 : type === NODE_TYPES.ELITE ? 1.5 : 1.15);
+      const laneBonus = lane === 'assault' ? 1.45 : 1.0;
+      const scaleMult = tier.lootScale * laneBonus * (type === NODE_TYPES.BOSS ? 2.0 : type === NODE_TYPES.ELITE ? 1.45 : 1.1);
       const loot =
         type === NODE_TYPES.ANCHORAGE
-          ? { fuel: 45, ammo: 35, silver: 75 }
+          ? { fuel: 30, ammo: 25, silver: 60 }
+          : type === NODE_TYPES.STORY_EVENT
+          ? {
+              fuel: Math.round(55 * scaleMult),
+              ammo: Math.round(45 * scaleMult),
+              silver: Math.round(135 * scaleMult),
+              bauxite: Math.round(45 * scaleMult),
+            }
           : type === NODE_TYPES.RESOURCE
           ? {
-              fuel: Math.round(125 * scale),
-              ammo: Math.round(95 * scale),
-              steel: Math.round(130 * scale),
-              bauxite: Math.round(85 * scale),
-              silver: Math.round(190 * scale),
+              fuel: Math.round(90 * scaleMult),
+              ammo: Math.round(80 * scaleMult),
+              steel: Math.round(115 * scaleMult),
+              bauxite: Math.round(75 * scaleMult),
+              silver: Math.round(160 * scaleMult),
             }
           : type === NODE_TYPES.WEATHER
           ? {
-              fuel: Math.round(85 * scale),
-              ammo: Math.round(65 * scale),
-              bauxite: Math.round(105 * scale),
-              silver: Math.round(165 * scale),
+              fuel: Math.round(65 * scaleMult),
+              ammo: Math.round(50 * scaleMult),
+              bauxite: Math.round(90 * scaleMult),
+              silver: Math.round(140 * scaleMult),
             }
           : type === NODE_TYPES.BOSS
           ? {
-              fuel: Math.round(140 * scale),
-              ammo: Math.round(135 * scale),
-              steel: Math.round(230 * scale),
-              bauxite: Math.round(165 * scale),
-              silver: Math.round(440 * scale),
-              gold: Math.max(4, Math.round((tier.goldBonus || 4) * 1.6)),
+              fuel: Math.round(115 * scaleMult),
+              ammo: Math.round(110 * scaleMult),
+              steel: Math.round(210 * scaleMult),
+              bauxite: Math.round(150 * scaleMult),
+              silver: Math.round(380 * scaleMult),
+              gold: Math.max(3, Math.round((tier.goldBonus || 3) * 1.4)),
             }
           : {
-              fuel: Math.round(80 * scale),
-              ammo: Math.round(75 * scale),
-              steel: Math.round(140 * scale),
-              bauxite: Math.round(95 * scale),
-              silver: Math.round(260 * scale),
+              fuel: Math.round(65 * scaleMult),
+              ammo: Math.round(60 * scaleMult),
+              steel: Math.round(125 * scaleMult),
+              bauxite: Math.round(85 * scaleMult),
+              silver: Math.round(215 * scaleMult),
             };
 
       return {
@@ -1011,6 +1070,7 @@ export class RouteGenerator {
         col,
         depthRatio,
         difficulty: tier.id,
+        star: tier.star,
         isAmbush: Boolean(enemyTemplate?.isAmbush),
         nextCodes: [],
         branchChoices: null,
@@ -1018,13 +1078,22 @@ export class RouteGenerator {
         anchorageConfig:
           type === NODE_TYPES.ANCHORAGE
             ? {
-                cost: { fuel: 22, steel: 18, silver: 20 },
+                cost: { fuel: 16, steel: 14, silver: 15 },
                 healPct: 0.35,
-                moraleGain: 20,
+                arBonusHealPct: 0.25,
+                moraleGain: 22,
+              }
+            : null,
+        salvageCarriedRefill:
+          type === NODE_TYPES.RESOURCE
+            ? {
+                fuel: Math.round(24 + tier.star * 8),
+                ammo: Math.round(20 + tier.star * 8),
+                salvageParts: Math.max(1, Math.round(tier.star * 1.5)),
               }
             : null,
         statKey:
-          type === NODE_TYPES.RESOURCE || type === NODE_TYPES.WEATHER || type === NODE_TYPES.ANCHORAGE
+          type === NODE_TYPES.RESOURCE || type === NODE_TYPES.WEATHER || type === NODE_TYPES.ANCHORAGE || type === NODE_TYPES.STORY_EVENT
             ? 'recon'
             : lane === 'stealth'
             ? 'asw'
@@ -1034,8 +1103,8 @@ export class RouteGenerator {
         dc: tier.baseDc + (type === NODE_TYPES.BOSS ? 3 : type === NODE_TYPES.ELITE ? 2 : 0),
         loot,
         failDamage: {
-          hp: Math.round((type === NODE_TYPES.BOSS ? 20 : type === NODE_TYPES.ELITE ? 15 : 9) * tier.lootScale * 0.7),
-          morale: type === NODE_TYPES.BOSS ? 10 : 6,
+          hp: Math.round((type === NODE_TYPES.BOSS ? 16 : type === NODE_TYPES.ELITE ? 12 : 7) * (0.7 + tier.star * 0.15)),
+          morale: type === NODE_TYPES.BOSS ? 8 : 5,
         },
         affinityGain: type === NODE_TYPES.BOSS ? 5 : type === NODE_TYPES.ELITE ? 4 : 2,
         enemyTemplate,
@@ -1044,17 +1113,17 @@ export class RouteGenerator {
 
     const nodes = [];
 
-    // 1. Entry Segment: A (Encounter or Resource) -> B (Fork Decision Node)
+    // 1. Entry Segment: A -> B (Fork)
     const nodeA = makeNode({
       code: 'A',
-      type: rng() < 0.7 ? NODE_TYPES.ENCOUNTER : NODE_TYPES.RESOURCE,
+      type: resolvedMix === 'salvage_heavy' ? NODE_TYPES.RESOURCE : resolvedMix === 'encounter_heavy' ? NODE_TYPES.STORY_EVENT : NODE_TYPES.ENCOUNTER,
       lane: 'main',
       col: 0,
       forceReveal: true,
     });
     const nodeB = makeNode({
       code: 'B',
-      type: nodeA.type === NODE_TYPES.ENCOUNTER ? NODE_TYPES.WEATHER : NODE_TYPES.ENCOUNTER,
+      type: nodeA.type === NODE_TYPES.ENCOUNTER ? (activeRng() < 0.55 ? NODE_TYPES.RESOURCE : NODE_TYPES.STORY_EVENT) : NODE_TYPES.ENCOUNTER,
       lane: 'main',
       col: 1,
       forceReveal: true,
@@ -1062,32 +1131,22 @@ export class RouteGenerator {
     nodeA.nextCodes = ['B'];
     nodes.push(nodeA, nodeB);
 
-    // 2. Upper Branch: 'assault' (主力强攻航道)
+    // 2. Upper Branch ('assault')
     const assaultNodes = [];
     for (let i = 0; i < laneLen; i++) {
       const code = `${String.fromCharCode(67 + i)}1`;
-      let type = NODE_TYPES.ELITE;
-      if (i === 0) type = NODE_TYPES.ELITE;
-      else if (i === laneLen - 1) type = NODE_TYPES.ELITE;
-      else type = rng() < 0.55 ? NODE_TYPES.RESOURCE : NODE_TYPES.ENCOUNTER;
-      const n = makeNode({ code, type, lane: 'assault', col: 2 + i });
-      assaultNodes.push(n);
+      const type = pickNonBossType('assault', i);
+      assaultNodes.push(makeNode({ code, type, lane: 'assault', col: 2 + i }));
     }
 
-    // 3. Lower Branch: 'stealth' (暗流隐蔽航道)
+    // 3. Lower Branch ('stealth')
     const stealthNodes = [];
     for (let i = 0; i < laneLen; i++) {
       const code = `${String.fromCharCode(67 + i)}2`;
-      let type = NODE_TYPES.ENCOUNTER;
-      if (i === 0) type = NODE_TYPES.ENCOUNTER; // Submarine ambush
-      else if (i === 1) type = NODE_TYPES.ANCHORAGE; // Temporary Anchorage rest stop
-      else if (i === laneLen - 1) type = NODE_TYPES.WEATHER;
-      else type = NODE_TYPES.ENCOUNTER;
-      const n = makeNode({ code, type, lane: 'stealth', col: 2 + i });
-      stealthNodes.push(n);
+      const type = pickNonBossType('stealth', i);
+      stealthNodes.push(makeNode({ code, type, lane: 'stealth', col: 2 + i }));
     }
 
-    // Link Fork Node B -> Assault[0] and Stealth[0]
     nodeB.nextCodes = [assaultNodes[0].code, stealthNodes[0].code];
     nodeB.branchChoices = [
       {
@@ -1095,14 +1154,14 @@ export class RouteGenerator {
         lane: 'assault',
         label: BRANCH_LANE_META.assault.label,
         desc: BRANCH_LANE_META.assault.desc,
-        badge: '高危高回报',
+        badge: '高危高爆率',
       },
       {
         targetCode: stealthNodes[0].code,
         lane: 'stealth',
         label: BRANCH_LANE_META.stealth.label,
         desc: BRANCH_LANE_META.stealth.desc,
-        badge: '反潜/锚地休整',
+        badge: '打捞/海遇/锚地',
       },
     ];
 
@@ -1112,27 +1171,28 @@ export class RouteGenerator {
     }
     nodes.push(...assaultNodes, ...stealthNodes);
 
-    // 4. Tail Segment after Convergence (includes an Anchorage before Boss if tailLen >= 3)
+    // 4. Tail Segment after Convergence -> BOSS
     const tailNodes = [];
     const mergeCol = 2 + laneLen;
-    const baseTailChar = 67 + laneLen; // e.g., F, G, H...
+    const baseTailChar = 67 + laneLen;
     for (let i = 0; i < tailLen; i++) {
       const isBoss = i === tailLen - 1;
       const code = isBoss ? 'BOSS' : String.fromCharCode(baseTailChar + i);
       let type = NODE_TYPES.BOSS;
       if (!isBoss) {
         if (i === 0) type = NODE_TYPES.ANCHORAGE;
-        else if (i === tailLen - 2) type = difficulty === 'low' ? NODE_TYPES.ENCOUNTER : NODE_TYPES.ELITE;
-        else type = rng() < 0.5 ? NODE_TYPES.RESOURCE : NODE_TYPES.ENCOUNTER;
+        else if (i === tailLen - 2) type = resolvedStar >= 3 ? NODE_TYPES.ELITE : NODE_TYPES.ENCOUNTER;
+        else type = activeRng() < 0.5 ? NODE_TYPES.STORY_EVENT : NODE_TYPES.RESOURCE;
       }
-      const n = makeNode({
-        code,
-        type,
-        lane: 'main',
-        col: mergeCol + i,
-        forceReveal: isBoss || type === NODE_TYPES.ANCHORAGE,
-      });
-      tailNodes.push(n);
+      tailNodes.push(
+        makeNode({
+          code,
+          type,
+          lane: 'main',
+          col: mergeCol + i,
+          forceReveal: isBoss || type === NODE_TYPES.ANCHORAGE,
+        })
+      );
     }
 
     assaultNodes[laneLen - 1].nextCodes = [tailNodes[0].code];
@@ -1142,14 +1202,19 @@ export class RouteGenerator {
     }
     nodes.push(...tailNodes);
 
-    const prefix = pickRandom(ROUTE_PREFIXES[tier.id] || ROUTE_PREFIXES.low, rng);
-    const serial = randInt(10, 99, rng);
+    const prefix = pickRandom(ROUTE_PREFIXES[tier.id] || ROUTE_PREFIXES.star_1, activeRng);
+    const serial = randInt(10, 99, activeRng);
     const route = {
       id: `route_gen_${Date.now().toString(36)}_${serial}`,
-      name: `${prefix} ${serial}号海域（${tier.label}）`,
-      description: `分岔雷达海图 · ${nodes.length} 节点（含强攻/隐蔽双航道与临时锚地 · 预侦察 ${revealedCount}/${nodes.length}）· 海况「${seaCondition.label}」`,
+      name: `${prefix} ${serial}号（${tier.label}）`,
+      description: `${MAP_SCALES[resolvedScale]?.label || `${nodes.length}节点`} · 海况「${seaCondition.label}」· ${NODE_MIX_MODES[resolvedMix]?.label} · 敌情「${ENEMY_BIAS_MODES[resolvedBias]?.label}」· 预侦察 ${revealedCount}/${nodes.length}`,
       difficulty: tier.id,
+      star: tier.star,
       difficultyLabel: tier.label,
+      scale: resolvedScale,
+      nodeMix: resolvedMix,
+      enemyBias: resolvedBias,
+      seedCode: finalSeedCode,
       builtIn: false,
       generated: true,
       hasBranches: true,
@@ -1167,6 +1232,8 @@ export class RouteGenerator {
       this._bus.emit('route:generated', {
         routeId: route.id,
         difficulty: tier.id,
+        star: tier.star,
+        seedCode: finalSeedCode,
         nodeCount: nodes.length,
         hasBranches: true,
       });
@@ -1174,51 +1241,45 @@ export class RouteGenerator {
     return route;
   }
 
+  /**
+   * Save a Custom Map Workshop blueprint (or seed recipe) so commanders can reload favorite farming/challenge maps.
+   */
   async saveCustomRoute(routeDef) {
     if (!routeDef || !routeDef.name) {
-      throw new Error('航线名称不能为空');
+      throw new Error('海图名称不能为空');
     }
-    const tier = SEA_DIFFICULTIES[routeDef.difficulty] || SEA_DIFFICULTIES.low;
-    const normalizedNodes = (routeDef.nodes || []).map((n, idx) => {
-      const type = Object.values(NODE_TYPES).includes(n.type) ? n.type : NODE_TYPES.ENCOUNTER;
-      const isCombat = type === NODE_TYPES.ENCOUNTER || type === NODE_TYPES.ELITE || type === NODE_TYPES.BOSS;
-      return {
-        code: String.fromCharCode(65 + idx),
-        name: String(n.name || `节点 ${String.fromCharCode(65 + idx)}`).trim(),
-        type,
-        typeLabel: NODE_TYPE_LABELS[type] || type,
-        statKey: n.statKey || 'attack',
-        dc: clamp(Number(n.dc) || tier.baseDc, 5, 35),
-        loot: n.loot || { steel: 70, bauxite: 40, silver: 120 },
-        failDamage: n.failDamage || { hp: 12, morale: 6 },
-        affinityGain: Number(n.affinityGain) || 3,
-        enemyTemplate: isCombat
-          ? n.enemyTemplate || buildEnemyTemplate(type, tier)
-          : null,
-      };
-    });
+    const diffId = normalizeStarTierId(routeDef.difficulty || `star_${routeDef.star || 1}`);
+    const tier = SEA_DIFFICULTIES[diffId] || SEA_DIFFICULTIES.star_1;
 
     const record = {
       id: routeDef.id || `route_custom_${Date.now().toString(36)}`,
       name: String(routeDef.name).trim(),
-      description: String(routeDef.description || '玩家自定义固定航线。').trim(),
+      description: String(routeDef.description || '自定义海图工坊配方').trim(),
       difficulty: tier.id,
+      star: tier.star,
       difficultyLabel: tier.label,
+      scale: routeDef.scale || 'medium',
+      nodeMix: routeDef.nodeMix || 'balanced',
+      enemyBias: routeDef.enemyBias || 'mixed',
+      seaConditionId: routeDef.seaConditionId || routeDef.seaCondition?.id || 'random',
+      seedCode:
+        routeDef.seedCode ||
+        encodeMapSeed({
+          starLevel: tier.star,
+          scale: routeDef.scale || 'medium',
+          seaConditionId: routeDef.seaConditionId || 'random',
+          nodeMix: routeDef.nodeMix || 'balanced',
+          enemyBias: routeDef.enemyBias || 'mixed',
+        }),
       builtIn: false,
-      generated: false,
+      generated: true,
       seaCondition: routeDef.seaCondition || deepClone(SEA_CONDITIONS[0]),
-      minFuel: Math.max(20, (Number(routeDef.stepCost?.fuel) || 25) * 2),
-      minAmmo: Math.max(20, (Number(routeDef.stepCost?.ammo) || 20) * 2),
-      apCost: clamp(Number(routeDef.apCost) || 15, 0, 100),
-      stepCost: {
-        fuel: clamp(Number(routeDef.stepCost?.fuel) || 25, 0, 500),
-        ammo: clamp(Number(routeDef.stepCost?.ammo) || 20, 0, 500),
-      },
-      nodes: normalizedNodes,
+      stepCost: routeDef.stepCost || { ...tier.stepCost },
+      nodes: Array.isArray(routeDef.nodes) && routeDef.nodes.length > 0 ? deepClone(routeDef.nodes) : [],
       updatedAt: Date.now(),
     };
 
-    const idx = this._customRoutes.findIndex((r) => r.id === record.id);
+    const idx = this._customRoutes.findIndex((r) => r.id === record.id || (r.seedCode && r.seedCode === record.seedCode));
     if (idx >= 0) this._customRoutes[idx] = record;
     else this._customRoutes.unshift(record);
 
