@@ -28,7 +28,7 @@ export const SAVE_ZONES = Object.freeze({
 
 export const DEFAULT_SLOT_COUNT = 5;
 export const VAULT_PRIMARY_SLOTS = 3;
-export const SAVE_SCHEMA_VERSION = 6;
+export const SAVE_SCHEMA_VERSION = 7;
 
 function deepClone(value) {
   if (typeof structuredClone === 'function') {
@@ -43,7 +43,8 @@ function deepClone(value) {
 
 /**
  * Lossless save payload migration: preserves every existing character, item, resource,
- * building, or custom field while safely backfilling any fields introduced in v2/v3/v4/v5/v6+.
+ * building, or custom field while safely backfilling any fields introduced in v2..v7+
+ * so loading any slot never leaves stale data from a previously loaded slot in memory.
  */
 export function migrateSavePayload(rawData = {}) {
   const data = rawData && typeof rawData === 'object' ? deepClone(rawData) : {};
@@ -65,12 +66,104 @@ export function migrateSavePayload(rawData = {}) {
     migrated = true;
   }
 
+  if (!data.entities || typeof data.entities !== 'object') {
+    data.entities = { entities: [], tasks: [] };
+    migrated = true;
+  } else {
+    if (!Array.isArray(data.entities.entities)) {
+      data.entities.entities = [];
+      migrated = true;
+    }
+    if (!Array.isArray(data.entities.tasks)) {
+      data.entities.tasks = [];
+      migrated = true;
+    }
+  }
+
+  if (!data.inventory || typeof data.inventory !== 'object') {
+    data.inventory = {
+      version: 5,
+      customSlotsByCharacter: {},
+      items: [],
+      equipped: {},
+      salvageParts: 0,
+    };
+    migrated = true;
+  } else {
+    if (!Array.isArray(data.inventory.items)) {
+      data.inventory.items = [];
+      migrated = true;
+    }
+    if (!data.inventory.equipped || typeof data.inventory.equipped !== 'object') {
+      data.inventory.equipped = {};
+      migrated = true;
+    }
+    if (!data.inventory.customSlotsByCharacter || typeof data.inventory.customSlotsByCharacter !== 'object') {
+      data.inventory.customSlotsByCharacter = {};
+      migrated = true;
+    }
+    if (data.inventory.salvageParts === undefined || !Number.isFinite(Number(data.inventory.salvageParts))) {
+      data.inventory.salvageParts = 0;
+      migrated = true;
+    }
+  }
+
+  if (!data.expeditions || typeof data.expeditions !== 'object') {
+    data.expeditions = { version: 1, completedCount: 0, activeRuns: [] };
+    migrated = true;
+  }
+
+  if (!data.buildings || typeof data.buildings !== 'object') {
+    data.buildings = {
+      version: 2,
+      dormitory: { level: 1, capacity: 3, maxCapacity: 10, residents: [], lastSettledAt: Date.now() },
+      dockyard: { level: 1, capacity: 2, maxCapacity: 6, queue: [], completedRepairs: 0, constructedCount: 0 },
+      customBuildings: [],
+      medals: { unlockedIds: [], unlockedAt: {} },
+      updatedAt: Date.now(),
+    };
+    migrated = true;
+  } else if (!data.buildings.medals || typeof data.buildings.medals !== 'object') {
+    data.buildings.medals = { unlockedIds: [], unlockedAt: {} };
+    migrated = true;
+  }
+
+  if (!data.interaction || typeof data.interaction !== 'object') {
+    data.interaction = { version: 1, secretaryId: null, oaths: {}, lastInteraction: null, interactionHistory: [] };
+    migrated = true;
+  }
+
+  if (!data.seaControl || typeof data.seaControl !== 'object') {
+    data.seaControl = { version: 1, zones: {} };
+    migrated = true;
+  }
+
+  if (!data.contentManager || typeof data.contentManager !== 'object') {
+    data.contentManager = {
+      version: 1,
+      customEnemies: [],
+      customDialogues: [],
+      customGifts: [],
+      customEquipment: [],
+      encounteredEnemyNames: ['前哨巡逻编队'],
+      clearedRouteIds: [],
+      updatedAt: Date.now(),
+    };
+    migrated = true;
+  }
+
   if (!data.storyPacks || typeof data.storyPacks !== 'object') {
     data.storyPacks = { version: 1, flags: {}, packs: [], playHistory: [] };
     migrated = true;
-  } else if (!data.storyPacks.flags || typeof data.storyPacks.flags !== 'object') {
-    data.storyPacks.flags = {};
-    migrated = true;
+  } else {
+    if (!data.storyPacks.flags || typeof data.storyPacks.flags !== 'object') {
+      data.storyPacks.flags = {};
+      migrated = true;
+    }
+    if (!Array.isArray(data.storyPacks.playHistory)) {
+      data.storyPacks.playHistory = [];
+      migrated = true;
+    }
   }
 
   if (!data.theme || typeof data.theme !== 'object') {
@@ -155,12 +248,21 @@ export function migrateSavePayload(rawData = {}) {
     }
   }
 
-  // Schema v6: Losslessly map legacy formation.memberIds into 3x4 gridSlots (length 12)
-  if (data.formation && typeof data.formation === 'object') {
+  // Schema v6/v7: Ensure formation object always exists & map legacy memberIds into 3x4 gridSlots (length 12)
+  if (!data.formation || typeof data.formation !== 'object') {
+    data.formation = {
+      version: 2,
+      memberIds: [],
+      gridSlots: Array(GRID_TOTAL_CELLS).fill(null),
+      formationId: 'line_ahead',
+      customFormationMods: {},
+    };
+    migrated = true;
+  } else {
     const fMembers = Array.isArray(data.formation.memberIds) ? data.formation.memberIds.map(String) : [];
     const hasValidGrid =
       Array.isArray(data.formation.gridSlots) && data.formation.gridSlots.length === GRID_TOTAL_CELLS;
-    if (!hasValidGrid && fMembers.length > 0) {
+    if (!hasValidGrid) {
       const grid = Array(GRID_TOTAL_CELLS).fill(null);
       const pickCell = (cls) => {
         const pref = cls === 'DD' || cls === 'CL' || cls === 'SS' ? [0, 1, 2] : cls === 'CA' ? [1, 0, 2] : [2, 1, 0];
@@ -224,6 +326,8 @@ export class SaveManager {
 
     /** @type {Set<() => void>} */
     this._autoSaveUnbinders = new Set();
+    /** @type {Set<() => void>} */
+    this._autoSaveCancelers = new Set();
   }
 
   _assertSlotIndex(slotIndex) {
@@ -303,8 +407,19 @@ export class SaveManager {
   }
 
   async clearAutoSave() {
+    this.cancelPendingAutoSaves();
     await this._autoScope.removeLarge('latest');
     this._emit('save:auto-cleared', {});
+  }
+
+  cancelPendingAutoSaves() {
+    for (const cancel of Array.from(this._autoSaveCancelers)) {
+      try {
+        cancel();
+      } catch {
+        // ignore
+      }
+    }
   }
 
   /**
@@ -328,7 +443,15 @@ export class SaveManager {
     let pendingPayload = null;
     let active = true;
 
+    const cancelPending = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+
     const flush = async () => {
+      timer = null;
       if (!active || !enabled()) return;
       try {
         const snapshot = stateProvider(pendingReason, pendingPayload);
@@ -348,7 +471,7 @@ export class SaveManager {
         if (!active || !enabled()) return;
         pendingReason = eventName;
         pendingPayload = payload;
-        if (timer) clearTimeout(timer);
+        cancelPending();
         if (debounceMs <= 0) {
           flush();
         } else {
@@ -359,14 +482,13 @@ export class SaveManager {
 
     const unbind = () => {
       active = false;
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
+      cancelPending();
       unsubs.forEach((u) => u());
       this._autoSaveUnbinders.delete(unbind);
+      this._autoSaveCancelers.delete(cancelPending);
     };
 
+    this._autoSaveCancelers.add(cancelPending);
     this._autoSaveUnbinders.add(unbind);
     return unbind;
   }

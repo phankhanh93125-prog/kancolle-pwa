@@ -60,6 +60,13 @@ let portState = {
   unsubs: [],
 };
 
+export function resetPortHubState() {
+  portState.avatarCache.clear();
+  portState.selectedExpShipIds = [];
+  portState.lastTypewrittenId = null;
+  portState.busy = false;
+}
+
 function getCharacters() {
   return portState.context?.entities?.list({ kind: 'character' }) || [];
 }

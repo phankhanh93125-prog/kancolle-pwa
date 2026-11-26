@@ -593,15 +593,28 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
   }
 }
 
+export function resetCharacterConsoleState(storage = null) {
+  consoleState.activeCharacterId = null;
+  consoleState.expandedWarehouseItemId = null;
+  consoleState.avatarUrlCache.clear();
+  if (storage) {
+    storage.namespace(CHAR_STORAGE_NS).remove('activeCharacterId');
+  }
+}
+
 export async function persistCharacterRoster({ storage, entities, activeCharacterId = null }) {
   const scope = storage.namespace(CHAR_STORAGE_NS);
-  const resolvedActiveId =
-    activeCharacterId || consoleState.activeCharacterId || entities.list({ kind: 'character' })[0]?.id || null;
+  const currentChars = entities.list({ kind: 'character' });
+  const currentIds = new Set(currentChars.map((c) => c.id));
+  const candidateId = activeCharacterId || consoleState.activeCharacterId;
+  const resolvedActiveId = (candidateId && currentIds.has(candidateId) ? candidateId : currentChars[0]?.id) || null;
+  consoleState.activeCharacterId = resolvedActiveId;
   if (resolvedActiveId) {
-    consoleState.activeCharacterId = resolvedActiveId;
     scope.set('activeCharacterId', resolvedActiveId);
+  } else {
+    scope.remove('activeCharacterId');
   }
-  const characters = entities.list({ kind: 'character' }).map((e) => ({
+  const characters = currentChars.map((e) => ({
     id: e.id,
     kind: 'character',
     name: e.name,

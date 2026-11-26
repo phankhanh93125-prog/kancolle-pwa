@@ -286,6 +286,12 @@ let workshopState = {
   unsubs: [],
 };
 
+export function resetWorkshopState() {
+  workshopState.expandedItemId = null;
+  workshopState.targetCharId = null;
+  workshopState.lastDrops = [];
+}
+
 async function hydratePoolConfig() {
   if (workshopState.hydrated || !workshopState.context) return;
   const scope = workshopState.context.rootStorage.namespace(WORKSHOP_STORAGE_NS);

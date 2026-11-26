@@ -172,28 +172,35 @@ export class PortBuildingsSystem {
 
     this._state = createDefaultBuildingsState();
     this._hydrated = false;
+    this._autoMedalPaused = false;
 
     if (this._bus) {
       this._bus.on('character:deleted', ({ characterId }) => {
+        if (this._autoMedalPaused) return;
         this._cleanupDeletedCharacter(characterId);
       });
       this._bus.on('inventory:slot-expanded', () => {
+        if (this._autoMedalPaused) return;
         this.unlockMedal('first_slot_expand');
       });
       this._bus.on('inventory:enhanced', (ev) => {
+        if (this._autoMedalPaused) return;
         if ((Number(ev?.nextLevel) || 0) >= 10) {
           this.unlockMedal('max_enhance_10');
         }
       });
       this._bus.on('inventory:promoted', () => {
+        if (this._autoMedalPaused) return;
         this.unlockMedal('first_promote_rarity');
       });
       this._bus.on('sortie:boss-defeated', (ev) => {
+        if (this._autoMedalPaused) return;
         if (ev?.isNight) {
           this.unlockMedal('night_boss_kill');
         }
       });
       this._bus.on('sea-control:updated', (ev) => {
+        if (this._autoMedalPaused) return;
         if (ev?.controlled) {
           if (ev.difficulty === 'low') this.unlockMedal('sea_control_low');
           if (ev.difficulty === 'medium') this.unlockMedal('sea_control_medium');
@@ -201,12 +208,17 @@ export class PortBuildingsSystem {
         }
       });
       this._bus.on('formation:changed', (ev) => {
+        if (this._autoMedalPaused) return;
         const count = Number(ev?.count ?? ev?.memberIds?.length ?? 0);
         if (count >= 6) {
           this.unlockMedal('full_fleet_6');
         }
       });
     }
+  }
+
+  setMedalAutoCheckPaused(paused) {
+    this._autoMedalPaused = Boolean(paused);
   }
 
   _emit(event, payload) {

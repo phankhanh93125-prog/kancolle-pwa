@@ -69,8 +69,10 @@ function openNewJourneyModal(context) {
     keepCustomData: true,
   };
 
-  uiKit.openModal({
+  const openFn = typeof uiKit.openTacticalModal === 'function' ? uiKit.openTacticalModal : uiKit.openModal;
+  openFn({
     title: '新的征程 · 开局偏好设置',
+    subtitle: '开启新征程将彻底清空当前运行的旧舰娘、装备仓库、3×4 编队、船坞与海域进度（手动存档槽位不受影响）',
     renderContent: (body, close) => {
       const renderForm = () => {
         const prevScroll = body.scrollTop;
@@ -117,11 +119,11 @@ function openNewJourneyModal(context) {
 
             <label class="checkbox-row" style="padding:10px 12px; background:var(--surface-alt); border-radius:var(--radius-sm); border:1px solid var(--border);">
               <input type="checkbox" id="nj-keep-custom" ${prefs.keepCustomData ? 'checked' : ''} />
-              <span><strong>保留已创建的自定义内容包、性格池与 UI 皮肤</strong>（推荐勾选，不丢失个人创作）</span>
+              <span><strong>保留已创建的自定义内容包、性格池与 UI 皮肤</strong>（不保留旧档已拥有舰娘与仓库装备）</span>
             </label>
 
             <button type="button" id="btn-nj-confirm" class="btn-primary port-cta-btn">
-              确认出发 · 开启新征程
+              确认出发 · 清空旧档并开启新征程
             </button>
           </div>
         `;
@@ -157,7 +159,7 @@ function openNewJourneyModal(context) {
           const btn = body.querySelector('#btn-nj-confirm');
           if (!btn || btn.disabled) return;
           btn.disabled = true;
-          btn.textContent = '正在整备新港区...';
+          btn.textContent = '正在清空旧档并整备新港区...';
           try {
             if (!appActions || typeof appActions.startNewJourney !== 'function') {
               throw new Error('新征程初始化处理器未就绪');
@@ -166,7 +168,7 @@ function openNewJourneyModal(context) {
             await appActions.startNewJourney(prefs);
           } catch (err) {
             btn.disabled = false;
-            btn.textContent = '确认出发 · 开启新征程';
+            btn.textContent = '确认出发 · 清空旧档并开启新征程';
             uiKit.showToast(err instanceof Error ? err.message : '开启新征程失败', 'error');
           }
         });
@@ -217,9 +219,9 @@ async function renderTitleScreen() {
 
   const continueCmdName = latestMeta?.summary?.commanderName || cmd.name || '港区指挥官';
   const continueCmdLv = latestMeta?.summary?.commanderLevel ?? cmd.level ?? 1;
-  const continueTotalShips = Math.max(chars.length, latestMeta?.summary?.characters || 0);
-  const continueFleetShips = Math.max(activeFleetCount, latestMeta?.summary?.fleetCount || 0);
-  const continueSecName = secretary?.name || latestMeta?.summary?.flagshipName || '';
+  const continueTotalShips = latestMeta?.summary?.characters ?? chars.length;
+  const continueFleetShips = latestMeta?.summary?.fleetCount ?? activeFleetCount;
+  const continueSecName = latestMeta?.summary?.flagshipName || secretary?.name || '';
 
   titleState.container.innerHTML = '';
   const root = document.createElement('section');
