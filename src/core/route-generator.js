@@ -84,30 +84,38 @@ export const ENEMY_BIAS_MODES = Object.freeze({
 
 function buildSeaDifficultyEntry(tierId) {
   const s = STAR_SEA_TIERS[tierId] || STAR_SEA_TIERS.star_1;
+  const star = Number(s.star ?? s.starLevel ?? 1) || 1;
+  const hpArr = Array.isArray(s.enemyHp) ? s.enemyHp : Array.isArray(s.hpRange) ? s.hpRange : [25, 45];
+  const armorArr = Array.isArray(s.enemyArmor) ? s.enemyArmor : Array.isArray(s.armorRange) ? s.armorRange : [8, 18];
+  const atkArr = Array.isArray(s.enemyAtk) ? s.enemyAtk : Array.isArray(s.atkRange) ? s.atkRange : [15, 28];
+  const stepCost = s.stepCost && typeof s.stepCost === 'object'
+    ? { fuel: Number(s.stepCost.fuel) || 12, ammo: Number(s.stepCost.ammo) || 10 }
+    : { fuel: 8 + star * 4, ammo: 6 + star * 4 };
   return Object.freeze({
     id: s.id,
-    star: s.star,
-    code: s.code,
-    label: s.label,
-    name: s.name,
-    nodeRange: s.star <= 2 ? [7, 9] : s.star <= 4 ? [9, 11] : [10, 12],
-    baseDc: 10 + s.star,
-    apCost: 8 + s.star * 3,
-    stepCost: { ...s.stepCost },
-    enemyHpRange: [...s.enemyHp],
-    enemyArmorRange: [...s.enemyArmor],
-    enemyAtkRange: [...s.enemyAtk],
-    bossMaxAtk: s.bossMaxAtk,
-    lootScale: s.lootScale,
-    goldBonus: s.goldBonus,
+    star,
+    starLevel: star,
+    code: s.code || `${star}★`,
+    label: s.label || `${star}★ 海域`,
+    name: s.name || String(s.label || `${star}★ 海域`).replace(/^\d+★\s*/, ''),
+    nodeRange: star <= 2 ? [7, 9] : star <= 4 ? [9, 11] : [10, 12],
+    baseDc: 10 + star,
+    apCost: 8 + star * 3,
+    stepCost,
+    enemyHpRange: [...hpArr],
+    enemyArmorRange: [...armorArr],
+    enemyAtkRange: [...atkArr],
+    bossMaxAtk: Number(s.bossMaxAtk ?? s.bossCap ?? atkArr[1]) || atkArr[1],
+    lootScale: Number(s.lootScale) || 1.0,
+    goldBonus: Number(s.goldBonus) || 3,
     dropHint:
-      s.star === 1
+      star === 1
         ? '白~蓝装为主 · 新手练级与物资打捞'
-        : s.star === 2
+        : star === 2
         ? '绿~紫装 · 后勤支援装备开始掉落'
-        : s.star === 3
+        : star === 3
         ? '蓝~紫装为主 · 少量橙装掉落'
-        : s.star === 4
+        : star === 4
         ? '紫~橙装高概率 · 精锐支援与核心部件'
         : '顶级紫/橙装高爆率 · 传说武装与丰厚金条',
   });
@@ -164,16 +172,17 @@ export const SEA_CONDITIONS = Object.freeze([
 
 export const SEA_CONTROL_ZONES = Object.freeze(
   STAR_SEA_TIER_ORDER.map((tierId, idx) => {
-    const s = STAR_SEA_TIERS[tierId];
+    const s = STAR_SEA_TIERS[tierId] || STAR_SEA_TIERS.star_1;
+    const star = Number(s.star ?? s.starLevel ?? idx + 1) || (idx + 1);
     return Object.freeze({
       id: s.id,
-      star: s.star,
-      code: s.code,
-      name: s.name,
-      difficultyLabel: s.label,
-      bossGainPct: s.bossGainPct,
-      expeditionYieldBonusPct: s.expeditionYieldBonusPct,
-      patrolYieldBonusPct: s.patrolYieldBonusPct,
+      star,
+      code: s.code || `${star}★`,
+      name: s.name || String(s.label || `${star}★ 海域`).replace(/^\d+★\s*/, ''),
+      difficultyLabel: s.label || `${star}★ 海域`,
+      bossGainPct: Number(s.bossGainPct) || 30,
+      expeditionYieldBonusPct: Number(s.expeditionYieldBonusPct) || 8 + idx * 6,
+      patrolYieldBonusPct: Number(s.patrolYieldBonusPct) || 10 + idx * 8,
       unlockRequires: idx > 0 ? STAR_SEA_TIER_ORDER[idx - 1] : null,
     });
   })
@@ -452,24 +461,30 @@ export function buildEnemyUnitByClass(shipClass, idx, tierCfg, {
   const strMult = clamp(Number(strengthMultiplier) || 1.0, 0.5, 2.5);
   const tierMult = type === NODE_TYPES.BOSS ? 1.12 : type === NODE_TYPES.ELITE ? 1.05 : 0.96;
 
-  const rawHp = randInt(starSpec.enemyHp[0], starSpec.enemyHp[1], rng);
-  const rawArmor = randInt(starSpec.enemyArmor[0], starSpec.enemyArmor[1], rng);
-  const rawAtk = randInt(starSpec.enemyAtk[0], starSpec.enemyAtk[1], rng);
+  const hpArr = Array.isArray(starSpec.enemyHp) ? starSpec.enemyHp : Array.isArray(starSpec.hpRange) ? starSpec.hpRange : [25, 45];
+  const armorArr = Array.isArray(starSpec.enemyArmor) ? starSpec.enemyArmor : Array.isArray(starSpec.armorRange) ? starSpec.armorRange : [8, 18];
+  const atkArr = Array.isArray(starSpec.enemyAtk) ? starSpec.enemyAtk : Array.isArray(starSpec.atkRange) ? starSpec.atkRange : [15, 28];
+  const bossCapVal = Number(starSpec.bossMaxAtk ?? starSpec.bossCap ?? atkArr[1]) || atkArr[1];
+  const starNum = Number(starSpec.star ?? starSpec.starLevel ?? 1) || 1;
 
-  const maxAtkCap = arch.shipClass === 'BOSS' || type === NODE_TYPES.BOSS ? starSpec.bossMaxAtk : starSpec.enemyAtk[1];
+  const rawHp = randInt(hpArr[0], hpArr[1], rng);
+  const rawArmor = randInt(armorArr[0], armorArr[1], rng);
+  const rawAtk = randInt(atkArr[0], atkArr[1], rng);
+
+  const maxAtkCap = arch.shipClass === 'BOSS' || type === NODE_TYPES.BOSS ? bossCapVal : atkArr[1];
   const unitHp = clamp(
     Math.round(rawHp * arch.hpMult * depthScale * tierMult * strMult),
-    Math.round(starSpec.enemyHp[0] * 0.7),
-    Math.round(starSpec.enemyHp[1] * (arch.shipClass === 'BOSS' ? 1.22 : 1.05) * strMult)
+    Math.round(hpArr[0] * 0.7),
+    Math.round(hpArr[1] * (arch.shipClass === 'BOSS' ? 1.22 : 1.05) * strMult)
   );
   const unitArmor = clamp(
     Math.round(rawArmor * arch.armorMult * (0.9 + strMult * 0.1)),
-    Math.max(4, Math.round(starSpec.enemyArmor[0] * 0.65)),
-    Math.round(starSpec.enemyArmor[1] * (arch.shipClass === 'BOSS' ? 1.1 : 1.02))
+    Math.max(4, Math.round(armorArr[0] * 0.65)),
+    Math.round(armorArr[1] * (arch.shipClass === 'BOSS' ? 1.1 : 1.02))
   );
   const unitAtk = clamp(
     Math.round(rawAtk * arch.atkMult * depthScale * tierMult * (0.85 + strMult * 0.15)),
-    Math.max(10, Math.round(starSpec.enemyAtk[0] * 0.8)),
+    Math.max(10, Math.round(atkArr[0] * 0.8)),
     Math.round(maxAtkCap * Math.max(1, strMult * 0.95))
   );
 
@@ -487,7 +502,7 @@ export function buildEnemyUnitByClass(shipClass, idx, tierCfg, {
     shipClass: arch.shipClass,
     role: arch.role,
     tier: type,
-    star: starSpec.star,
+    star: starNum,
     hp: unitHp,
     maxHp: unitHp,
     armor: unitArmor,
@@ -691,12 +706,25 @@ export class RouteGenerator {
     if (this._hydrated) return;
     if (this._scope) {
       const saved = await this._scope.getLarge(CUSTOM_ROUTES_KEY, null);
-      if (Array.isArray(saved)) {
-        this._customRoutes = deepClone(saved);
-      } else {
-        const legacyRoutes = await this._scope.getLarge('custom-routes-v1', []);
-        this._customRoutes = Array.isArray(legacyRoutes) ? deepClone(legacyRoutes) : [];
-      }
+      const rawRoutes = Array.isArray(saved)
+        ? saved
+        : await this._scope.getLarge('custom-routes-v1', []);
+      this._customRoutes = Array.isArray(rawRoutes)
+        ? rawRoutes
+            .filter((r) => r && typeof r === 'object' && Array.isArray(r.nodes) && r.nodes.length > 0)
+            .map((r) => {
+              const copy = deepClone(r);
+              const tierId = normalizeStarTierId(copy.difficulty || copy.star || 'star_1');
+              const tier = SEA_DIFFICULTIES[tierId] || SEA_DIFFICULTIES.star_1;
+              copy.difficulty = tier.id;
+              copy.star = tier.star;
+              copy.difficultyLabel = copy.difficultyLabel || tier.label;
+              if (!copy.stepCost || typeof copy.stepCost !== 'object') {
+                copy.stepCost = { ...tier.stepCost };
+              }
+              return copy;
+            })
+        : [];
       const savedControl =
         (await this._scope.getLarge(SEA_CONTROL_KEY, null)) ||
         (await this._scope.getLarge('sea-control-v1', null));

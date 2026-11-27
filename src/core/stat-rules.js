@@ -767,71 +767,121 @@ export function getTacticalGridSymbolSvg(shipTypeOrClass = '', { side = 'ally', 
 export const STAR_SEA_TIERS = Object.freeze({
   star_1: {
     id: 'star_1',
+    star: 1,
     starLevel: 1,
     code: '1★',
+    name: '近海警戒区',
     label: '1★ 近海警戒区',
+    stepCost: { fuel: 12, ammo: 10 },
     atkRange: [15, 28],
+    enemyAtk: [15, 28],
     accRange: [15, 28],
     evaRange: [15, 28],
     armorRange: [8, 18],
+    enemyArmor: [8, 18],
     hpRange: [25, 45],
+    enemyHp: [25, 45],
     bossCap: 28,
+    bossMaxAtk: 28,
+    bossGainPct: 35,
+    expeditionYieldBonusPct: 8,
+    patrolYieldBonusPct: 10,
     lootScale: 1.0,
     goldBonus: 3,
   },
   star_2: {
     id: 'star_2',
+    star: 2,
     starLevel: 2,
     code: '2★',
+    name: '外海巡航道',
     label: '2★ 外海巡航道',
+    stepCost: { fuel: 16, ammo: 14 },
     atkRange: [30, 48],
+    enemyAtk: [30, 48],
     accRange: [30, 48],
     evaRange: [30, 48],
     armorRange: [18, 32],
+    enemyArmor: [18, 32],
     hpRange: [45, 75],
+    enemyHp: [45, 75],
     bossCap: 48,
+    bossMaxAtk: 48,
+    bossGainPct: 34,
+    expeditionYieldBonusPct: 12,
+    patrolYieldBonusPct: 15,
     lootScale: 1.35,
     goldBonus: 4,
   },
   star_3: {
     id: 'star_3',
+    star: 3,
     starLevel: 3,
     code: '3★',
+    name: '岛链破交线',
     label: '3★ 岛链破交线',
+    stepCost: { fuel: 20, ammo: 18 },
     atkRange: [50, 72],
+    enemyAtk: [50, 72],
     accRange: [50, 72],
     evaRange: [50, 72],
     armorRange: [32, 50],
+    enemyArmor: [32, 50],
     hpRange: [70, 110],
+    enemyHp: [70, 110],
     bossCap: 72,
+    bossMaxAtk: 72,
+    bossGainPct: 28,
+    expeditionYieldBonusPct: 18,
+    patrolYieldBonusPct: 22,
     lootScale: 1.75,
     goldBonus: 6,
   },
   star_4: {
     id: 'star_4',
+    star: 4,
     starLevel: 4,
     code: '4★',
+    name: '深海前沿域',
     label: '4★ 深海前沿域',
+    stepCost: { fuel: 26, ammo: 22 },
     atkRange: [75, 98],
+    enemyAtk: [75, 98],
     accRange: [75, 98],
     evaRange: [75, 98],
     armorRange: [50, 72],
+    enemyArmor: [50, 72],
     hpRange: [105, 155],
+    enemyHp: [105, 155],
     bossCap: 98,
+    bossMaxAtk: 98,
+    bossGainPct: 25,
+    expeditionYieldBonusPct: 24,
+    patrolYieldBonusPct: 30,
     lootScale: 2.25,
     goldBonus: 8,
   },
   star_5: {
     id: 'star_5',
+    star: 5,
     starLevel: 5,
     code: '5★',
+    name: '深海要塞核心',
     label: '5★ 深海要塞核心',
+    stepCost: { fuel: 32, ammo: 28 },
     atkRange: [100, 135],
+    enemyAtk: [100, 135],
     accRange: [100, 135],
     evaRange: [100, 135],
     armorRange: [75, 105],
+    enemyArmor: [75, 105],
     hpRange: [150, 240],
+    enemyHp: [150, 240],
     bossCap: 150,
+    bossMaxAtk: 150,
+    bossGainPct: 25,
+    expeditionYieldBonusPct: 35,
+    patrolYieldBonusPct: 45,
     lootScale: 3.0,
     goldBonus: 12,
   },
@@ -2326,13 +2376,17 @@ export function normalizeLegacyShipStatsToCompressedScale(entity) {
  *   White +2~4, Green +4~7, Blue +7~11, Purple +11~16, Orange +16~22 (before +1~+10 enhance).
  */
 export function normalizeLegacyItemBonusesToCompressedScale(item) {
-  if (!item || typeof item !== 'object' || item.category === 'consumable') return false;
-  if (Number(item.statScaleVersion) >= 2) return false;
+  if (!item || typeof item !== 'object') return item;
+  if (item.category === 'consumable') {
+    item.statScaleVersion = 2;
+    return item;
+  }
+  if (Number(item.statScaleVersion) >= 2) return item;
 
   const baseList = Array.isArray(item.baseBonuses) && item.baseBonuses.length > 0 ? item.baseBonuses : item.bonuses;
   if (!Array.isArray(baseList) || baseList.length === 0) {
     item.statScaleVersion = 2;
-    return false;
+    return item;
   }
 
   const rarityId = inferItemRarity(item);
@@ -2342,7 +2396,7 @@ export function normalizeLegacyItemBonusesToCompressedScale(item) {
 
   if (maxSingle <= budget.max + 2) {
     item.statScaleVersion = 2;
-    return false;
+    return item;
   }
 
   const scaleFactor = budget.max / Math.max(1, maxSingle);
@@ -2357,8 +2411,11 @@ export function normalizeLegacyItemBonusesToCompressedScale(item) {
   });
 
   item.baseBonuses = compressedBase;
+  if (!Number(item.level)) {
+    item.bonuses = compressedBase.map((b) => ({ ...b }));
+  }
   item.statScaleVersion = 2;
-  return true;
+  return item;
 }
 
 

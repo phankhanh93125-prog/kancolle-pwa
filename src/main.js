@@ -272,6 +272,7 @@ function resolveDefaultStageMode(moduleId) {
 
 function autoResizeInput() {
   const el = els.inputField;
+  if (!el) return;
   el.style.height = 'auto';
   el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
 }
@@ -330,13 +331,17 @@ const ui = {
   },
 
   setPlaceholder(text) {
-    els.inputField.placeholder = text || '输入指令或消息...';
+    if (els.inputField) {
+      els.inputField.placeholder = text || '输入指令或消息...';
+    }
   },
 
   setInputBusy(busy) {
     inputBusy = Boolean(busy);
-    els.sendBtn.disabled = inputBusy;
-    els.sendBtn.textContent = inputBusy ? '处理中' : '发送';
+    if (els.sendBtn) {
+      els.sendBtn.disabled = inputBusy;
+      els.sendBtn.textContent = inputBusy ? '处理中' : '发送';
+    }
   },
 
   setInputHandler(fn) {
@@ -344,6 +349,7 @@ const ui = {
   },
 
   setQuickActions(actions = []) {
+    if (!els.quickActionsSlot) return;
     els.quickActionsSlot.innerHTML = '';
     els.quickActionsSlot.hidden = true;
     for (const action of actions) {
@@ -367,8 +373,10 @@ const ui = {
     ui.setImmersiveBattle(false);
     ui.setTitleScreenMode(false);
     ui.setPlaceholder('和秘书舰聊聊或输入指令...');
-    els.quickActionsSlot.innerHTML = '';
-    els.quickActionsSlot.hidden = true;
+    if (els.quickActionsSlot) {
+      els.quickActionsSlot.innerHTML = '';
+      els.quickActionsSlot.hidden = true;
+    }
   },
 };
 
@@ -376,7 +384,7 @@ const ui = {
 // 3. Universal Input Handling
 // ------------------------------------------------------------
 async function submitUniversalInput() {
-  if (inputBusy) return;
+  if (inputBusy || !els.inputField) return;
   const text = els.inputField.value.trim();
   if (!text) return;
 
@@ -391,18 +399,22 @@ async function submitUniversalInput() {
   }
 }
 
-els.inputForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  submitUniversalInput();
-});
-
-els.inputField.addEventListener('input', autoResizeInput);
-els.inputField.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+if (els.inputForm) {
+  els.inputForm.addEventListener('submit', (e) => {
     e.preventDefault();
     submitUniversalInput();
-  }
-});
+  });
+}
+
+if (els.inputField) {
+  els.inputField.addEventListener('input', autoResizeInput);
+  els.inputField.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      submitUniversalInput();
+    }
+  });
+}
 
 // ------------------------------------------------------------
 // 4. Module Manager Initialization
@@ -687,6 +699,7 @@ attachStageSwipeNavigation();
 // 5. Bottom Sheet Modal Controller
 // ------------------------------------------------------------
 function openSheet(title, renderFn) {
+  if (!els.sheetBackdrop || !els.sheetTitle || !els.sheetBody) return;
   els.sheetTitle.textContent = title;
   els.sheetBody.innerHTML = '';
   renderFn(els.sheetBody);
@@ -694,16 +707,21 @@ function openSheet(title, renderFn) {
 }
 
 function closeSheet() {
+  if (!els.sheetBackdrop || !els.sheetBody) return;
   els.sheetBackdrop.hidden = true;
   els.sheetBody.innerHTML = '';
 }
 
-els.btnSheetClose.addEventListener('click', closeSheet);
-els.sheetBackdrop.addEventListener('click', (e) => {
-  if (e.target === els.sheetBackdrop) closeSheet();
-});
+if (els.btnSheetClose) {
+  els.btnSheetClose.addEventListener('click', closeSheet);
+}
+if (els.sheetBackdrop) {
+  els.sheetBackdrop.addEventListener('click', (e) => {
+    if (e.target === els.sheetBackdrop) closeSheet();
+  });
+}
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !els.sheetBackdrop.hidden) {
+  if (e.key === 'Escape' && els.sheetBackdrop && !els.sheetBackdrop.hidden) {
     closeSheet();
   }
 });
@@ -1324,7 +1342,7 @@ async function startNewJourney(prefs = {}) {
     await clearAllRuntimePersistence({ keepCustomData, preserveImportedLibrary: true });
 
     // 2. Thoroughly reset ALL in-memory engines & UI caches (ships, gear, 3x4 formation, dockyard, sea control, medals, logs)
-    await resetAllInMemoryState({ keepCustomData, preserveCustomBuildings });
+    await resetAllInMemoryState({ keepCustomData, preserveCustomBuildings: preservedCustomBuildings });
 
     // 3. Reset commander profile & stats cleanly with player's chosen callsign
     commander.deserialize(
@@ -2346,7 +2364,12 @@ async function bootApplication() {
   moduleManager.mount('title-screen');
 }
 
-bootApplication();
+bootApplication().catch((err) => {
+  console.error('[App] Fatal boot error:', err);
+  if (typeof window !== 'undefined' && typeof window.__SHOW_BOOT_ERROR__ === 'function') {
+    window.__SHOW_BOOT_ERROR__(err, '应用启动失败');
+  }
+});
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
   window.addEventListener('load', () => {

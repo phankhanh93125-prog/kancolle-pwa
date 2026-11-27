@@ -118,9 +118,37 @@ export async function hydrateSortieConsole({ storage, routeGenerator, combat }) 
   const savedRun =
     (await scope.getLarge(RUN_KEY, null)) ||
     (await scope.getLarge('active-sortie-run-v2', null));
-  sortieState.activeRun = savedRun && typeof savedRun === 'object' ? deepClone(savedRun) : null;
-  if (combat && sortieState.activeRun?.combatSnapshot) {
-    combat.deserialize(sortieState.activeRun.combatSnapshot);
+  if (savedRun && typeof savedRun === 'object' && Array.isArray(savedRun.route?.nodes) && savedRun.route.nodes.length > 0) {
+    const normalizedRun = deepClone(savedRun);
+    const tierId = normalizeStarTierId(normalizedRun.route.difficulty || normalizedRun.route.star || 'star_1');
+    const tier = SEA_DIFFICULTIES[tierId] || SEA_DIFFICULTIES.star_1;
+    normalizedRun.route.difficulty = tier.id;
+    normalizedRun.route.star = tier.star;
+    normalizedRun.route.difficultyLabel = normalizedRun.route.difficultyLabel || tier.label;
+    if (!normalizedRun.stepCost || typeof normalizedRun.stepCost !== 'object') {
+      normalizedRun.stepCost = { ...(tier.stepCost || { fuel: 14, ammo: 12 }) };
+    }
+    if (!normalizedRun.carriedSupplies || typeof normalizedRun.carriedSupplies !== 'object') {
+      normalizedRun.carriedSupplies = { fuel: 120, ammo: 120, maxFuel: 180, maxAmmo: 180 };
+    }
+    if (!Number.isFinite(Number(normalizedRun.resupplyUsesRemaining))) {
+      normalizedRun.resupplyUsesRemaining = 2;
+    }
+    if (!Array.isArray(normalizedRun.reports)) normalizedRun.reports = [];
+    if (!Array.isArray(normalizedRun.resolvedCodes)) normalizedRun.resolvedCodes = [];
+    if (!Number.isFinite(Number(normalizedRun.currentIdx)) || normalizedRun.currentIdx >= normalizedRun.route.nodes.length) {
+      normalizedRun.currentIdx = 0;
+    }
+    sortieState.activeRun = normalizedRun;
+    if (combat && normalizedRun.combatSnapshot) {
+      try {
+        combat.deserialize(normalizedRun.combatSnapshot);
+      } catch {
+        combat.deserialize(null);
+      }
+    }
+  } else {
+    sortieState.activeRun = null;
   }
   sortieState.hydrated = true;
 }

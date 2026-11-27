@@ -140,6 +140,126 @@
   <!-- Top Slide-Down Auto-Fade Toast Region -->
   <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
 
+  <!-- Early Boot Error Guard (catches module load, syntax, and uncaught runtime errors before main.js runs) -->
+  <script>
+    (function () {
+      function formatErrorDetail(err, source, lineno, colno) {
+        if (!err) return '未知运行时异常';
+        if (typeof err === 'string') return err;
+        var msg = err.message || String(err);
+        var loc = source ? ' @ ' + String(source).split('/').slice(-2).join('/') + (lineno ? ':' + lineno + (colno ? ':' + colno : '') : '') : '';
+        var stackLine = '';
+        if (!loc && err.stack) {
+          var lines = String(err.stack).split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+          stackLine = lines.length > 1 ? ' (' + lines[1].slice(0, 120) + ')' : '';
+        }
+        return msg + loc + stackLine;
+      }
+
+      function safeResetAndReload() {
+        try { localStorage.clear(); } catch (e) {}
+        try { sessionStorage.clear(); } catch (e) {}
+        var tasks = [];
+        try {
+          if (window.indexedDB) {
+            if (typeof indexedDB.databases === 'function') {
+              tasks.push(
+                indexedDB.databases().then(function (dbs) {
+                  return Promise.all((dbs || []).map(function (db) {
+                    if (!db || !db.name) return Promise.resolve();
+                    return new Promise(function (resolve) {
+                      var req = indexedDB.deleteDatabase(db.name);
+                      req.onsuccess = req.onerror = req.onblocked = function () { resolve(); };
+                    });
+                  }));
+                }).catch(function () {})
+              );
+            } else {
+              tasks.push(new Promise(function (resolve) {
+                var req = indexedDB.deleteDatabase('modular-pwa-base-db');
+                req.onsuccess = req.onerror = req.onblocked = function () { resolve(); };
+              }));
+            }
+          }
+        } catch (e) {}
+        try {
+          if ('caches' in window) {
+            tasks.push(
+              caches.keys().then(function (keys) {
+                return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+              }).catch(function () {})
+            );
+          }
+          if ('serviceWorker' in navigator) {
+            tasks.push(
+              navigator.serviceWorker.getRegistrations().then(function (regs) {
+                return Promise.all(regs.map(function (r) { return r.unregister(); }));
+              }).catch(function () {})
+            );
+          }
+        } catch (e) {}
+        Promise.all(tasks).finally(function () {
+          location.reload();
+        });
+      }
+
+      function showBootError(err, label, source, lineno, colno) {
+        var detail = formatErrorDetail(err, source, lineno, colno);
+        var banner = document.getElementById('boot-error-banner');
+        if (!banner) {
+          banner = document.createElement('div');
+          banner.id = 'boot-error-banner';
+          banner.setAttribute('role', 'alert');
+          banner.style.cssText =
+            'position:fixed;top:0;left:0;right:0;z-index:99999;background:#7f1d1d;color:#fef2f2;' +
+            'border-bottom:2px solid #f87171;padding:12px 14px;font-family:system-ui,-apple-system,sans-serif;' +
+            'font-size:13px;line-height:1.45;box-shadow:0 8px 24px rgba(0,0,0,0.45);';
+          var titleEl = document.createElement('div');
+          titleEl.id = 'boot-error-title';
+          titleEl.style.cssText = 'font-weight:800;margin-bottom:4px;color:#fecaca;';
+          var msgEl = document.createElement('div');
+          msgEl.id = 'boot-error-msg';
+          msgEl.style.cssText = 'word-break:break-word;font-family:ui-monospace,monospace;font-size:12px;margin-bottom:10px;';
+          var btnRow = document.createElement('div');
+          btnRow.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+          var resetBtn = document.createElement('button');
+          resetBtn.type = 'button';
+          resetBtn.id = 'btn-boot-safe-reset';
+          resetBtn.textContent = '安全重置本地数据并重载';
+          resetBtn.style.cssText =
+            'min-height:36px;padding:6px 12px;border-radius:8px;border:1px solid #fca5a5;' +
+            'background:#dc2626;color:#fff;font-weight:700;font-size:12px;cursor:pointer;';
+          resetBtn.addEventListener('click', safeResetAndReload);
+          var closeBtn = document.createElement('button');
+          closeBtn.type = 'button';
+          closeBtn.textContent = '关闭提示';
+          closeBtn.style.cssText =
+            'min-height:36px;padding:6px 12px;border-radius:8px;border:1px solid rgba(254,202,202,0.5);' +
+            'background:transparent;color:#fef2f2;font-size:12px;cursor:pointer;';
+          closeBtn.addEventListener('click', function () { banner.remove(); });
+          btnRow.appendChild(resetBtn);
+          btnRow.appendChild(closeBtn);
+          banner.appendChild(titleEl);
+          banner.appendChild(msgEl);
+          banner.appendChild(btnRow);
+          (document.body || document.documentElement).prepend(banner);
+        }
+        var tEl = document.getElementById('boot-error-title');
+        var mEl = document.getElementById('boot-error-msg');
+        if (tEl) tEl.textContent = '⚠ ' + (label || '启动或运行异常');
+        if (mEl) mEl.textContent = detail;
+      }
+
+      window.__SHOW_BOOT_ERROR__ = showBootError;
+      window.addEventListener('error', function (ev) {
+        showBootError(ev.error || ev.message || '脚本加载或执行错误', '全局运行时错误', ev.filename, ev.lineno, ev.colno);
+      });
+      window.addEventListener('unhandledrejection', function (ev) {
+        showBootError(ev.reason || '未处理的异步异常', '异步初始化异常');
+      });
+    })();
+  </script>
+
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>
