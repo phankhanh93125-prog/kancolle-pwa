@@ -46,6 +46,7 @@ import {
 import { resetWorkshopState } from './modules/supply-workshop.js';
 import { resetPortHubState } from './modules/port-hub.js';
 import { openFacilitiesSection, resetFacilitiesHubState } from './modules/facilities-hub.js';
+import { openCustomWorkshopModal } from './modules/custom-workshop.js';
 import { hydrateActionConsole } from './modules/action-console.js';
 import { clearActiveSortieState, hydrateSortieConsole } from './modules/sortie-console.js';
 
@@ -205,6 +206,7 @@ const els = {
   inputField: document.getElementById('universal-input'),
   sendBtn: document.getElementById('btn-universal-send'),
   btnModules: document.getElementById('btn-open-modules'),
+  btnCustomWorkshop: document.getElementById('btn-open-custom-workshop'),
   btnTheme: document.getElementById('btn-open-theme'),
   btnVault: document.getElementById('btn-open-vault'),
   btnReturnTitle: document.getElementById('btn-return-title'),
@@ -2306,6 +2308,26 @@ function openSaveVaultSheet() {
   });
 }
 
+function openCustomWorkshop(initialTab = 'ship') {
+  openCustomWorkshopModal(
+    {
+      entities,
+      inventory,
+      buildings,
+      contentManager,
+      storyPacks,
+      personalityPool,
+      statRules,
+      assets,
+      storage,
+      uiKit,
+      bus,
+    },
+    { initialTab }
+  );
+}
+
+els.btnCustomWorkshop?.addEventListener('click', () => openCustomWorkshop('ship'));
 els.btnModules?.addEventListener('click', openModulesSheet);
 els.btnTheme?.addEventListener('click', openThemeSheet);
 els.btnVault?.addEventListener('click', openSaveVaultSheet);
@@ -2510,6 +2532,15 @@ window.__APP_BASE__ = {
   theme,
   uiKit,
   modules: moduleManager,
+  openCustomWorkshop,
+  resetCurrentSavePreserveExternalJson: async () => {
+    await startNewJourney({
+      commanderName: commander.getProfile()?.name || '新任提督',
+      fleetPreference: 'balanced',
+      resourceMode: 'standard',
+      keepCustomData: true,
+    });
+  },
   captureFullWorldSnapshot,
   restoreFullWorldSnapshot,
 };

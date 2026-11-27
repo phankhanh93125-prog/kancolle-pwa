@@ -58,7 +58,7 @@ const SECTION_TABS = [
   { id: 'shop', label: '四大货架商店' },
   { id: 'build', label: '舰船建造' },
   { id: 'infra', label: '远征与基建' },
-  { id: 'studio', label: '图鉴与扩展' },
+  { id: 'studio', label: '图鉴总览' },
 ];
 
 const state = {
@@ -658,16 +658,16 @@ function renderInfraSection() {
   wrap.className = 'lab-stack-sm';
   wrap.id = 'facilities-infra-section';
 
-  const missions = expeditions.listMissions();
-  const activeRuns = expeditions.getActiveRuns();
-  const allChars = entities.list({ kind: 'character' });
+  const missions = typeof expeditions?.listMissions === 'function' ? expeditions.listMissions() : [];
+  const activeRuns = typeof expeditions?.listActiveRuns === 'function' ? expeditions.listActiveRuns() : [];
+  const allChars = entities?.list?.({ kind: 'character' }) || [];
   const busyIds = new Set();
   for (const r of activeRuns) {
     for (const id of r.characterIds || []) busyIds.add(id);
   }
   const idleChars = allChars.filter((c) => !busyIds.has(c.id));
   state.selectedExpShipIds = state.selectedExpShipIds.filter((id) => idleChars.some((c) => c.id === id));
-  const curMission = missions.find((m) => m.id === state.selectedExpMissionId) || missions[0];
+  const curMission = missions.find((m) => m.id === state.selectedExpMissionId) || missions[0] || null;
 
   // 1. Expedition Dispatch Card
   const expCard = document.createElement('section');
@@ -682,16 +682,19 @@ function renderInfraSection() {
       activeRuns.length > 0
         ? `<div class="lab-stack-sm">
             ${activeRuns
-              .map(
-                (run) => `
+              .map((run) => {
+                const shipNames = Array.isArray(run.ships) && run.ships.length > 0
+                  ? run.ships.map((s) => s.name).join('、')
+                  : (run.characterNames || []).join('、');
+                return `
               <div class="lab-slot-card">
                 <div class="lab-slot-head">
-                  <strong>${escapeHtml(run.missionTitle)}</strong>
+                  <strong>${escapeHtml(run.missionName || run.missionTitle || '远征任务')}</strong>
                   <span class="status-badge ${run.ready ? 'badge-ok' : 'badge-warn'}">
                     ${run.ready ? '可领取收益' : `剩余 ${formatDurationZh(run.remainingSec)}`}
                   </span>
                 </div>
-                <div class="cc-stat-sub">成员：${escapeHtml((run.characterNames || []).join('、'))}</div>
+                <div class="cc-stat-sub">成员：${escapeHtml(shipNames || '—')}</div>
                 <div class="lab-btn-grid">
                   ${
                     run.ready
@@ -700,8 +703,8 @@ function renderInfraSection() {
                   }
                 </div>
               </div>
-            `
-              )
+            `;
+              })
               .join('')}
           </div>`
         : ''
@@ -713,7 +716,7 @@ function renderInfraSection() {
         ${missions
           .map(
             (m) =>
-              `<option value="${escapeHtml(m.id)}" ${m.id === curMission?.id ? 'selected' : ''}>${escapeHtml(m.title)}（${formatDurationZh(m.durationSec)} · 需≥${m.minShips}舰）</option>`
+              `<option value="${escapeHtml(m.id)}" ${m.id === curMission?.id ? 'selected' : ''}>${escapeHtml(m.name || m.title || m.id)}（${formatDurationZh(m.durationSec)} · 需≥${m.minShips}舰）</option>`
           )
           .join('')}
       </select>
@@ -755,10 +758,11 @@ function renderInfraSection() {
     });
   });
   expCard.querySelector('#btn-fac-exp-dispatch')?.addEventListener('click', async () => {
+    if (!curMission || typeof expeditions?.dispatch !== 'function') return;
     try {
       await expeditions.dispatch(curMission.id, state.selectedExpShipIds);
       state.selectedExpShipIds = [];
-      uiKit.showToast(`远征「${curMission.title}」已起航！`, 'ok');
+      uiKit.showToast(`远征「${curMission.name || curMission.title || '任务'}」已起航！`, 'ok');
       render();
     } catch (err) {
       uiKit.showToast(err instanceof Error ? err.message : '派遣失败', 'warn');
@@ -786,9 +790,13 @@ function renderInfraSection() {
   wrap.appendChild(expCard);
 
   // 2. Infrastructure Upgrades: 舰娘宿舍 & 后勤仓库
-  const dorm = buildings.getDormitoryState();
-  const wh = buildings.getWarehouseState();
-  const resIds = new Set(dorm.residents.map((r) => r.id));
+  const dorm = typeof buildings?.getDormitoryState === 'function'
+    ? buildings.getDormitoryState()
+    : { level: 1, capacity: 3, residents: [], moralePerHour: 12, affinityPerHour: 1, canExpand: false, expandCost: {} };
+  const wh = typeof buildings?.getWarehouseState === 'function'
+    ? buildings.getWarehouseState()
+    : { level: 1, maxLevel: 10, canUpgrade: false, capBonus: 0, carriedSupplyBonus: 0, regenBonusPct: 0, upgradeCost: {} };
+  const resIds = new Set((dorm.residents || []).map((r) => r.id));
 
   const infraCard = document.createElement('section');
   infraCard.className = 'surface-card lab-stack-sm';
@@ -887,97 +895,75 @@ function renderInfraSection() {
 }
 
 function renderStudioSection() {
-  const { entities, inventory, buildings, storyPacks, contentManager, modules, uiKit } = state.context;
+  const { entities, inventory, buildings, storyPacks, modules, uiKit } = state.context;
   const wrap = document.createElement('div');
   wrap.className = 'lab-stack-sm';
   wrap.id = 'facilities-studio-section';
 
-  const charsCount = entities.list({ kind: 'character' }).length;
-  const itemsCount = inventory.listItems().length;
-  const extPacks = (storyPacks?.listPacks?.() || []).filter((p) => !p.builtIn);
-  const customDlgs = contentManager?.listCustomDialogues?.()?.length || 0;
-  const customBldgs = buildings.listCustomBuildings() || [];
+  const charsCount = entities?.list?.({ kind: 'character' })?.length || 0;
+  const itemsCount = inventory?.listItems?.()?.length || 0;
+  const extPacks = (storyPacks?.listPacks?.() || []).filter((p) => !p.builtIn && p.enabled !== false);
+  const customBldgs = buildings?.listCustomBuildings?.() || [];
 
-  // 1. Compendium & External JSON Library
+  // 1. Pure Play Compendium Browse Summary
   const compCard = document.createElement('section');
   compCard.className = 'surface-card lab-stack-sm';
   compCard.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">港区图鉴与外置 JSON 内容库</h2>
-      <span class="status-badge badge-ok">外置包 ${extPacks.length} · 自定义台词 ${customDlgs}</span>
+      <h2 class="section-title">港区收录图鉴</h2>
+      <span class="status-badge badge-ok">舰娘 ${charsCount} · 装备 ${itemsCount}</span>
     </div>
     <p class="muted-text" style="font-size:12px; margin:0;">
-      当前图鉴已收录舰娘 ${charsCount} 名、舰装与道具 ${itemsCount} 件。导入的外置 JSON 角色、装备、台词与剧情包会在开启新档时完整保留。
+      浏览已收录的舰娘档案、装备图鉴、深海敌舰记录及已启用的外置剧情剧场（当前已启用 ${extPacks.length} 个外置扩展包）。如需创作舰娘、装备、设施或导入 JSON，请使用顶栏「自定义工坊」。
     </p>
-    <div class="lab-btn-grid">
-      <button type="button" id="btn-fac-open-compendium" class="btn-primary uikit-touch-target">打开全站图鉴与工坊</button>
-      <button type="button" id="btn-fac-paste-json" class="btn-secondary uikit-touch-target">粘贴导入 JSON 包</button>
-    </div>
+    <button type="button" id="btn-fac-open-compendium" class="btn-primary uikit-touch-target">浏览港区图鉴</button>
   `;
 
   compCard.querySelector('#btn-fac-open-compendium')?.addEventListener('click', () => {
-    if (modules.has('compendium-studio')) {
+    if (modules?.has?.('compendium-studio')) {
       modules.mount('compendium-studio', { transition: 'left' });
     }
   });
-  compCard.querySelector('#btn-fac-paste-json')?.addEventListener('click', () => {
-    openDirectJsonImportModal(state.context, () => render());
-  });
   wrap.appendChild(compCard);
 
-  // 2. Preserved "+ 建造新自定义设施" & Custom Facility List
-  const customCard = document.createElement('section');
-  customCard.className = 'surface-card lab-stack-sm';
-  customCard.innerHTML = `
-    <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">自定义扩展设施（${customBldgs.length}）</h2>
-      <button type="button" id="btn-fac-create-custom" class="btn-primary fac-mini-btn">+ 建造新自定义设施</button>
-    </div>
-    ${
-      customBldgs.length === 0
-        ? '<p class="muted-text" style="font-size:12px;">尚未建造自定义设施，点击右上角「+ 建造新自定义设施」自由扩建港区！</p>'
-        : customBldgs
-            .map(
-              (b) => `
-          <div class="lab-slot-card" data-custom-bldg="${escapeHtml(b.id)}">
-            <div class="lab-slot-head">
-              <strong>${escapeHtml(b.name)} · Lv.${b.level || 1}</strong>
-              <span class="status-badge badge-ok">${escapeHtml(b.buffLabel || b.buffType || '常驻增益')}</span>
-            </div>
-            ${b.description ? `<div class="cc-stat-sub">${escapeHtml(b.description)}</div>` : ''}
-            <div class="lab-btn-grid">
-              <button type="button" class="btn-secondary uikit-touch-target" data-cb-upgrade="${escapeHtml(b.id)}">升级设施</button>
-              <button type="button" class="btn-danger uikit-touch-target" data-cb-delete="${escapeHtml(b.id)}">拆除</button>
-            </div>
+  // 2. Operational Status of Built Custom Facilities (Read & Upgrade Only — Creation lives in Top Bar 「自定义工坊」)
+  if (customBldgs.length > 0) {
+    const customCard = document.createElement('section');
+    customCard.className = 'surface-card lab-stack-sm';
+    customCard.innerHTML = `
+      <div class="section-header-row" style="margin-bottom:0;">
+        <h2 class="section-title">已建成港区扩建设施（${customBldgs.length}）</h2>
+        <span class="status-badge badge-muted">常驻增益生效中</span>
+      </div>
+      ${customBldgs
+        .map(
+          (b) => `
+        <div class="lab-slot-card" data-custom-bldg="${escapeHtml(b.id)}">
+          <div class="lab-slot-head">
+            <strong>${escapeHtml(b.name)} · Lv.${b.level || 1}</strong>
+            <span class="status-badge badge-ok">${escapeHtml(b.buffLabel || b.buffType || '常驻增益')}</span>
           </div>
-        `
-            )
-            .join('')
-    }
-  `;
+          ${b.description ? `<div class="cc-stat-sub">${escapeHtml(b.description)}</div>` : ''}
+          <button type="button" class="btn-secondary uikit-touch-target" data-cb-upgrade="${escapeHtml(b.id)}">升级设施</button>
+        </div>
+      `
+        )
+        .join('')}
+    `;
 
-  customCard.querySelector('#btn-fac-create-custom')?.addEventListener('click', () => {
-    openCreateCustomBuildingModal(state.context, () => render());
-  });
-  customCard.querySelectorAll('[data-cb-upgrade]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      try {
-        const up = await buildings.upgradeCustomBuilding(btn.getAttribute('data-cb-upgrade'));
-        uiKit.showToast(`「${up.name}」已升级至 Lv.${up.level}！`, 'ok');
-        render();
-      } catch (err) {
-        uiKit.showToast(err instanceof Error ? err.message : '升级失败', 'warn');
-      }
+    customCard.querySelectorAll('[data-cb-upgrade]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          const up = await buildings.upgradeCustomBuilding(btn.getAttribute('data-cb-upgrade'));
+          uiKit.showToast(`「${up.name}」已升级至 Lv.${up.level}！`, 'ok');
+          render();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '升级失败', 'warn');
+        }
+      });
     });
-  });
-  customCard.querySelectorAll('[data-cb-delete]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      await buildings.deleteCustomBuilding(btn.getAttribute('data-cb-delete'));
-      uiKit.showToast('已拆除该自定义设施', 'info');
-      render();
-    });
-  });
-  wrap.appendChild(customCard);
+    wrap.appendChild(customCard);
+  }
 
   return wrap;
 }
@@ -1032,7 +1018,7 @@ function render() {
 export default {
   id: 'port-facilities-hub',
   name: '设施',
-  description: '港区设施综合中心：自由配方舰船建造、四大货架商店、远征与宿舍/仓库基建、图鉴与自定义扩展。',
+  description: '港区设施综合中心：自由配方舰船建造、四大货架商店、远征与宿舍/仓库基建、港区图鉴总览。',
   mount(container, context) {
     state.container = container;
     state.context = context;
@@ -1045,7 +1031,11 @@ export default {
       context.bus.on('expedition:recalled', () => render()),
     ];
     state.timer = setInterval(() => {
-      if (state.activeSection === 'infra' && state.context?.expeditions?.getActiveRuns()?.length > 0) {
+      const runs =
+        typeof state.context?.expeditions?.listActiveRuns === 'function'
+          ? state.context.expeditions.listActiveRuns()
+          : [];
+      if (state.activeSection === 'infra' && runs.length > 0) {
         render();
       }
     }, 15000);

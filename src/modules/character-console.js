@@ -3111,7 +3111,7 @@ async function renderArchiveConsole() {
   rosterSection.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
       <h2 class="section-title">全员舰娘档案名册（${roster.length} 名）</h2>
-      <button type="button" id="btn-arc-new-ship" class="btn-secondary fac-mini-btn">+ 新建舰娘</button>
+      <span class="status-badge badge-muted">点击查看八维与配装</span>
     </div>
 
     <div class="chip-row" data-no-swipe="true">

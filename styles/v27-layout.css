@@ -262,7 +262,21 @@ body[data-active-module="port-hub"]:not(.is-title-screen):not(.is-immersive-batt
   overflow-y: auto;
   overscroll-behavior-y: contain;
   padding: 6px 4px;
-  scroll-behavior: smooth;
+}
+
+.is-new-bubble {
+  animation: v28BubbleSlideIn 0.22s ease-out both;
+}
+
+@keyframes v28BubbleSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .chat-narration {
@@ -755,4 +769,119 @@ html[data-theme="cozy_night_lamp"] .chat-bubble.is-ship {
 
 html[data-theme="cozy_night_lamp"] .chat-bubble.is-commander {
   background: linear-gradient(135deg, #c75b39, #9f2d44);
+}
+
+/* ------------------------------------------------------------
+ * 8. Top Bar 「自定义工坊」 Pill & Full-Screen Creation Modal
+ * ------------------------------------------------------------ */
+.header-btn.is-workshop-pill {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent-hover, var(--accent));
+  font-weight: 700;
+}
+
+.cw-fullscreen-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: env(safe-area-inset-top, 0px) 8px env(safe-area-inset-bottom, 0px);
+  background: rgba(5, 9, 16, 0.72);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.cw-fullscreen-modal {
+  width: 100%;
+  max-width: 680px;
+  height: min(94dvh, 860px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.cw-modal-header {
+  flex-shrink: 0;
+}
+
+.cw-tabs-bar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-alt, rgba(255, 255, 255, 0.03));
+  flex-shrink: 0;
+}
+
+.cw-tab-btn {
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  padding: 7px 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cw-tab-btn.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.cw-modal-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.cw-avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cw-avatar-box {
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
+  border: 1px dashed var(--border-subtle);
+  background: var(--surface-alt, rgba(255, 255, 255, 0.04));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.cw-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cw-stat-inputs-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.cw-num-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.cw-num-input {
+  padding: 5px 6px;
+  font-size: 12.5px;
+  text-align: center;
 }

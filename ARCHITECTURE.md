@@ -191,3 +191,16 @@
 4. **全局五屏横滑与 5 重手势冲突锁（`src/main.js`）**：
    - 滑块/横滑筛选条/3×4 阵型盘防穿透；纵滑即锁（`|dx| > 60 && |dx| > |dy| * 1.8`）；出征第 2/3 步锁定横滑与底栏切页（`setSortieNavLocked`）；弹窗/抽屉开启时冻结底层横滑；Tab 1 键盘聚焦自动滚动聊天窗至最新消息。
 5. **全新「夜灯微醺」（`cozy_night_lamp`）暗绯红暖灯磨砂主题**与**严格零手机震动（无 `navigator.vibrate`）规范**。
+
+---
+
+## v28 纯粹游玩与独立「自定义工坊」分离规范
+
+1. **远征接口对齐与全局安全重载（`src/modules/facilities-hub.js`、`index.html`、`src/main.js`）**：
+   - 对齐 `ExpeditionSystem` 的真实接口 `expeditions.listActiveRuns()`（及 `run.missionName` / `run.ships`、`mission.name`），消除「设施 → 远征与基建」挂载崩溃。
+   - 顶部全局异常拦截条默认提供**「安全重载界面（保留全部存档）」**（绝不触碰 IndexedDB/localStorage），并另设带二次确认弹窗的**「重置当前存档（保留已导入JSON）」**按钮，杜绝误触清档。
+2. **「互动」聊天窗增量追加与零回顶流畅滚动（`src/modules/port-hub.js`）**：
+   - 同秘书舰互动时通过 `renderedShipId` 与 `renderedMsgIds` 执行 DOM 增量末尾追加，禁止清空容器将 `scrollTop` 重置为 `0`，确保新气泡从当前底部平滑滑出。
+3. **纯粹游玩五屏 vs 独立「自定义工坊」（`src/modules/custom-workshop.js`）**：
+   - 底部 5 大主标签（`互动 / 档案 / 出征 / 工坊 / 设施`）与图鉴页严格回归纯粹游玩体验（移除散落的自定义舰娘/装备/设施/JSON 导入按钮）。
+   - 顶部状态栏新增独立「**自定义工坊**」入口，全屏创作模态层集中提供四大创作分栏：`自定义舰娘`（含 AR/AO 舰种）、`自定义装备`（含 `support` 支援装）、`设施与剧情`（自定义设施 + 互动台词 + 海事奇遇）与 `模组包管理`（JSON 智能导入/启停/备份导出）。

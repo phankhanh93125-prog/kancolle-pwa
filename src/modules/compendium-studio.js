@@ -1582,111 +1582,32 @@ async function renderStoryPacksTab(host) {
 
 function renderCompendiumStudio() {
   if (!csState.container || !csState.context) return;
-  const { resources, modules, uiKit } = csState.context;
+  const { modules } = csState.context;
 
   csState.container.innerHTML = '';
   const root = document.createElement('div');
   root.className = 'module-stack';
-
-  root.appendChild(
-    uiKit.createSubpageHeader({
-      title: '仓库与图鉴',
-      subtitle: '全要素图鉴 · 剧情包与模组导入',
-      modules,
-      resources,
-      resourceKeys: ['silver', 'gold'],
-      id: 'cs-subpage-header',
-    })
-  );
-
-  // Unified 4th-Tab Top Switcher: 装备仓库与工坊 ⇄ 图鉴与内容库
-  const hubSwitcher = document.createElement('div');
-  hubSwitcher.className = 'wh-hub-switch-bar';
-  hubSwitcher.id = 'cs-hub-switch-bar';
-  hubSwitcher.innerHTML = `
-    <button type="button" class="wh-hub-switch-btn" id="btn-cs-hub-to-warehouse">装备仓库与工坊</button>
-    <button type="button" class="wh-hub-switch-btn is-active" id="btn-cs-hub-to-compendium">图鉴与内容库</button>
-  `;
-  hubSwitcher.querySelector('#btn-cs-hub-to-warehouse').addEventListener('click', () => {
-    if (modules.has('supply-workshop')) modules.mount('supply-workshop', { transition: 'right' });
-  });
-  root.appendChild(hubSwitcher);
-
-  root.appendChild(createResourceOverviewBar(resources, { id: 'cs-resource-bar' }));
+  root.id = 'page-compendium-pure';
 
   const navCard = document.createElement('section');
   navCard.className = 'surface-card lab-stack-sm';
   navCard.innerHTML = `
-    <div class="lab-btn-grid" id="cs-main-tabs" style="grid-template-columns:repeat(3,minmax(0,1fr));">
-      <button type="button" id="btn-cs-tab-compendium" class="${csState.mainTab === 'compendium' ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" style="padding:0 6px; font-size:12.5px;">全要素图鉴</button>
-      <button type="button" id="btn-cs-tab-story" class="${csState.mainTab === 'story' ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" style="padding:0 6px; font-size:12.5px;">事件与剧情包</button>
-      <button type="button" id="btn-cs-tab-studio" class="${csState.mainTab === 'studio' ? 'btn-primary' : 'btn-secondary'} uikit-touch-target" style="padding:0 6px; font-size:12.5px;">自定义模组</button>
+    <div class="section-header-row" style="margin-bottom:0;">
+      <h2 class="section-title">港区全要素图鉴</h2>
+      <button type="button" id="btn-cs-back-fac" class="btn-secondary fac-mini-btn">返回设施</button>
     </div>
-    <button type="button" id="btn-cs-back-port" class="btn-secondary uikit-touch-target">返回港区大本营</button>
+    <p class="muted-text" style="font-size:12px; margin:0;">
+      浏览已收录的舰娘、装备、敌舰记录与已启用的外置剧情。创作与 JSON 模组管理请点击顶栏「自定义工坊」。
+    </p>
   `;
-  navCard.querySelector('#btn-cs-tab-compendium').addEventListener('click', () => {
-    csState.mainTab = 'compendium';
-    renderCompendiumStudio();
-  });
-  navCard.querySelector('#btn-cs-tab-story').addEventListener('click', () => {
-    csState.mainTab = 'story';
-    renderCompendiumStudio();
-  });
-  navCard.querySelector('#btn-cs-tab-studio').addEventListener('click', () => {
-    csState.mainTab = 'studio';
-    renderCompendiumStudio();
-  });
-  navCard.querySelector('#btn-cs-back-port').addEventListener('click', () => {
-    if (modules.has('port-hub')) modules.mount('port-hub');
+  navCard.querySelector('#btn-cs-back-fac')?.addEventListener('click', () => {
+    if (modules?.has?.('port-facilities-hub')) {
+      modules.mount('port-facilities-hub', { transition: 'right' });
+    }
   });
   root.appendChild(navCard);
 
-  // Prominent Non-Destructive Starter Content Pack Merge Card (Protects Existing Saves)
-  const bundleCard = document.createElement('section');
-  bundleCard.className = 'surface-card lab-stack-sm starter-bundle-card';
-  bundleCard.id = 'cs-starter-bundle-card';
-  bundleCard.innerHTML = `
-    <div class="section-header-row" style="margin-bottom:0;">
-      <strong style="font-size:14px;">开局标准示范内容大礼包（无损合并）</strong>
-      <span class="status-badge badge-ok">不覆盖旧存档</span>
-    </div>
-    <p class="muted-text" style="font-size:12px; margin:0;">
-      含覆盖 DD/CL/CA/BB/CV 全五舰种的 <strong>8 名独立性格舰娘</strong>、<strong>16 件核心/武器/辅助/服装装备</strong>、低/中/高危分级敌舰、<strong>16 项港区生活日常包</strong>与<strong>四章节深海遗迹主线包</strong>。仅补齐缺失条目，绝不覆盖您已有数据。
-    </p>
-    <button type="button" id="btn-cs-merge-starter-pack" class="btn-primary port-cta-btn">
-      一键合并导入示范内容大礼包
-    </button>
-  `;
-  bundleCard.querySelector('#btn-cs-merge-starter-pack').addEventListener('click', async () => {
-    const { contentManager, personalityPool, storyPacks, statRules, rootStorage, entities, uiKit } = csState.context;
-    try {
-      const res = await contentManager.mergeStarterContentBundle({
-        personalityPool,
-        storyPacks,
-        statRules,
-        persistRosterFn: () => persistCharacterRoster({ storage: rootStorage, entities }),
-      });
-      const total = res.addedShips + res.addedItems + res.addedEnemies + res.addedPacks;
-      uiKit.showToast(
-        total > 0
-          ? `合并完成：新增 ${res.addedShips} 名舰娘、${res.addedItems} 件装备、${res.addedEnemies} 支敌舰、${res.addedPacks} 套剧情包！`
-          : '全套示范内容大礼包已完整收录，无需重复导入（旧数据已无损保留）',
-        'ok'
-      );
-      renderCompendiumStudio();
-    } catch (err) {
-      uiKit.showToast(err instanceof Error ? err.message : '合并导入失败', 'error');
-    }
-  });
-  root.appendChild(bundleCard);
-
-  if (csState.mainTab === 'compendium') {
-    renderCompendiumTab(root);
-  } else if (csState.mainTab === 'story') {
-    renderStoryPacksTab(root);
-  } else {
-    renderStudioTab(root);
-  }
+  renderCompendiumTab(root);
 
   csState.container.appendChild(root);
 }

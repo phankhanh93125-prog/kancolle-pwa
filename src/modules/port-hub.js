@@ -33,12 +33,16 @@ const portState = {
   container: null,
   context: null,
   avatarCache: new Map(),
+  renderedShipId: null,
+  renderedMsgIds: new Set(),
   busy: false,
   unsubs: [],
 };
 
 export function resetPortHubState() {
   portState.avatarCache.clear();
+  portState.renderedShipId = null;
+  portState.renderedMsgIds.clear();
   portState.busy = false;
 }
 
@@ -75,11 +79,51 @@ async function resolveShipAvatarUrl(char) {
   }
 }
 
-function scrollChatToBottom() {
+function scrollChatToBottom({ smooth = false } = {}) {
   const vp = portState.container?.querySelector('#chat-bubble-viewport');
-  if (vp) {
+  if (!vp) return;
+  if (smooth && typeof vp.scrollTo === 'function') {
+    vp.scrollTo({ top: vp.scrollHeight, behavior: 'smooth' });
+  } else {
     vp.scrollTop = vp.scrollHeight;
   }
+}
+
+function buildChatMessageElement(m, avatarUrl, secName, { animate = false } = {}) {
+  const wrap = document.createElement('div');
+  const msgId = String(m.id || `m_${m.timestamp || Date.now()}`);
+  if (m.role === 'narration') {
+    wrap.className = `chat-narration${animate ? ' is-new-bubble' : ''}`;
+    wrap.dataset.msgId = msgId;
+    wrap.textContent = m.text || '';
+    return wrap;
+  }
+  if (m.role === 'system') {
+    wrap.className = `chat-system-pill${animate ? ' is-new-bubble' : ''}`;
+    wrap.dataset.msgId = msgId;
+    wrap.textContent = m.text || '';
+    return wrap;
+  }
+  if (m.role === 'commander') {
+    wrap.className = `chat-msg-row is-commander${animate ? ' is-new-bubble' : ''}`;
+    wrap.dataset.msgId = msgId;
+    wrap.innerHTML = `
+      <div class="chat-bubble is-commander ${m.kind === 'gift' ? 'is-gift' : ''}">
+        ${escapeHtml(m.text)}
+      </div>
+    `;
+    return wrap;
+  }
+  wrap.className = `chat-msg-row is-ship${animate ? ' is-new-bubble' : ''}`;
+  wrap.dataset.msgId = msgId;
+  wrap.innerHTML = `
+    <img class="chat-msg-avatar" src="${avatarUrl}" alt="${escapeHtml(m.speaker || secName)}">
+    <div class="chat-bubble-col">
+      <span class="chat-speaker-name">${escapeHtml(m.speaker || secName)}</span>
+      <div class="chat-bubble is-ship">${escapeHtml(m.text)}</div>
+    </div>
+  `;
+  return wrap;
 }
 
 // ============================================================
@@ -389,26 +433,113 @@ function renderExternalStorySessionCard() {
   return card;
 }
 
-// ============================================================
-// Main Tab 1 Render
-// ============================================================
-async function renderPortHub() {
-  if (!portState.container || !portState.context) return;
-  const { storyEngine, inventory, interaction, entities, rootStorage, uiKit, fxStage } = portState.context;
-  const sec = getActiveSecretary();
+function bindQuickReplyChoices(containerEl, sec) {
+  const { storyEngine, entities, rootStorage, uiKit, fxStage } = portState.context;
+  containerEl.querySelectorAll('[data-chat-choice]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (portState.busy) return;
+      portState.busy = true;
+      try {
+        const cid = btn.getAttribute('data-chat-choice');
+        const res = await storyEngine.resolveChatChoice(sec, cid);
+        await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: sec.id });
+        if (res?.unlockedGate) {
+          fxStage?.playSfx?.('success');
+          uiKit.showToast(`🎉 已突破 ${res.unlockedGate} 羁绊阶段！`, 'ok');
+        }
+        await renderPortHub();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '回复失败', 'warn');
+      } finally {
+        portState.busy = false;
+      }
+    });
+  });
+}
 
-  portState.container.innerHTML = '';
-  const root = document.createElement('div');
-  root.className = 'interact-hub-root';
-  root.id = 'page-port-hub';
+function renderHeroStageActionsMarkup(status) {
+  return `
+    ${
+      status.pendingGate
+        ? `<button type="button" id="btn-sec-breakthrough" class="btn-primary interact-breakthrough-btn">✨ ${status.pendingGate} 阶段突破小剧场</button>`
+        : ''
+    }
+    ${
+      status.unlockedGates.length > 0
+        ? `<button type="button" id="btn-sec-replay" class="btn-secondary interact-mini-chip">↺ 剧场回顾 (${status.unlockedGates.length})</button>`
+        : ''
+    }
+    ${
+      status.affinity >= 100 && !status.isOathed
+        ? `<button type="button" id="btn-sec-oath" class="btn-primary interact-mini-chip">💍 誓约仪式</button>`
+        : ''
+    }
+  `;
+}
 
-  if (!sec) {
-    root.innerHTML = `
-      <div class="surface-card" style="text-align:center; padding:24px;">
-        <p class="muted-text">当前港区尚无执勤舰娘，请前往「设施 → 舰船建造」建造新舰！</p>
+function bindHeroStageActions(rootEl, sec, status) {
+  const { storyEngine, interaction, entities, rootStorage, uiKit, fxStage } = portState.context;
+  rootEl.querySelector('#btn-sec-breakthrough')?.addEventListener('click', async () => {
+    if (!status.pendingGate) return;
+    await storyEngine.startBreakthroughTheatre(sec, status.pendingGate, { isReplay: false });
+    await renderPortHub();
+  });
+  rootEl.querySelector('#btn-sec-replay')?.addEventListener('click', () => {
+    openBreakthroughReplayDrawer(sec, status);
+  });
+  rootEl.querySelector('#btn-sec-oath')?.addEventListener('click', async () => {
+    try {
+      await interaction.performOathCeremony(sec.id);
+      storyEngine.syncLegacyBreakthroughs();
+      await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: sec.id });
+      fxStage?.playSfx?.('success');
+      uiKit.showToast(`💍 已与「${sec.name}」缔结誓约，好感上限提升至 200！`, 'ok');
+      await renderPortHub();
+    } catch (err) {
+      uiKit.showToast(err instanceof Error ? err.message : '誓约仪式条件不足', 'warn');
+    }
+  });
+}
+
+function renderQuickRepliesSlot(slotEl, sec, activePrompt) {
+  if (!slotEl) return;
+  if (activePrompt && Array.isArray(activePrompt.choices) && activePrompt.choices.length > 0) {
+    slotEl.hidden = false;
+    slotEl.innerHTML = `
+      <div class="chat-quick-replies" id="chat-quick-replies" data-no-swipe="true">
+        ${activePrompt.choices
+          .map(
+            (ch) =>
+              `<button type="button" class="chat-choice-btn" data-chat-choice="${escapeHtml(ch.id)}">${escapeHtml(ch.label)}</button>`
+          )
+          .join('')}
       </div>
     `;
-    portState.container.appendChild(root);
+    bindQuickReplyChoices(slotEl, sec);
+  } else {
+    slotEl.hidden = true;
+    slotEl.innerHTML = '';
+  }
+}
+
+// ============================================================
+// Main Tab 1 Render (Zero-Jump Incremental Append when Same Ship)
+// ============================================================
+async function renderPortHub({ forceFull = false } = {}) {
+  if (!portState.container || !portState.context) return;
+  const { storyEngine, inventory, storyPacks, entities, rootStorage, uiKit, fxStage } = portState.context;
+  const sec = getActiveSecretary();
+
+  if (!sec) {
+    portState.renderedShipId = null;
+    portState.renderedMsgIds.clear();
+    portState.container.innerHTML = `
+      <div class="interact-hub-root" id="page-port-hub">
+        <div class="surface-card" style="text-align:center; padding:24px;">
+          <p class="muted-text">当前港区尚无执勤舰娘，请前往「设施 → 舰船建造」建造新舰！</p>
+        </div>
+      </div>
+    `;
     return;
   }
 
@@ -420,6 +551,68 @@ async function renderPortHub() {
   const history = storyEngine.getChatHistory(sec.id);
   const activePrompt = storyEngine.getActivePrompt(sec.id);
   const affPct = Math.min(100, Math.round((status.affinity / Math.max(1, status.maxAffinity)) * 100));
+  const activeExtSess = storyPacks?.getActiveTheatreSession?.();
+  const hasExtSession = Boolean(activeExtSess && activeExtSess.pack && !activeExtSess.pack.builtIn);
+
+  // FAST INCREMENTAL PATH: Same secretary already mounted -> NEVER rebuild viewport or reset scrollTop to 0!
+  const existingViewport = portState.container.querySelector('#chat-bubble-viewport');
+  const existingExtCard = portState.container.querySelector('.interact-ext-story-card');
+  if (
+    !forceFull &&
+    existingViewport &&
+    portState.renderedShipId === sec.id &&
+    !hasExtSession &&
+    !existingExtCard
+  ) {
+    // 1. Update hero badges & affection bar in-place
+    const stageBadge = portState.container.querySelector('#sec-aff-stage-badge');
+    if (stageBadge) stageBadge.textContent = `${status.stage.label}${status.isOathed ? ' 💍' : ''}`;
+    const outfitEl = portState.container.querySelector('#sec-outfit-label');
+    if (outfitEl) outfitEl.textContent = `着装：${outfitName}`;
+    const affValEl = portState.container.querySelector('#sec-aff-val');
+    if (affValEl) affValEl.textContent = String(status.affinity);
+    const affMaxEl = portState.container.querySelector('#sec-aff-max');
+    if (affMaxEl) affMaxEl.textContent = String(status.maxAffinity);
+    const dailyEl = portState.container.querySelector('#sec-daily-talk');
+    if (dailyEl) dailyEl.textContent = `今日闲聊 ${status.dailyTalkUsed}/${status.dailyTalkCap}`;
+    const affFill = portState.container.querySelector('#sec-aff-fill');
+    if (affFill) affFill.style.width = `${affPct}%`;
+    const actionsRow = portState.container.querySelector('#interact-stage-actions');
+    if (actionsRow) {
+      actionsRow.innerHTML = renderHeroStageActionsMarkup(status);
+      bindHeroStageActions(actionsRow, sec, status);
+    }
+
+    // 2. Append ONLY newly arrived bubbles directly to the bottom of #chat-bubble-viewport!
+    let appended = 0;
+    for (const m of history) {
+      const mid = String(m.id || `m_${m.timestamp || ''}`);
+      if (portState.renderedMsgIds.has(mid)) continue;
+      const el = buildChatMessageElement(m, avatarUrl, sec.name, { animate: true });
+      existingViewport.appendChild(el);
+      portState.renderedMsgIds.add(mid);
+      appended += 1;
+    }
+
+    // 3. Update quick replies in-place
+    const repliesSlot = portState.container.querySelector('#chat-quick-replies-slot');
+    renderQuickRepliesSlot(repliesSlot, sec, activePrompt);
+
+    // 4. Smooth-scroll ONLY from current bottom position to newly appended bottom (NEVER jumping to 0!)
+    if (appended > 0 || activePrompt) {
+      scrollChatToBottom({ smooth: true });
+    }
+    return;
+  }
+
+  // FULL MOUNT / SECRETARY SWITCH PATH
+  portState.container.innerHTML = '';
+  portState.renderedShipId = sec.id;
+  portState.renderedMsgIds.clear();
+
+  const root = document.createElement('div');
+  root.className = 'interact-hub-root';
+  root.id = 'page-port-hub';
 
   // Optional external imported story pack player
   const extCard = renderExternalStorySessionCard();
@@ -458,30 +651,16 @@ async function renderPortHub() {
 
         <div class="interact-aff-box">
           <div class="interact-aff-head">
-            <span>好感 <strong id="sec-aff-val">${status.affinity}</strong>/${status.maxAffinity}</span>
-            <span class="muted-text">今日闲聊 ${status.dailyTalkUsed}/${status.dailyTalkCap}</span>
+            <span>好感 <strong id="sec-aff-val">${status.affinity}</strong>/<span id="sec-aff-max">${status.maxAffinity}</span></span>
+            <span class="muted-text" id="sec-daily-talk">今日闲聊 ${status.dailyTalkUsed}/${status.dailyTalkCap}</span>
           </div>
           <div class="interact-aff-track">
-            <div class="interact-aff-fill" style="width:${affPct}%"></div>
+            <div class="interact-aff-fill" id="sec-aff-fill" style="width:${affPct}%"></div>
           </div>
         </div>
 
-        <div class="interact-stage-actions">
-          ${
-            status.pendingGate
-              ? `<button type="button" id="btn-sec-breakthrough" class="btn-primary interact-breakthrough-btn">✨ ${status.pendingGate} 阶段突破小剧场</button>`
-              : ''
-          }
-          ${
-            status.unlockedGates.length > 0
-              ? `<button type="button" id="btn-sec-replay" class="btn-secondary interact-mini-chip">↺ 剧场回顾 (${status.unlockedGates.length})</button>`
-              : ''
-          }
-          ${
-            status.affinity >= 100 && !status.isOathed
-              ? `<button type="button" id="btn-sec-oath" class="btn-primary interact-mini-chip">💍 誓约仪式</button>`
-              : ''
-          }
+        <div class="interact-stage-actions" id="interact-stage-actions">
+          ${renderHeroStageActionsMarkup(status)}
         </div>
       </div>
     </div>
@@ -509,78 +688,15 @@ async function renderPortHub() {
     openCharacterCardById(sec.id, portState.context);
   });
   heroCard.querySelector('#btn-sec-switch')?.addEventListener('click', () => openSwitchSecretaryDrawer());
-  heroCard.querySelector('#btn-sec-breakthrough')?.addEventListener('click', async () => {
-    if (!status.pendingGate) return;
-    await storyEngine.startBreakthroughTheatre(sec, status.pendingGate, { isReplay: false });
-    await renderPortHub();
-  });
-  heroCard.querySelector('#btn-sec-replay')?.addEventListener('click', () => {
-    openBreakthroughReplayDrawer(sec, status);
-  });
-  heroCard.querySelector('#btn-sec-oath')?.addEventListener('click', async () => {
-    try {
-      await interaction.performOathCeremony(sec.id);
-      storyEngine.syncLegacyBreakthroughs();
-      await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: sec.id });
-      fxStage?.playSfx?.('success');
-      uiKit.showToast(`💍 已与「${sec.name}」缔结誓约，好感上限提升至 200！`, 'ok');
-      await renderPortHub();
-    } catch (err) {
-      uiKit.showToast(err instanceof Error ? err.message : '誓约仪式条件不足', 'warn');
-    }
-  });
+  bindHeroStageActions(heroCard, sec, status);
   root.appendChild(heroCard);
 
   // 2. Scrollable WeChat/QQ-Style Bubble Chat Window
   const chatShell = document.createElement('section');
   chatShell.className = 'surface-card interact-chat-shell';
   chatShell.innerHTML = `
-    <div class="chat-bubble-viewport" id="chat-bubble-viewport">
-      ${history
-        .map((m) => {
-          if (m.role === 'narration') {
-            return `<div class="chat-narration">${escapeHtml(m.text)}</div>`;
-          }
-          if (m.role === 'system') {
-            return `<div class="chat-system-pill">${escapeHtml(m.text)}</div>`;
-          }
-          if (m.role === 'commander') {
-            return `
-              <div class="chat-msg-row is-commander">
-                <div class="chat-bubble is-commander ${m.kind === 'gift' ? 'is-gift' : ''}">
-                  ${escapeHtml(m.text)}
-                </div>
-              </div>
-            `;
-          }
-          return `
-            <div class="chat-msg-row is-ship">
-              <img class="chat-msg-avatar" src="${avatarUrl}" alt="${escapeHtml(m.speaker || sec.name)}">
-              <div class="chat-bubble-col">
-                <span class="chat-speaker-name">${escapeHtml(m.speaker || sec.name)}</span>
-                <div class="chat-bubble is-ship">${escapeHtml(m.text)}</div>
-              </div>
-            </div>
-          `;
-        })
-        .join('')}
-    </div>
-
-    ${
-      activePrompt && Array.isArray(activePrompt.choices) && activePrompt.choices.length > 0
-        ? `
-      <div class="chat-quick-replies" id="chat-quick-replies" data-no-swipe="true">
-        ${activePrompt.choices
-          .map(
-            (ch) =>
-              `<button type="button" class="chat-choice-btn" data-chat-choice="${escapeHtml(ch.id)}">${escapeHtml(ch.label)}</button>`
-          )
-          .join('')}
-      </div>
-    `
-        : ''
-    }
-
+    <div class="chat-bubble-viewport" id="chat-bubble-viewport"></div>
+    <div id="chat-quick-replies-slot" hidden></div>
     <div class="interact-action-bar" id="interact-action-bar">
       <button type="button" id="btn-sec-talk" class="btn-primary interact-act-btn">日常交谈</button>
       <button type="button" id="btn-sec-gift" class="btn-secondary interact-act-btn">赠送礼物</button>
@@ -588,26 +704,13 @@ async function renderPortHub() {
     </div>
   `;
 
-  chatShell.querySelectorAll('[data-chat-choice]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      if (portState.busy) return;
-      portState.busy = true;
-      try {
-        const cid = btn.getAttribute('data-chat-choice');
-        const res = await storyEngine.resolveChatChoice(sec, cid);
-        await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: sec.id });
-        if (res?.unlockedGate) {
-          fxStage?.playSfx?.('success');
-          uiKit.showToast(`🎉 已突破 ${res.unlockedGate} 羁绊阶段！`, 'ok');
-        }
-        await renderPortHub();
-      } catch (err) {
-        uiKit.showToast(err instanceof Error ? err.message : '回复失败', 'warn');
-      } finally {
-        portState.busy = false;
-      }
-    });
-  });
+  const vp = chatShell.querySelector('#chat-bubble-viewport');
+  for (const m of history) {
+    const mid = String(m.id || `m_${m.timestamp || ''}`);
+    vp.appendChild(buildChatMessageElement(m, avatarUrl, sec.name, { animate: false }));
+    portState.renderedMsgIds.add(mid);
+  }
+  renderQuickRepliesSlot(chatShell.querySelector('#chat-quick-replies-slot'), sec, activePrompt);
 
   chatShell.querySelector('#btn-sec-talk')?.addEventListener('click', async () => {
     if (portState.busy) return;
@@ -640,8 +743,8 @@ async function renderPortHub() {
   root.appendChild(chatShell);
   portState.container.appendChild(root);
 
-  // Auto-scroll bubble chat to latest message
-  requestAnimationFrame(scrollChatToBottom);
+  // Instant snap to bottom on initial mount/secretary switch (zero top-to-bottom jump)
+  scrollChatToBottom({ smooth: false });
 }
 
 export default {
@@ -652,6 +755,8 @@ export default {
     portState.container = container;
     portState.context = context;
     portState.avatarCache.clear();
+    portState.renderedShipId = null;
+    portState.renderedMsgIds.clear();
     context.ui.setSwipeLocked(false);
     context.ui.setPlaceholder('和秘书舰聊聊今天想说的话...');
     context.ui.setInputHandler(async (text) => {
@@ -680,14 +785,16 @@ export default {
       context.bus.on('inventory:equipped', () => renderPortHub()),
       context.bus.on('inventory:unequipped', () => renderPortHub()),
       context.bus.on('interaction:oathed', () => renderPortHub()),
-      context.bus.on('story:packs-changed', () => renderPortHub()),
+      context.bus.on('story:packs-changed', () => renderPortHub({ forceFull: true })),
     ];
 
-    renderPortHub();
+    renderPortHub({ forceFull: true });
   },
   unmount() {
     portState.unsubs.forEach((u) => { try { u(); } catch {} });
     portState.unsubs = [];
+    portState.renderedShipId = null;
+    portState.renderedMsgIds.clear();
     portState.container = null;
     portState.context = null;
   },

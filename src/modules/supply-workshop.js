@@ -1524,7 +1524,6 @@ function renderWarehouseEnhanceTab(host) {
         <span class="status-badge badge-ok" id="sw-salvage-parts-badge">拆解余料 ${salvageParts}</span>
         <span class="status-badge badge-warn" id="sw-retrofit-cores-badge">改造核心 ${retrofitCores}</span>
       </div>
-      <button type="button" id="btn-sw-new-custom-eq" class="btn-primary uikit-touch-target" style="padding:0 12px;">+ 新建装备/服装</button>
     </div>
 
     <!-- Category Tabs -->
@@ -1577,7 +1576,7 @@ function renderWarehouseEnhanceTab(host) {
     <div id="sw-pagination-mount"></div>
   `;
 
-  card.querySelector('#btn-sw-new-custom-eq').addEventListener('click', () => {
+  card.querySelector('#btn-sw-new-custom-eq')?.addEventListener('click', () => {
     openEquipmentOutfitEditorSheet(workshopState.context, {
       onSaved: () => renderWorkshop(),
     });
