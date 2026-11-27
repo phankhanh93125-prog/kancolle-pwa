@@ -20,11 +20,13 @@ import {
   BREAKTHROUGH_THEATRES,
   DEFAULT_DIALOGUE_BANK,
   MARITIME_ENCOUNTER_STORIES,
+  OATH_RITUAL_THEATRE,
   OUTFIT_FLAVOR_LINES,
   PORTRAIT_TOUCH_LINES,
   getTimeOfDayBucket,
   resolveAffinityStage6,
 } from '../data/default-dialogues.js';
+import { BASE_AFFINITY_CAP, OATH_AFFINITY_CAP } from './stat-rules.js';
 import { LOG_CATEGORIES } from './log-system.js';
 
 const STORAGE_NS = 'core-story-engine';
@@ -169,17 +171,33 @@ export class StoryEngine {
   }
 
   /**
-   * Losslessly mark already-crossed breakthrough gates as unlocked & replayable for legacy high-affinity ships!
+   * Losslessly migrate legacy saves: sync already-crossed historical bands (`aff > gate`)
+   * as unlocked while preserving hard interception on the NEXT 20-point gate!
+   * Also ensures safe default `isOathed` / `oathDate` metadata on every character entity.
    */
   syncLegacyBreakthroughs() {
     if (!this._entities) return;
     const chars = this._entities.list({ kind: 'character' }) || [];
     for (const ch of chars) {
-      const aff = Math.round(Number(ch?.stats?.affinity ?? 0));
-      const isOathed = Boolean(this._interaction?.isOathed?.(ch.id));
+      if (!ch || !ch.id) continue;
+      if (!ch.meta || typeof ch.meta !== 'object') ch.meta = {};
+      const oathRec = this._interaction?.getOathRecord?.(ch.id) || null;
+      const isOathed = Boolean(oathRec || ch.meta.isOathed || ch.isOathed);
+      const oathDate = oathRec?.oathedAt || ch.meta.oathDate || ch.oathDate || null;
+      ch.meta.isOathed = isOathed;
+      ch.meta.oathDate = oathDate;
+      ch.isOathed = isOathed;
+      ch.oathDate = oathDate;
+
+      const maxAff = isOathed ? OATH_AFFINITY_CAP : BASE_AFFINITY_CAP;
+      if (!ch.statBounds || typeof ch.statBounds !== 'object') ch.statBounds = {};
+      ch.statBounds.affinity = { min: 0, max: maxAff };
+
+      const aff = Math.max(0, Math.round(Number(ch?.stats?.affinity ?? 0)));
       const existing = new Set(this._state.unlockedBreakthroughs[ch.id] || []);
       for (const gate of BREAKTHROUGH_GATES) {
-        if (aff >= gate || (isOathed && gate <= 100)) {
+        // Strictly crossed in an older save (`aff > gate`), or already oathed
+        if (aff > gate || (isOathed && gate <= BASE_AFFINITY_CAP)) {
           existing.add(gate);
         }
       }
@@ -190,44 +208,49 @@ export class StoryEngine {
   }
 
   // ------------------------------------------------------------
-  // Affection Stage & Gate Helpers
+  // Affection Stage & Hard Gate Helpers (20 / 40 / 60 / 80 / 100 / 150)
   // ------------------------------------------------------------
 
   getAffectionStatus(characterId) {
     const cid = String(characterId || '');
     const actor = this._entities?.get(cid);
     const aff = Math.max(0, Math.round(Number(actor?.stats?.affinity ?? 0)));
-    const isOathed = Boolean(this._interaction?.isOathed?.(cid));
-    const maxAff = isOathed ? 200 : 100;
+    const oathRec = this._interaction?.getOathRecord?.(cid) || null;
+    const isOathed = Boolean(oathRec || actor?.meta?.isOathed || actor?.isOathed);
+    const oathDate = oathRec?.oathedAt || actor?.meta?.oathDate || actor?.oathDate || null;
+    const maxAff = isOathed ? OATH_AFFINITY_CAP : BASE_AFFINITY_CAP;
     const unlocked = new Set(this._state.unlockedBreakthroughs[cid] || []);
-
-    // Auto-unlock crossed historical gates defensively
-    for (const g of BREAKTHROUGH_GATES) {
-      if (aff >= g) unlocked.add(g);
-    }
     const unlockedList = Array.from(unlocked).sort((a, b) => a - b);
-    this._state.unlockedBreakthroughs[cid] = unlockedList;
 
-    const stage = resolveAffinityStage6(aff, { isOathed });
+    const stage = resolveAffinityStage6(aff, { isOathed, unlockedGates: unlocked });
 
-    // Determine next breakthrough gate:
-    // If aff is at 19 (or 39 / 59 / 79 / 99) and gate 20 (or 40 / 60 / 80 / 100) is not yet unlocked -> pending!
-    let pendingGate = null;
-    for (const gate of BREAKTHROUGH_GATES) {
-      if (!unlocked.has(gate) && aff >= gate - 1) {
-        pendingGate = gate;
-        break;
-      }
-    }
-
-    // Current hard ceiling before completing pending breakthrough
+    // Hard stage ceiling: strictly 20 -> 40 -> 60 -> 80 -> 100 (locked at 100 until Oath -> 150)
     let currentCap = maxAff;
-    for (const gate of BREAKTHROUGH_GATES) {
-      if (!unlocked.has(gate)) {
-        currentCap = Math.min(maxAff, gate - 1);
-        break;
+    if (!isOathed) {
+      let nextLockedGate = null;
+      for (const gate of BREAKTHROUGH_GATES) {
+        if (!unlocked.has(gate)) {
+          nextLockedGate = gate;
+          break;
+        }
+      }
+      currentCap = nextLockedGate !== null ? Math.min(BASE_AFFINITY_CAP, nextLockedGate) : BASE_AFFINITY_CAP;
+    }
+
+    // Pending breakthrough gate triggers strictly once affinity reaches the current locked ceiling (20/40/60/80/100)
+    let pendingGate = null;
+    if (!isOathed) {
+      for (const gate of BREAKTHROUGH_GATES) {
+        if (!unlocked.has(gate) && aff >= gate) {
+          pendingGate = gate;
+          break;
+        }
       }
     }
+
+    const canStartOath = !isOathed && aff >= BASE_AFFINITY_CAP && unlocked.has(BASE_AFFINITY_CAP);
+    const atStageCap = !isOathed && (Boolean(pendingGate) || aff >= currentCap);
+    const unlockedStage = isOathed ? 5 : unlockedList.length;
 
     const todayKey = getLocalDateKey();
     const dailyRec = this._state.dailyTalkByShip[cid];
@@ -238,12 +261,16 @@ export class StoryEngine {
       affinity: aff,
       maxAffinity: maxAff,
       isOathed,
+      oathDate,
       stage,
+      unlockedStage,
       stages: AFFINITY_STAGES_6,
       unlockedGates: unlockedList,
       pendingGate,
       pendingTheatre: pendingGate ? BREAKTHROUGH_THEATRES[pendingGate] || null : null,
       currentCap,
+      atStageCap,
+      canStartOath,
       dailyTalkUsed,
       dailyTalkCap: DAILY_TALK_AFFINITY_CAP,
       dailyTalkRemaining: Math.max(0, DAILY_TALK_AFFINITY_CAP - dailyTalkUsed),
@@ -251,34 +278,76 @@ export class StoryEngine {
   }
 
   /**
-   * Apply slow-paced affection gain respecting the current 20-point breakthrough cap!
+   * SINGLE authoritative affection mutation funnel for ALL modules (chat, gifts, sorties,
+   * dockyard repairs, dormitory, expeditions, story events).
+   * Strictly clamps positive gains at `currentCap` (20 / 40 / 60 / 80 / 100, or 150 after Oath)
+   * so affection can NEVER overflow a locked stage ceiling without completing its breakthrough theatre!
    */
-  applySlowAffinityGain(characterId, rawDelta, { source = 'interaction', allowBypassGate = false } = {}) {
-    const cid = String(characterId || '');
+  gainAffection(shipId, rawDelta, { source = 'interaction', allowBypassGate = false } = {}) {
+    const cid = String(shipId || '');
     const actor = this._entities?.get(cid);
-    if (!actor) return { before: 0, after: 0, gained: 0, hitGate: null };
+    if (!actor) {
+      return { before: 0, after: 0, gained: 0, hitGate: null, cappedByGate: false, currentCap: 20, source };
+    }
 
     const status = this.getAffectionStatus(cid);
     const before = status.affinity;
     const cap = allowBypassGate ? status.maxAffinity : status.currentCap;
-    const delta = Math.max(0, Math.round(Number(rawDelta) || 0));
+    const delta = Math.round(Number(rawDelta) || 0);
+
+    if (!actor.statBounds || typeof actor.statBounds !== 'object') actor.statBounds = {};
+    actor.statBounds.affinity = { min: 0, max: status.maxAffinity };
 
     let after = before;
-    if (delta > 0 && before < cap) {
-      after = this._entities.adjustStat(cid, 'affinity', Math.min(delta, cap - before), {
+    if (delta > 0) {
+      const allowedGain = Math.max(0, cap - before);
+      const actualDelta = Math.min(delta, allowedGain);
+      if (actualDelta > 0) {
+        after = this._entities.adjustStat(cid, 'affinity', actualDelta, {
+          min: 0,
+          max: cap,
+        });
+      }
+    } else if (delta < 0) {
+      after = this._entities.adjustStat(cid, 'affinity', delta, {
         min: 0,
         max: status.maxAffinity,
       });
     }
+
     const postStatus = this.getAffectionStatus(cid);
+    const gained = after - before;
+    const cappedByGate = delta > 0 && (after < before + delta || before >= cap) && (Boolean(postStatus.pendingGate) || (!postStatus.isOathed && after >= BASE_AFFINITY_CAP));
+
+    if (gained !== 0) {
+      this._emit('story-engine:affection-changed', {
+        characterId: cid,
+        before,
+        after,
+        gained,
+        currentCap: postStatus.currentCap,
+        pendingGate: postStatus.pendingGate,
+        source,
+      });
+    }
+
     return {
       before,
       after,
-      gained: Math.max(0, after - before),
+      gained,
       hitGate: postStatus.pendingGate,
-      cappedByGate: before >= cap && Boolean(postStatus.pendingGate),
+      cappedByGate,
+      currentCap: postStatus.currentCap,
+      canStartOath: postStatus.canStartOath,
       source,
     };
+  }
+
+  /**
+   * Backward-compatible alias delegating directly to the single canonical `gainAffection` funnel.
+   */
+  applySlowAffinityGain(characterId, rawDelta, opts = {}) {
+    return this.gainAffection(characterId, rawDelta, opts);
   }
 
   // ------------------------------------------------------------
@@ -478,7 +547,7 @@ export class StoryEngine {
     let dailyCapReached = usedToday >= DAILY_TALK_AFFINITY_CAP;
 
     if (!dailyCapReached) {
-      affResult = this.applySlowAffinityGain(cid, 1, { source: 'daily-talk' });
+      affResult = this.gainAffection(cid, 1, { source: 'daily-talk' });
       if (affResult.gained > 0) {
         this._state.dailyTalkByShip[cid] = { dateKey: todayKey, count: usedToday + 1 };
       }
@@ -491,11 +560,16 @@ export class StoryEngine {
       this._state.activePromptByShip[cid] = null;
     }
 
-    // Subtle system pill note inside chat when reaching cap or breakthrough gate
-    if (affResult.hitGate && affResult.cappedByGate) {
+    // Subtle system pill note inside chat when reaching stage cap or breakthrough gate
+    if (affResult.hitGate) {
       this._appendMessage(cid, {
         role: 'system',
-        text: `✨ 与「${actor.name}」的羁绊已触及 ${affResult.hitGate} 阶段突破点，点击下方按钮观看阶段突破小剧场！`,
+        text: `✨ 已达阶段上限 ${affResult.after}/${affResult.hitGate}，点击上方「触发阶段突破小剧场」完成后方可继续提升好感！`,
+      });
+    } else if (affResult.canStartOath && affResult.cappedByGate) {
+      this._appendMessage(cid, {
+        role: 'system',
+        text: `💍 好感已达当前上限 100/100，点击上方「发起誓约」举行誓约仪式即可解放至 150！`,
       });
     } else if (dailyCapReached) {
       this._appendMessage(cid, {
@@ -532,8 +606,14 @@ export class StoryEngine {
     const cid = actor.id;
     const vars = this._buildVars(actor);
     const status = this.getAffectionStatus(cid);
-    const band = status.stage.index >= 4 ? 'high' : status.stage.index >= 2 ? 'mid' : 'low';
     const zonePool = PORTRAIT_TOUCH_LINES[zone] || PORTRAIT_TOUCH_LINES.head;
+    const band = status.isOathed && Array.isArray(zonePool.oath)
+      ? 'oath'
+      : status.stage.index >= 4
+      ? 'high'
+      : status.stage.index >= 2
+      ? 'mid'
+      : 'low';
     const picked = pickRandom(zonePool[band] || zonePool.low) || zonePool.low[0];
 
     const zoneLabels = { head: '轻抚发顶', shoulder: '轻触肩头', hand: '轻握指尖' };
@@ -571,7 +651,7 @@ export class StoryEngine {
     await this._inventory.consumeItemQuantity(item.id, 1);
 
     const vars = this._buildVars(actor, { giftName: item.name });
-    const affResult = this.applySlowAffinityGain(cid, rawAff, { source: 'gift' });
+    const affResult = this.gainAffection(cid, rawAff, { source: 'gift' });
     this._entities.adjustStat(cid, 'morale', moraleGain, { min: 0, max: 100 });
 
     this._appendMessage(cid, {
@@ -586,7 +666,8 @@ export class StoryEngine {
       text: `${actor.name}双手接过「${item.name}」，眼底浮起柔和的惊喜。`,
     });
 
-    const stage = this.getAffectionStatus(cid).stage;
+    const postStatus = this.getAffectionStatus(cid);
+    const stage = postStatus.stage;
     const replyByStage = {
       stranger: `「给我的吗？谢谢{cmd}，这份{gift}我会好好收起来的。」`,
       familiar: `「哇，是{gift}！{cmd}眼光真好，刚好是我最近想找的呢。」`,
@@ -603,8 +684,8 @@ export class StoryEngine {
     this._appendMessage(cid, {
       role: 'system',
       text: affResult.gained > 0
-        ? `好感 +${affResult.gained}（当前 ${affResult.after}） · 士气 +${moraleGain}${affResult.hitGate ? ` · ✨ 已解锁 ${affResult.hitGate} 阶段突破小剧场！` : ''}`
-        : `士气 +${moraleGain}${affResult.hitGate ? ` · 请先观看 ${affResult.hitGate} 阶段突破小剧场以继续提升好感` : ''}`,
+        ? `好感 +${affResult.gained}（当前 ${affResult.after}/${postStatus.currentCap}） · 士气 +${moraleGain}${affResult.hitGate ? ` · ✨ 已达阶段上限 ${affResult.after}/${affResult.hitGate}，请点击触发阶段突破小剧场！` : ''}`
+        : `士气 +${moraleGain}${affResult.hitGate ? ` · 已达阶段上限 ${affResult.after}/${affResult.hitGate}，完成突破剧场后继续提升` : postStatus.canStartOath ? ' · 好感已达 100/100，点击「💍 发起誓约」解锁 150 上限！' : ''}`,
     });
 
     await this.persist();
@@ -614,7 +695,7 @@ export class StoryEngine {
         actorId: cid,
         actorName: actor.name,
         title: `[${actor.name}] 获赠礼物「${item.name}」`,
-        detail: `好感 +${affResult.gained}（${affResult.after}）· 士气 +${moraleGain}`,
+        detail: `好感 +${affResult.gained}（${affResult.after}/${postStatus.currentCap}）· 士气 +${moraleGain}`,
       });
     }
     this._emit('story-engine:updated', { characterId: cid, action: 'gift' });
@@ -625,6 +706,7 @@ export class StoryEngine {
       moraleGain,
       afterAff: affResult.after,
       pendingGate: affResult.hitGate,
+      cappedByGate: affResult.cappedByGate,
     };
   }
 
@@ -672,6 +754,58 @@ export class StoryEngine {
     return theatre;
   }
 
+  /**
+   * Launch the romantic Oath Ceremony Mini-Theatre directly inside the bubble chat window!
+   */
+  async startOathRitualTheatre(actor) {
+    if (!actor || !actor.id) throw new Error('舰娘不存在');
+    const cid = actor.id;
+    const status = this.getAffectionStatus(cid);
+    if (status.isOathed) {
+      throw new Error(`「${actor.name}」已经与您缔结誓约`);
+    }
+    if (status.affinity < BASE_AFFINITY_CAP) {
+      throw new Error(`好感度需达到 ${BASE_AFFINITY_CAP} 才可发起誓约（当前 ${status.affinity}/${BASE_AFFINITY_CAP}）`);
+    }
+    if (status.pendingGate) {
+      throw new Error(`请先完成 ${status.pendingGate} 阶段突破小剧场后再发起誓约`);
+    }
+
+    const vars = this._buildVars(actor);
+    const ritual = OATH_RITUAL_THEATRE;
+
+    this._appendMessage(cid, {
+      role: 'system',
+      text: `💍 开启誓约仪式小剧场 · ${ritual.title}`,
+    });
+    this._appendMessage(cid, {
+      role: 'narration',
+      text: formatDialogueText(ritual.introNarration, vars),
+    });
+    this._appendMessage(cid, {
+      role: 'ship',
+      speaker: actor.name,
+      text: formatDialogueText(ritual.openingLine, vars),
+    });
+
+    this._state.activePromptByShip[cid] = {
+      kind: 'oath_ritual',
+      title: ritual.title,
+      choices: ritual.choices.map((c) => ({
+        id: c.id,
+        oathTitle: c.oathTitle || '永恒誓约',
+        label: formatDialogueText(c.label, vars),
+        narration: formatDialogueText(c.narration, vars),
+        reply: formatDialogueText(c.reply, vars),
+        closingNarration: formatDialogueText(c.closingNarration, vars),
+      })),
+    };
+
+    await this.persist();
+    this._emit('story-engine:updated', { characterId: cid, action: 'oath-ritual-start' });
+    return ritual;
+  }
+
   async resolveChatChoice(actor, choiceId) {
     if (!actor || !actor.id) return null;
     const cid = actor.id;
@@ -694,6 +828,9 @@ export class StoryEngine {
     }
 
     let unlockedGate = null;
+    let oathed = false;
+    let oathRecord = null;
+
     if (prompt.kind === 'breakthrough') {
       const gate = Number(prompt.gate);
       if (choice.closingNarration) {
@@ -703,23 +840,51 @@ export class StoryEngine {
         const set = new Set(this._state.unlockedBreakthroughs[cid] || []);
         set.add(gate);
         this._state.unlockedBreakthroughs[cid] = Array.from(set).sort((a, b) => a - b);
-        const curAff = Math.round(Number(actor.stats?.affinity ?? 0));
-        const maxAff = this._interaction?.getMaxAffinityFor?.(cid) || 100;
-        if (curAff < gate) {
-          this._entities.setStat(cid, 'affinity', Math.min(maxAff, gate), { min: 0, max: maxAff });
-        }
         unlockedGate = gate;
+        const postSt = this.getAffectionStatus(cid);
         this._appendMessage(cid, {
           role: 'system',
-          text: `🎉 羁绊突破成功！已正式解锁【${BREAKTHROUGH_THEATRES[gate]?.toLabel || ''}】阶段，更多亲密语气已开放！`,
+          text:
+            gate >= BASE_AFFINITY_CAP
+              ? `🎉 恋慕阶段突破完成！现在可以点击上方「💍 发起誓约」举行誓约仪式，解放 150 好感上限！`
+              : `🎉 阶段突破成功！已解锁【${BREAKTHROUGH_THEATRES[gate]?.toLabel || ''}】阶段，好感上限已解除至 ${postSt.currentCap}！`,
         });
       }
+    } else if (prompt.kind === 'oath_ritual') {
+      if (choice.closingNarration) {
+        this._appendMessage(cid, { role: 'narration', text: choice.closingNarration });
+      }
+      // Guarantee all gates <= 100 are unlocked and perform the official Oath ceremony cleanly
+      this._state.unlockedBreakthroughs[cid] = [...BREAKTHROUGH_GATES];
+      if (this._interaction && typeof this._interaction.performOath === 'function') {
+        const res = await this._interaction.performOath(cid, {
+          oathTitle: choice.oathTitle || '永恒誓约',
+          customVow: choice.label,
+        });
+        oathRecord = this._interaction.getOathRecord(cid) || res;
+      } else {
+        // Ultra-safe fallback even if interaction service were absent
+        const now = Date.now();
+        if (!actor.meta) actor.meta = {};
+        actor.meta.isOathed = true;
+        actor.meta.oathDate = now;
+        actor.isOathed = true;
+        actor.oathDate = now;
+        if (!actor.statBounds) actor.statBounds = {};
+        actor.statBounds.affinity = { min: 0, max: OATH_AFFINITY_CAP };
+        oathRecord = { oathedAt: now, oathTitle: choice.oathTitle || '永恒誓约' };
+      }
+      oathed = true;
+      this._appendMessage(cid, {
+        role: 'system',
+        text: `💍 誓约缔结完成！「${actor.name}」好感上限已突破至 ${OATH_AFFINITY_CAP}，永久获得基础六维各 +4、出征油弹消耗 -10%、宿舍心情加速恢复与专属誓约台词！`,
+      });
     }
 
     this._state.activePromptByShip[cid] = null;
     await this.persist();
-    this._emit('story-engine:updated', { characterId: cid, action: 'choice-resolved', unlockedGate });
-    return { unlockedGate, choice };
+    this._emit('story-engine:updated', { characterId: cid, action: 'choice-resolved', unlockedGate, oathed });
+    return { unlockedGate, oathed, oath: oathRecord, choice };
   }
 
   /**

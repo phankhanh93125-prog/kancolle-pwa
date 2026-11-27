@@ -443,9 +443,17 @@ function bindQuickReplyChoices(containerEl, sec) {
         const cid = btn.getAttribute('data-chat-choice');
         const res = await storyEngine.resolveChatChoice(sec, cid);
         await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: sec.id });
-        if (res?.unlockedGate) {
+        if (res?.oathed) {
           fxStage?.playSfx?.('success');
-          uiKit.showToast(`🎉 已突破 ${res.unlockedGate} 羁绊阶段！`, 'ok');
+          uiKit.showToast(`💍 已与「${sec.name}」正式缔结誓约！好感上限解放至 150，基础六维永久 +4！`, 'ok');
+        } else if (res?.unlockedGate) {
+          fxStage?.playSfx?.('success');
+          uiKit.showToast(
+            res.unlockedGate >= 100
+              ? `🎉 恋慕阶段突破完成！现在可点击「💍 发起誓约」举行誓约仪式！`
+              : `🎉 已突破 ${res.unlockedGate} 羁绊阶段，好感上限已解除！`,
+            'ok'
+          );
         }
         await renderPortHub();
       } catch (err) {
@@ -457,11 +465,24 @@ function bindQuickReplyChoices(containerEl, sec) {
   });
 }
 
+function buildAffectionCapHintText(status) {
+  if (status.pendingGate) {
+    return `已达阶段上限 ${status.affinity}/${status.currentCap}，完成突破剧场后继续提升`;
+  }
+  if (status.canStartOath) {
+    return `好感已满 100/100 · 可发起誓约解放上限至 150！`;
+  }
+  if (status.isOathed) {
+    return `💍 誓约羁绊生效：基础六维各 +4 · 出征油弹 -10% · 宿舍心情恢复加速`;
+  }
+  return `当前阶段上限 ${status.currentCap} · 满额后解锁阶段突破小剧场`;
+}
+
 function renderHeroStageActionsMarkup(status) {
   return `
     ${
       status.pendingGate
-        ? `<button type="button" id="btn-sec-breakthrough" class="btn-primary interact-breakthrough-btn">✨ ${status.pendingGate} 阶段突破小剧场</button>`
+        ? `<button type="button" id="btn-sec-breakthrough" class="btn-primary interact-breakthrough-btn">✨ 触发阶段突破小剧场 (${status.affinity}/${status.pendingGate})</button>`
         : ''
     }
     ${
@@ -470,33 +491,42 @@ function renderHeroStageActionsMarkup(status) {
         : ''
     }
     ${
-      status.affinity >= 100 && !status.isOathed
-        ? `<button type="button" id="btn-sec-oath" class="btn-primary interact-mini-chip">💍 誓约仪式</button>`
+      status.canStartOath
+        ? `<button type="button" id="btn-sec-oath" class="btn-primary interact-breakthrough-btn">💍 发起誓约</button>`
         : ''
     }
   `;
 }
 
 function bindHeroStageActions(rootEl, sec, status) {
-  const { storyEngine, interaction, entities, rootStorage, uiKit, fxStage } = portState.context;
+  const { storyEngine, entities, rootStorage, uiKit } = portState.context;
   rootEl.querySelector('#btn-sec-breakthrough')?.addEventListener('click', async () => {
-    if (!status.pendingGate) return;
-    await storyEngine.startBreakthroughTheatre(sec, status.pendingGate, { isReplay: false });
-    await renderPortHub();
+    if (!status.pendingGate || portState.busy) return;
+    portState.busy = true;
+    try {
+      await storyEngine.startBreakthroughTheatre(sec, status.pendingGate, { isReplay: false });
+      await renderPortHub();
+    } catch (err) {
+      uiKit.showToast(err instanceof Error ? err.message : '无法开启阶段突破小剧场', 'warn');
+    } finally {
+      portState.busy = false;
+    }
   });
   rootEl.querySelector('#btn-sec-replay')?.addEventListener('click', () => {
     openBreakthroughReplayDrawer(sec, status);
   });
   rootEl.querySelector('#btn-sec-oath')?.addEventListener('click', async () => {
+    if (portState.busy) return;
+    portState.busy = true;
     try {
-      await interaction.performOathCeremony(sec.id);
-      storyEngine.syncLegacyBreakthroughs();
+      await storyEngine.startOathRitualTheatre(sec);
       await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: sec.id });
-      fxStage?.playSfx?.('success');
-      uiKit.showToast(`💍 已与「${sec.name}」缔结誓约，好感上限提升至 200！`, 'ok');
+      uiKit.showToast(`💍 誓约仪式小剧场已在聊天窗开启，请选择您的誓言！`, 'ok');
       await renderPortHub();
     } catch (err) {
       uiKit.showToast(err instanceof Error ? err.message : '誓约仪式条件不足', 'warn');
+    } finally {
+      portState.busy = false;
     }
   });
 }
@@ -538,10 +568,10 @@ async function renderPortHub({ forceFull = false } = {}) {
         <div class="surface-card lab-stack-sm" style="text-align:center; padding:24px;">
           <h3 style="margin:0; font-size:16px;">港区船坞当前为空</h3>
           <p class="muted-text" style="font-size:12.5px; margin:0;">
-            当前尚无执勤舰娘。您可以前往「设施 · 舰船建造」使用自由配方建造首位舰娘，或在顶栏「自定义工坊」中自由创作专属舰娘。
+            当前尚无执勤舰娘。您可以前往「设施 · 定向建造」建造首位舰娘，或在顶栏「自定义工坊」中自由创作专属舰娘。
           </p>
           <div class="lab-btn-grid" style="margin-top:8px;">
-            <button type="button" id="btn-empty-goto-build" class="btn-primary uikit-touch-target">前往设施 · 自由建造</button>
+            <button type="button" id="btn-empty-goto-build" class="btn-primary uikit-touch-target">前往设施 · 定向建造</button>
             <button type="button" id="btn-empty-open-cw" class="btn-secondary uikit-touch-target">打开自定义工坊</button>
           </div>
         </div>
@@ -565,7 +595,9 @@ async function renderPortHub({ forceFull = false } = {}) {
   const outfitName = eq?.outfit?.name || '日常港区便装';
   const history = storyEngine.getChatHistory(sec.id);
   const activePrompt = storyEngine.getActivePrompt(sec.id);
-  const affPct = Math.min(100, Math.round((status.affinity / Math.max(1, status.maxAffinity)) * 100));
+  const displayCap = status.isOathed ? status.maxAffinity : status.currentCap;
+  const affPct = Math.min(100, Math.round((status.affinity / Math.max(1, displayCap)) * 100));
+  const capHintText = buildAffectionCapHintText(status);
   const activeExtSess = storyPacks?.getActiveTheatreSession?.();
   const hasExtSession = Boolean(activeExtSess && activeExtSess.pack && !activeExtSess.pack.builtIn);
 
@@ -579,7 +611,11 @@ async function renderPortHub({ forceFull = false } = {}) {
     !hasExtSession &&
     !existingExtCard
   ) {
-    // 1. Update hero badges & affection bar in-place
+    // 1. Update hero badges, oath badge, cap hint & affection bar in-place
+    const oathBadge = portState.container.querySelector('#sec-oath-badge');
+    if (oathBadge) {
+      oathBadge.hidden = !status.isOathed;
+    }
     const stageBadge = portState.container.querySelector('#sec-aff-stage-badge');
     if (stageBadge) stageBadge.textContent = `${status.stage.label}${status.isOathed ? ' 💍' : ''}`;
     const outfitEl = portState.container.querySelector('#sec-outfit-label');
@@ -587,7 +623,12 @@ async function renderPortHub({ forceFull = false } = {}) {
     const affValEl = portState.container.querySelector('#sec-aff-val');
     if (affValEl) affValEl.textContent = String(status.affinity);
     const affMaxEl = portState.container.querySelector('#sec-aff-max');
-    if (affMaxEl) affMaxEl.textContent = String(status.maxAffinity);
+    if (affMaxEl) affMaxEl.textContent = String(displayCap);
+    const capHintEl = portState.container.querySelector('#sec-aff-cap-hint');
+    if (capHintEl) {
+      capHintEl.textContent = capHintText;
+      capHintEl.className = `cc-stat-sub ${status.pendingGate || status.canStartOath ? 'stat-diff-inline-up' : 'muted-text'}`;
+    }
     const dailyEl = portState.container.querySelector('#sec-daily-talk');
     if (dailyEl) dailyEl.textContent = `今日闲聊 ${status.dailyTalkUsed}/${status.dailyTalkCap}`;
     const affFill = portState.container.querySelector('#sec-aff-fill');
@@ -648,9 +689,10 @@ async function renderPortHub({ forceFull = false } = {}) {
 
       <div class="interact-meta-col">
         <div class="interact-name-row">
-          <div style="display:flex; align-items:center; gap:6px; min-width:0;">
+          <div style="display:flex; align-items:center; gap:6px; min-width:0; flex-wrap:wrap;">
             <span class="ship-class-ico">${getShipClassSvg(sec.meta?.shipType, { size: 17 })}</span>
             <strong class="interact-ship-name" id="sec-name-label">${escapeHtml(sec.name)}</strong>
+            <span class="status-badge badge-warn" id="sec-oath-badge" ${status.isOathed ? '' : 'hidden'}>💍 誓约</span>
             <span class="status-badge badge-muted">Lv.${sec.stats?.level || 1}</span>
           </div>
           <div style="display:flex; gap:4px; flex-shrink:0;">
@@ -666,11 +708,14 @@ async function renderPortHub({ forceFull = false } = {}) {
 
         <div class="interact-aff-box">
           <div class="interact-aff-head">
-            <span>好感 <strong id="sec-aff-val">${status.affinity}</strong>/<span id="sec-aff-max">${status.maxAffinity}</span></span>
+            <span>好感 <strong id="sec-aff-val">${status.affinity}</strong>/<span id="sec-aff-max">${displayCap}</span></span>
             <span class="muted-text" id="sec-daily-talk">今日闲聊 ${status.dailyTalkUsed}/${status.dailyTalkCap}</span>
           </div>
           <div class="interact-aff-track">
             <div class="interact-aff-fill" id="sec-aff-fill" style="width:${affPct}%"></div>
+          </div>
+          <div id="sec-aff-cap-hint" class="cc-stat-sub ${status.pendingGate || status.canStartOath ? 'stat-diff-inline-up' : 'muted-text'}" style="margin-top:3px; font-size:11px;">
+            ${escapeHtml(capHintText)}
           </div>
         </div>
 

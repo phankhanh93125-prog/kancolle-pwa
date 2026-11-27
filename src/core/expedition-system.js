@@ -104,12 +104,17 @@ export class ExpeditionSystem {
     this._routeGenerator = routeGenerator;
     this._logs = logs;
     this._formation = formation;
+    this._storyEngine = null;
     this._bus = bus;
 
     /** @type {Array<{ id: string, missionId: string, missionName: string, characterIds: string[], startedAt: number, durationSec: number, endAt: number, rewards: Record<string, number>, commanderExp: number, affinityGain: number }>} */
     this._activeRuns = [];
     this._completedCount = 0;
     this._hydrated = false;
+  }
+
+  setStoryEngine(se) {
+    this._storyEngine = se;
   }
 
   setFormation(formation) {
@@ -329,7 +334,11 @@ export class ExpeditionSystem {
     const shipExpResults = [];
     for (const cid of run.characterIds || []) {
       if (this._entities?.has(cid)) {
-        this._entities.adjustStat(cid, 'affinity', affDelta, { min: 0, max: 100 });
+        if (this._storyEngine && typeof this._storyEngine.gainAffection === 'function') {
+          this._storyEngine.gainAffection(cid, affDelta, { source: 'expedition' });
+        } else {
+          this._entities.adjustStat(cid, 'affinity', affDelta, { min: 0, max: 100 });
+        }
         if (this._statRules && typeof this._statRules.grantShipExp === 'function') {
           const res = this._statRules.grantShipExp(this._entities, cid, shipExpGain, {
             reason: `远征完成：${run.missionName}`,

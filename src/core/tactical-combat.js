@@ -20,6 +20,7 @@ import {
   GRID_COLS,
   GRID_ROW_LABELS,
   GRID_TOTAL_CELLS,
+  OATH_SORTIE_COST_DISCOUNT,
   TACTICAL_ACTION_DEFS,
   clampEnemyStrengthMultiplier,
   computeAaBarrageInterception,
@@ -1457,6 +1458,7 @@ export class TacticalCombatEngine {
       torpedo: Math.round(Number(eff.torpedo ?? m.torpedo ?? 16)),
       armor: Math.round(Number(eff.armor ?? m.armor ?? 16)),
       morale: Math.round(Number(ent?.stats?.morale ?? 70)),
+      isOathed: Boolean(ent?.meta?.isOathed || ent?.isOathed),
       classCode,
     };
   }
@@ -2096,7 +2098,8 @@ export class TacticalCombatEngine {
 
     // 1. Deduct per-action cost from carried sortie supplies (never soft-locks; activates supplyDepleted at 0)
     const dispatchDisc = this._commander ? this._commander.getSortieStepDiscount() : 0;
-    const costScale = Math.max(0.55, 1 - dispatchDisc);
+    const oathDisc = actor.isOathed ? OATH_SORTIE_COST_DISCOUNT : 0;
+    const costScale = Math.max(0.45, (1 - dispatchDisc) * (1 - oathDisc));
     const fuelSpend = actionDef.cost?.fuel > 0 ? Math.max(1, Math.round(actionDef.cost.fuel * costScale)) : 0;
     const ammoSpend = actionDef.cost?.ammo > 0 ? Math.max(1, Math.round(actionDef.cost.ammo * costScale)) : 0;
     if (fuelSpend > 0 || ammoSpend > 0) {

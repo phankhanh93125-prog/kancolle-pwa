@@ -172,6 +172,10 @@ const storyEngine = new StoryEngine({
   logs,
   bus,
 });
+interaction.setStoryEngine(storyEngine);
+buildings.setStoryEngine(storyEngine);
+expeditions.setStoryEngine(storyEngine);
+storyPacks.setStoryEngine(storyEngine);
 
 const combat = new TacticalCombatEngine({
   entities,

@@ -6,19 +6,30 @@
  */
 
 export const AFFINITY_STAGES_6 = Object.freeze([
-  { index: 0, id: 'stranger', label: '陌生', min: 0, max: 19, gateAfter: 20, tone: '礼貌克制、略带距离感' },
-  { index: 1, id: 'familiar', label: '熟悉', min: 20, max: 39, gateAfter: 40, tone: '轻松自然、愿意搭话' },
-  { index: 2, id: 'trusted', label: '信赖', min: 40, max: 59, gateAfter: 60, tone: '默契坦诚、彼此托付' },
-  { index: 3, id: 'flutter', label: '心动', min: 60, max: 79, gateAfter: 80, tone: '细微羞赧、藏不住在意' },
-  { index: 4, id: 'adoration', label: '恋慕', min: 80, max: 99, gateAfter: 100, tone: '温柔依恋、私密亲近' },
-  { index: 5, id: 'oath', label: '誓约', min: 100, max: 200, gateAfter: null, tone: '长相厮守、心照不宣' },
+  { index: 0, id: 'stranger', label: '陌生', min: 0, max: 20, gateAfter: 20, tone: '礼貌克制、略带距离感' },
+  { index: 1, id: 'familiar', label: '熟悉', min: 20, max: 40, gateAfter: 40, tone: '轻松自然、愿意搭话' },
+  { index: 2, id: 'trusted', label: '信赖', min: 40, max: 60, gateAfter: 60, tone: '默契坦诚、彼此托付' },
+  { index: 3, id: 'flutter', label: '心动', min: 60, max: 80, gateAfter: 80, tone: '细微羞赧、藏不住在意' },
+  { index: 4, id: 'adoration', label: '恋慕', min: 80, max: 100, gateAfter: 100, tone: '温柔依恋、私密亲近' },
+  { index: 5, id: 'oath', label: '誓约', min: 100, max: 150, gateAfter: null, tone: '长相厮守、心照不宣' },
 ]);
 
 export const BREAKTHROUGH_GATES = Object.freeze([20, 40, 60, 80, 100]);
 
-export function resolveAffinityStage6(affinity = 0, { isOathed = false } = {}) {
+export function resolveAffinityStage6(affinity = 0, { isOathed = false, unlockedGates = null } = {}) {
   const val = Math.max(0, Math.round(Number(affinity) || 0));
-  if (isOathed || val >= 100) return AFFINITY_STAGES_6[5];
+  if (isOathed) return AFFINITY_STAGES_6[5];
+
+  if (unlockedGates) {
+    const set = unlockedGates instanceof Set ? unlockedGates : new Set(unlockedGates);
+    if (!set.has(20)) return AFFINITY_STAGES_6[0];
+    if (!set.has(40)) return AFFINITY_STAGES_6[1];
+    if (!set.has(60)) return AFFINITY_STAGES_6[2];
+    if (!set.has(80)) return AFFINITY_STAGES_6[3];
+    return AFFINITY_STAGES_6[4];
+  }
+
+  if (val > 100) return AFFINITY_STAGES_6[5];
   if (val >= 80) return AFFINITY_STAGES_6[4];
   if (val >= 60) return AFFINITY_STAGES_6[3];
   if (val >= 40) return AFFINITY_STAGES_6[2];
@@ -190,7 +201,7 @@ export const DEFAULT_DIALOGUE_BANK = Object.freeze({
   oath: {
     day: [
       {
-        narration: '无名指上的誓约徽记在阳光下微微一闪，{actor}笑着牵起你的手。',
+        narration: '无名指上的誓约指环在晨光下微微一闪，{actor}笑着牵起你的手。',
         text: '「早安，我最亲爱的{cmd}。不管穿着{outfit}还是战装，能每天醒来第一眼见到你，就是最好的日常。」',
         choices: [
           { label: '轻吻她的指尖', reply: '「唔……一大早就这么犯规，那今晚我也要加倍讨回来哦。」', narration: '{actor}眼眸弯成温柔的月牙，反手将你的手指握紧。' },
@@ -201,6 +212,14 @@ export const DEFAULT_DIALOGUE_BANK = Object.freeze({
         narration: '{actor}把泡好的红茶放到你面前，顺势在你脸颊上轻轻点了一下。',
         text: '「盖章完毕。今天也要记得按时吃饭，不许仗着有我照顾就偷偷熬夜哦。」',
       },
+      {
+        narration: '{actor}轻轻摩挲着无名指上的誓约徽记，抬眸时满眼都是藏不住的温柔。',
+        text: '「自从和你缔结誓约以后，每次出海都觉得心里特别踏实——因为我知道港湾里永远有一盏为我留着的灯。」',
+      },
+      {
+        narration: '海风吹起{outfit}的衣角，{actor}自然地替你理了理领口，贴近耳畔轻声道。',
+        text: '「今天的出征补给和航线我都悄悄核对好啦，省下来的时间……全部留给我们两个人的约会，好不好？」',
+      },
     ],
     night: [
       {
@@ -209,7 +228,11 @@ export const DEFAULT_DIALOGUE_BANK = Object.freeze({
       },
       {
         narration: '{actor}轻轻把额头抵在你肩窝，发出一声满足的轻叹。',
-        text: '「有你在身边，连最深的夜海都不会觉得冷。晚安……我的指挥官。」',
+        text: '「有你在身边，连最深的夜海都不会觉得冷。晚安……我的指挥官，我的唯一。」',
+      },
+      {
+        narration: '窗外星河倒映在港湾水面，{actor}十指与你紧扣，誓约指环轻轻相碰。',
+        text: '「深夜值班太累的话，就靠在我怀里眯一会儿吧。今天换我来守着你入睡，{cmd}。」',
       },
     ],
   },
@@ -243,6 +266,7 @@ export const OUTFIT_FLAVOR_LINES = Object.freeze({
 
 /**
  * Portrait touch-zone reactions: head (头部) / shoulder (肩部·上身) / hand (手部).
+ * Dedicated `oath` pool activates once the shipgirl has completed the Oath Ceremony!
  */
 export const PORTRAIT_TOUCH_LINES = Object.freeze({
   head: {
@@ -258,6 +282,10 @@ export const PORTRAIT_TOUCH_LINES = Object.freeze({
       { narration: '{actor}主动把脑袋往你掌心蹭了蹭，眼底漾开温柔的笑意。', text: '「再多摸一会儿也没关系哦。……只有你的手，让我怎么都躲不开。」' },
       { narration: '指尖穿过温软的发丝，{actor}轻声叹了口气，眉眼彻底舒展。', text: '「好喜欢你掌心的温度……{cmd}，别这么快收回去呀。」' },
     ],
+    oath: [
+      { narration: '{actor}闭上眼安心地把脸颊贴近你掌心，无名指上的誓约指环在灯下闪烁。', text: '「只有缔结过誓约的{cmd}，才可以随时这样宠我哦……今天也要多摸摸我呀。」' },
+      { narration: '你轻抚过她的发顶，{actor}仰起脸朝你露出毫无防备的甜笑。', text: '「嗯……被你这样顺着头发，觉得自己被全世界最温柔的人好好珍藏着呢。」' },
+    ],
   },
   shoulder: {
     low: [
@@ -272,6 +300,10 @@ export const PORTRAIT_TOUCH_LINES = Object.freeze({
       { narration: '你轻轻揽住{actor}的肩，她没有躲闪，反而把脸颊轻贴过来。', text: '「嗯……被你这样圈在身旁，心跳一下子就加快了呢，{cmd}。」' },
       { narration: '{actor}侧过脸，温热的呼吸拂过你的耳畔，声音带着几分慵懒撒娇。', text: '「这么主动地靠过来……今晚是不打算放我走了吗？」' },
     ],
+    oath: [
+      { narration: '你从身侧轻拥住{actor}的肩膀，她顺势整个人倚进你怀里，声音柔得像融化的糖。', text: '「已经签下誓约了，{cmd}想抱多久都可以哦……其实我也早就想赖在你怀里了。」' },
+      { narration: '{actor}偏头轻轻吻了吻你搭在她肩上的手背，笑意盈盈。', text: '「我的肩膀、后背，还有以后漫长的岁月，全都交给你靠着啦。」' },
+    ],
   },
   hand: {
     low: [
@@ -285,6 +317,10 @@ export const PORTRAIT_TOUCH_LINES = Object.freeze({
     high: [
       { narration: '{actor}主动与你十指相扣，轻轻晃了晃两人交握的手。', text: '「牵紧了哦，{cmd}。不管去哪片海域，这只手我都不打算松开了。」' },
       { narration: '{actor}把你的手贴在自己温热的脸颊边，眼眸里满是依恋。', text: '「你的温度让人好安心……今晚就这样握着我的手说话吧。」' },
+    ],
+    oath: [
+      { narration: '你握住{actor}佩戴誓约指环的左手，指腹轻轻摩挲过微凉的戒圈，她耳尖瞬间染上暖绯。', text: '「这枚指环戴上以后，我就再也不打算摘下来了。{cmd}，牵好我，一辈子都不许松手哦。」' },
+      { narration: '{actor}将两人十指紧扣的手举到灯下端详，眼里映出细碎星光。', text: '「无论多远的海域，只要想起你握住我手时的温度，就什么风浪都不怕了。」' },
     ],
   },
 });
@@ -410,10 +446,38 @@ export const BREAKTHROUGH_THEATRES = Object.freeze({
         label: '替她理好发丝：「欢迎回家，我最珍视的人」',
         narration: '{actor}垫起脚尖在你唇角轻啄一下，笑容灿烂得胜过整片星空。',
         reply: '「嗯，我回来了——我的指挥官，以后请多指教，一辈子哦。」',
-        closingNarration: '★ 羁绊圆满升华！好感上限突破并解锁【誓约】阶段与誓约仪式。',
+        closingNarration: '★ 恋慕阶段圆满突破！现在可以正式点击「💍 发起誓约」举行誓约仪式了。',
       },
     ],
   },
+});
+
+/**
+ * Romantic Oath Ceremony Mini-Theatre played inside the bubble chat window
+ * when clicking 「💍 发起誓约」 after reaching affinity 100 & completing the 100 breakthrough!
+ */
+export const OATH_RITUAL_THEATRE = Object.freeze({
+  title: '誓约仪式 · 碧海晴空下的永恒契约',
+  introNarration: '海风吹拂着港湾纯白礼堂的纱幔，远方钟声悠然响起。身着{outfit}的{actor}手捧海风铃花束，眼眸闪耀着温柔而坚定的微光走到你面前。',
+  openingLine: '「{cmd}……从初次在船坞相遇，到并肩驶过无数风暴，你一直是我最想守护的港湾。今天，你愿意将这枚誓约之戒交给我，与我缔结一生的羁绊吗？」',
+  choices: [
+    {
+      id: 'oath_vow_a',
+      label: '💍 为她戴上誓约指环：「无论晴空还是风浪，余生皆与你同行」',
+      oathTitle: '永恒誓约',
+      narration: '你郑重执起{actor}的左手，将泛着海蓝微光的誓约指环缓缓推入她的无名指。她指尖轻颤，眼底泛起喜悦的泪光。',
+      reply: '「太好了……这枚指环的温度，我会记一辈子。从今往后，我不再只是你的舰娘——我是只属于你的誓约伴侣，{cmd}。」',
+      closingNarration: '钟声与海鸥振翅声交织回荡，港湾见证了你们永恒的誓约！永久激活「誓约羁绊」（好感上限解放至 150 · 基础六维各 +4 · 出征油弹 -10% · 宿舍心情加速恢复）。',
+    },
+    {
+      id: 'oath_vow_b',
+      label: '💍 轻吻指环并拥她入怀：「欢迎来到我身边，我最珍视的唯一」',
+      oathTitle: '星海誓约',
+      narration: '银白色的指环在阳光下折射出清澈光芒，{actor}笑着扑进你的怀抱，海风将两人的誓言轻轻洒向整片港湾。',
+      reply: '「嗯！无论未来的航图延伸到多远的深海，只要回头能看见你，我就能永远全力以赴。我爱你，我的指挥官。」',
+      closingNarration: '海风温柔见证，誓约契约正式生效！永久激活「誓约羁绊」（好感上限解放至 150 · 基础六维各 +4 · 出征油弹 -10% · 宿舍心情加速恢复）。',
+    },
+  ],
 });
 
 /**

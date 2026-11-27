@@ -647,6 +647,8 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
             breakdown.standardStats.find((st) => st.key === 'evasion')?.total ??
             Math.round(Number(ch.stats?.evasion ?? 10));
           const derivedEva = computeDerivedEvasion(mobilityStatTotal, ch.meta?.shipType);
+          const isOathed = Boolean(interaction?.isOathed?.(ch.id) || ch.meta?.isOathed || ch.isOathed);
+          const affMax = isOathed ? 150 : 100;
 
           body.innerHTML = `
             <div class="module-stack" id="tactical-ship-detail-body">
@@ -657,13 +659,14 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
                     <span class="ship-class-ico">${getShipClassSvg(shipClass, { size: 20 })}</span>
                     <h3 class="cc-hero-name">${escapeHtml(ch.name)}</h3>
                     <span class="status-badge ship-lv-badge">Lv.${prog.level}</span>
+                    ${isOathed ? '<span class="status-badge badge-warn" id="tm-oath-badge">💍 誓约</span>' : ''}
                     ${isLocked ? '<span class="status-badge badge-warn ship-lock-badge">🔒 已锁定</span>' : ''}
                     <span class="status-badge ${seaworthy.seaworthy ? 'badge-ok' : 'badge-danger'}">${seaworthy.seaworthy ? '适航' : '未适航'}</span>
                   </div>
                   <div class="cc-badge-row">
                     <span class="status-badge badge-muted">${escapeHtml(ch.meta?.shipType || shipClass)}</span>
                     ${combo ? `<span class="status-badge badge-warn">${escapeHtml(combo.comboLabel)}</span>` : ''}
-                    <span class="status-badge badge-muted">HP ${curHp}/${effMaxHp} · 士气 ${Math.round(Number(ch.stats.morale ?? 70))} · 好感 ${Math.round(Number(ch.stats.affinity ?? 0))}</span>
+                    <span class="status-badge badge-muted">HP ${curHp}/${effMaxHp} · 士气 ${Math.round(Number(ch.stats.morale ?? 70))} · 好感 ${Math.round(Number(ch.stats.affinity ?? 0))}/${affMax}</span>
                   </div>
                 </div>
               </div>
@@ -683,6 +686,7 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
 
               <div class="cc-badge-row" id="tm-derived-evasion-row">
                 <span class="status-badge badge-ok">衍生闪避 ${derivedEva.dodgeValue}（${escapeHtml(derivedEva.agilityTag)}）</span>
+                ${isOathed ? '<span class="status-badge badge-warn" id="tm-oath-buff-badge">💍 誓约羁绊：六维 +4 · 油弹 -10% · 宿舍心情加速</span>' : ''}
                 ${shipClass === 'SS' ? '<span class="status-badge badge-warn">水下潜航隐蔽（需反潜火力命中）</span>' : ''}
               </div>
 
@@ -3445,6 +3449,7 @@ async function renderArchiveConsole() {
                         <div class="archive-ship-title">
                           <span class="ship-class-ico">${getShipClassSvg(c.meta?.shipType, { size: 15 })}</span>
                           <strong>${escapeHtml(c.name)}</strong>
+                          ${affSt.isOathed ? '<span class="status-badge badge-warn">💍 誓约</span>' : ''}
                           <span class="status-badge ship-lv-badge">Lv.${prog.level}</span>
                         </div>
                         <div class="cc-stat-sub">
@@ -3805,10 +3810,15 @@ async function _legacyRenderConsoleUnused() {
       uiKit.showToast(spend.reason, 'warn');
       return;
     }
-    const maxAff = Number(char.statBounds?.affinity?.max ?? 100);
     const healHp = Math.max(8, Math.round(maxHp * 0.2));
     entities.adjustStat(char.id, 'morale', 14, { min: 0, max: 100 });
-    entities.adjustStat(char.id, 'affinity', 2, { min: 0, max: maxAff });
+    const se = consoleState.context?.storyEngine;
+    if (se && typeof se.gainAffection === 'function') {
+      se.gainAffection(char.id, 2, { source: 'character-feed' });
+    } else {
+      const maxAff = Number(char.statBounds?.affinity?.max ?? 100);
+      entities.adjustStat(char.id, 'affinity', 2, { min: 0, max: maxAff });
+    }
     entities.adjustStat(char.id, 'hp', healHp, { min: 0, max: maxHp });
     await saveRosterNow();
     if (logs) {

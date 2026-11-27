@@ -16,6 +16,7 @@ import {
   GRID_ROWS,
   GRID_ROW_LABELS,
   GRID_TOTAL_CELLS,
+  OATH_SORTIE_COST_DISCOUNT,
   getFleetSlotCostFactor,
   getShipClassProfile,
   resolveShipClass,
@@ -698,13 +699,17 @@ export class FormationSystem {
     let rawFuel = 0;
     let rawAmmo = 0;
     const breakdown = [];
+    let oathedCount = 0;
 
     for (let i = 0; i < members.length; i++) {
       const m = members[i];
       const prof = getShipClassProfile(m.meta?.shipType);
       const tierFactor = getFleetSlotCostFactor(i);
-      const shipFuel = Number((prof.stepCost.fuel * tierFactor).toFixed(2));
-      const shipAmmo = Number((prof.stepCost.ammo * tierFactor).toFixed(2));
+      const isOathed = Boolean(m.meta?.isOathed || m.isOathed);
+      if (isOathed) oathedCount += 1;
+      const oathFactor = isOathed ? Math.max(0.5, 1 - OATH_SORTIE_COST_DISCOUNT) : 1.0;
+      const shipFuel = Number((prof.stepCost.fuel * tierFactor * oathFactor).toFixed(2));
+      const shipAmmo = Number((prof.stepCost.ammo * tierFactor * oathFactor).toFixed(2));
       rawFuel += shipFuel;
       rawAmmo += shipAmmo;
       breakdown.push({
@@ -713,6 +718,7 @@ export class FormationSystem {
         name: m.name,
         shipType: m.meta?.shipType || prof.fullName,
         classCode: prof.code,
+        isOathed,
         tierFactor,
         tierLabel: `${Math.round(tierFactor * 100)}%`,
         fuel: Math.round(shipFuel),
@@ -731,6 +737,7 @@ export class FormationSystem {
       rawFuel: Math.round(rawFuel),
       rawAmmo: Math.round(rawAmmo),
       dispatchDiscount,
+      oathedCount,
       fleetCount: members.length,
       breakdown,
     };

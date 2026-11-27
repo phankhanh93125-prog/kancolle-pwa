@@ -18,7 +18,7 @@
 
 import { clamp } from './calc-engine.js';
 import { formatDurationZh } from './entity-system.js';
-import { SHIP_TYPE_PRESETS } from './stat-rules.js';
+import { OATH_DORM_MORALE_MULT, SHIP_TYPE_PRESETS } from './stat-rules.js';
 import { LOG_CATEGORIES } from './log-system.js';
 
 const STORAGE_NS = 'core-port-buildings';
@@ -360,6 +360,10 @@ export class PortBuildingsSystem {
     }
   }
 
+  setStoryEngine(se) {
+    this._storyEngine = se;
+  }
+
   setMedalAutoCheckPaused(paused) {
     this._autoMedalPaused = Boolean(paused);
   }
@@ -449,13 +453,23 @@ export class PortBuildingsSystem {
       const affRatePerMin = (dorm.affinityPerHour * (1 + (dorm.level - 1) * 0.12)) / 60;
 
       const rules = [];
+      const elapsedMin = elapsedMs / 60000;
       for (const cid of validResidents) {
         const entity = this._entities.get(cid);
-        const maxAff = Number(entity?.statBounds?.affinity?.max ?? 100);
-        rules.push(
-          { entityId: cid, stat: 'morale', ratePerMinute: totalMoraleRate, min: 0, max: 100, round: 'round' },
-          { entityId: cid, stat: 'affinity', ratePerMinute: affRatePerMin, min: 0, max: maxAff, round: 'round' }
-        );
+        const isOathed = Boolean(entity?.meta?.isOathed || entity?.isOathed);
+        const moraleRate = totalMoraleRate * (isOathed ? OATH_DORM_MORALE_MULT : 1.0);
+        rules.push({ entityId: cid, stat: 'morale', ratePerMinute: moraleRate, min: 0, max: 100, round: 'round' });
+
+        // Route offline dormitory affinity strictly through StoryEngine.gainAffection so stage caps are never bypassed!
+        const rawAffGain = Math.round(affRatePerMin * elapsedMin);
+        if (rawAffGain > 0) {
+          if (this._storyEngine && typeof this._storyEngine.gainAffection === 'function') {
+            this._storyEngine.gainAffection(cid, rawAffGain, { source: 'dormitory-offline' });
+          } else {
+            const maxAff = Number(entity?.statBounds?.affinity?.max ?? 100);
+            this._entities.adjustStat(cid, 'affinity', rawAffGain, { min: 0, max: maxAff });
+          }
+        }
       }
       this._entities.settleOfflineTime({ lastTimestamp: dorm.lastSettledAt, now, rules });
       dorm.lastSettledAt = now;
@@ -657,9 +671,15 @@ export class PortBuildingsSystem {
     const moraleGain = 14;
 
     for (const c of residents) {
-      const maxAff = Number(c.statBounds?.affinity?.max ?? 100);
-      this._entities.adjustStat(c.id, 'morale', moraleGain, { min: 0, max: 100 });
-      this._entities.adjustStat(c.id, 'affinity', affGain, { min: 0, max: maxAff });
+      const isOathed = Boolean(c.meta?.isOathed || c.isOathed);
+      const effMoraleGain = isOathed ? Math.round(moraleGain * OATH_DORM_MORALE_MULT) : moraleGain;
+      this._entities.adjustStat(c.id, 'morale', effMoraleGain, { min: 0, max: 100 });
+      if (this._storyEngine && typeof this._storyEngine.gainAffection === 'function') {
+        this._storyEngine.gainAffection(c.id, affGain, { source: 'dormitory-feed' });
+      } else {
+        const maxAff = Number(c.statBounds?.affinity?.max ?? 100);
+        this._entities.adjustStat(c.id, 'affinity', affGain, { min: 0, max: maxAff });
+      }
     }
     dorm.lastSettledAt = Date.now();
     await this.persist();
@@ -1016,10 +1036,14 @@ export class PortBuildingsSystem {
       this._entities.setStat(cid, 'hp', effMaxHp, { min: 0, max: effMaxHp });
       this._entities.adjustStat(cid, 'morale', job.isMaintenanceOnly ? 10 : 6, { min: 0, max: 100 });
       this._entities.adjustStat(cid, 'ap', 20, { min: 0, max: Number(actor.stats.maxAp ?? 100) });
-      // Slow affection care bonus from Dockyard repair (+2, capped below next un-cleared gate via event or gentle clamp)
-      const curAff = Math.round(Number(actor.stats.affinity ?? 0));
-      const maxAff = Math.max(100, Number(actor.statBounds?.affinity?.max ?? 100));
-      this._entities.adjustStat(cid, 'affinity', 2, { min: 0, max: Math.min(maxAff, curAff + 2) });
+      // Slow affection care bonus from Dockyard repair (+2, strictly gated via StoryEngine.gainAffection)
+      if (this._storyEngine && typeof this._storyEngine.gainAffection === 'function') {
+        this._storyEngine.gainAffection(cid, 2, { source: 'dockyard-repair' });
+      } else {
+        const curAff = Math.round(Number(actor.stats.affinity ?? 0));
+        const maxAff = Math.max(100, Number(actor.statBounds?.affinity?.max ?? 100));
+        this._entities.adjustStat(cid, 'affinity', 2, { min: 0, max: Math.min(maxAff, curAff + 2) });
+      }
     }
 
     dock.queue.splice(idx, 1);

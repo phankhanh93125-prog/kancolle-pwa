@@ -10,6 +10,11 @@
 
 import { clamp } from './calc-engine.js';
 import { LOG_CATEGORIES } from './log-system.js';
+import {
+  BASE_AFFINITY_CAP,
+  OATH_AFFINITY_CAP,
+  getOathBondModifiers,
+} from './stat-rules.js';
 
 const STORAGE_NS = 'core-interaction';
 const STATE_KEY = 'interaction-state-v1';
@@ -139,6 +144,7 @@ export class InteractionSystem {
     this._commander = commander;
     this._narrative = narrative;
     this._dialogueEngine = dialogueEngine;
+    this._storyEngine = null;
     this._logs = logs;
     this._contentManager = contentManager;
     this._bus = bus;
@@ -157,6 +163,21 @@ export class InteractionSystem {
 
   setDialogueEngine(de) {
     this._dialogueEngine = de;
+  }
+
+  setStoryEngine(se) {
+    this._storyEngine = se;
+  }
+
+  _applyAffectionDelta(cid, delta, source) {
+    if (this._storyEngine && typeof this._storyEngine.gainAffection === 'function') {
+      const res = this._storyEngine.gainAffection(cid, delta, { source });
+      return { afterAff: res.after, actualDelta: res.gained };
+    }
+    const maxAff = this.getMaxAffinityFor(cid);
+    const before = Math.round(Number(this._entities?.get(cid)?.stats?.affinity ?? 0));
+    const afterAff = this._entities.adjustStat(cid, 'affinity', delta, { min: 0, max: maxAff });
+    return { afterAff, actualDelta: afterAff - before };
   }
 
   _emit(event, payload) {
@@ -233,12 +254,27 @@ export class InteractionSystem {
   }
 
   isOathed(characterId) {
-    return Boolean(this._oaths[String(characterId)]);
+    const cid = String(characterId || '');
+    if (!cid) return false;
+    if (this._oaths[cid]) return true;
+    const ent = this._entities?.get?.(cid);
+    return Boolean(ent?.meta?.isOathed || ent?.isOathed);
   }
 
   getOathRecord(characterId) {
-    const rec = this._oaths[String(characterId)];
-    return rec ? deepClone(rec) : null;
+    const cid = String(characterId || '');
+    if (!cid) return null;
+    const rec = this._oaths[cid];
+    if (rec) return deepClone(rec);
+    const ent = this._entities?.get?.(cid);
+    if (ent?.meta?.isOathed || ent?.isOathed) {
+      return {
+        oathedAt: ent.meta?.oathDate || ent.oathDate || Date.now(),
+        oathTitle: ent.meta?.oathTitle || '永恒誓约',
+        customVow: '',
+      };
+    }
+    return null;
   }
 
   getAllOaths() {
@@ -246,18 +282,28 @@ export class InteractionSystem {
   }
 
   getMaxAffinityFor(characterId) {
-    return this.isOathed(characterId) ? 200 : 100;
+    return this.isOathed(characterId) ? OATH_AFFINITY_CAP : BASE_AFFINITY_CAP;
   }
 
   canOath(characterId) {
-    const cid = String(characterId);
+    const cid = String(characterId || '');
     const actor = this._entities?.get(cid);
     if (!actor) return { ok: false, reason: '角色不存在', affinity: 0 };
-    if (this.isOathed(cid)) return { ok: false, reason: '已完成誓约仪式', affinity: Math.round(Number(actor.stats.affinity ?? 0)), oathed: true };
+    if (this.isOathed(cid)) {
+      return {
+        ok: false,
+        reason: '已完成誓约仪式',
+        affinity: Math.round(Number(actor.stats.affinity ?? 0)),
+        oathed: true,
+      };
+    }
     const aff = Math.round(Number(actor.stats.affinity ?? 0));
     return {
-      ok: aff >= 100,
-      reason: aff >= 100 ? '好感度已达 100，可举行誓约仪式' : `好感度需达到 100 解锁誓约（当前 ${aff}/100）`,
+      ok: aff >= BASE_AFFINITY_CAP,
+      reason:
+        aff >= BASE_AFFINITY_CAP
+          ? '好感度已达 100，可举行誓约仪式'
+          : `好感度需达到 100 解锁誓约（当前 ${aff}/100）`,
       affinity: aff,
       oathed: false,
     };
@@ -269,36 +315,53 @@ export class InteractionSystem {
   }
 
   /**
-   * Apply permanent Oath stat modifiers & 200 affinity ceiling for all oathed characters.
+   * Apply permanent 「誓约羁绊」 stat modifiers (+4 to all 6 core stats), 150 affinity ceiling,
+   * and safe default `isOathed` / `oathDate` metadata on all character entities.
    */
   syncOathModifiers() {
     if (!this._entities) return;
-    for (const [cid, oath] of Object.entries(this._oaths)) {
-      const entity = this._entities.get(cid);
-      if (!entity) continue;
-      if (!entity.statBounds) entity.statBounds = {};
-      entity.statBounds.affinity = { min: 0, max: 200 };
+    const allChars = this._entities.list({ kind: 'character' }) || [];
+    for (const entity of allChars) {
+      if (!entity || !entity.id) continue;
+      const cid = entity.id;
+      if (!entity.meta || typeof entity.meta !== 'object') entity.meta = {};
+      if (!entity.statBounds || typeof entity.statBounds !== 'object') entity.statBounds = {};
 
-      const oathBonuses = [
-        { stat: 'maxHp', layer: 'baseAdd', value: 12 },
-        { stat: 'firepower', layer: 'percentAdd', value: 0.08 },
-        { stat: 'armor', layer: 'percentAdd', value: 0.08 },
-        { stat: 'torpedo', layer: 'percentAdd', value: 0.08 },
-        { stat: 'evasion', layer: 'percentAdd', value: 0.08 },
-        { stat: 'recon', layer: 'percentAdd', value: 0.08 },
-        { stat: 'aa', layer: 'percentAdd', value: 0.08 },
-        { stat: 'asw', layer: 'percentAdd', value: 0.08 },
-      ];
-      oathBonuses.forEach((b, i) => {
-        this._entities.addModifier(cid, {
-          id: `oath_bond_${cid}_${i}`,
-          stat: b.stat,
-          layer: b.layer,
-          value: b.value,
-          source: `誓约羁绊 · ${oath.oathTitle || '永恒誓约'}`,
-          enabled: true,
-        });
-      });
+      // Sync legacy entity-side oath flags into `_oaths` if present
+      if (!this._oaths[cid] && (entity.meta.isOathed || entity.isOathed)) {
+        this._oaths[cid] = {
+          oathedAt: Number(entity.meta.oathDate || entity.oathDate) || Date.now(),
+          oathTitle: String(entity.meta.oathTitle || '永恒誓约'),
+          customVow: '',
+        };
+      }
+
+      const oath = this._oaths[cid] || null;
+      // Clear any previous/legacy oath modifiers cleanly before re-applying
+      for (let i = 0; i < 10; i++) {
+        this._entities.removeModifier?.(cid, `oath_bond_${cid}_${i}`);
+      }
+
+      if (oath) {
+        const oathTs = Number(oath.oathedAt) || Date.now();
+        entity.meta.isOathed = true;
+        entity.meta.oathDate = oathTs;
+        entity.meta.oathTitle = oath.oathTitle || '永恒誓约';
+        entity.isOathed = true;
+        entity.oathDate = oathTs;
+        entity.statBounds.affinity = { min: 0, max: OATH_AFFINITY_CAP };
+
+        const mods = getOathBondModifiers(cid, oath.oathTitle || '永恒誓约');
+        for (const mod of mods) {
+          this._entities.addModifier(cid, mod);
+        }
+      } else {
+        entity.meta.isOathed = false;
+        entity.meta.oathDate = null;
+        entity.isOathed = false;
+        entity.oathDate = null;
+        entity.statBounds.affinity = { min: 0, max: BASE_AFFINITY_CAP };
+      }
     }
   }
 
@@ -384,11 +447,11 @@ export class InteractionSystem {
     });
 
     const affMult = this._commander ? this._commander.getAffinityGainMultiplier() : 1.0;
-    const affDelta = Math.max(1, Math.round(3 * affMult));
+    const rawAffDelta = Math.max(1, Math.round(3 * affMult));
     const moraleDelta = 5;
     const maxAff = this.getMaxAffinityFor(actor.id);
 
-    const afterAff = this._entities.adjustStat(actor.id, 'affinity', affDelta, { min: 0, max: maxAff });
+    const { afterAff, actualDelta: affDelta } = this._applyAffectionDelta(actor.id, rawAffDelta, 'interaction-talk');
     const afterMorale = this._entities.adjustStat(actor.id, 'morale', moraleDelta, { min: 0, max: 100 });
 
     const entry = {
@@ -441,11 +504,11 @@ export class InteractionSystem {
     }
 
     const affMult = this._commander ? this._commander.getAffinityGainMultiplier() : 1.0;
-    const affDelta = Math.max(1, Math.round((Number(gift.affinityGain) || 5) * affMult));
+    const rawAffDelta = Math.max(1, Math.round((Number(gift.affinityGain) || 5) * affMult));
     const moraleDelta = Math.max(0, Math.round(Number(gift.moraleGain) || 6));
     const maxAff = this.getMaxAffinityFor(actor.id);
 
-    const afterAff = this._entities.adjustStat(actor.id, 'affinity', affDelta, { min: 0, max: maxAff });
+    const { afterAff, actualDelta: affDelta } = this._applyAffectionDelta(actor.id, rawAffDelta, 'interaction-gift');
     const afterMorale = this._entities.adjustStat(actor.id, 'morale', moraleDelta, { min: 0, max: 100 });
 
     const vars = this._buildDialogueVariables(actor);
@@ -526,9 +589,8 @@ export class InteractionSystem {
     const picked = pickRandom(eligible.length > 0 ? eligible : DAILY_PORT_EVENTS);
 
     const affMult = this._commander ? this._commander.getAffinityGainMultiplier() : 1.0;
-    const affDelta = Math.max(1, Math.round(picked.affinity * affMult));
-    const maxAff = this.getMaxAffinityFor(actor.id);
-    const afterAff = this._entities.adjustStat(actor.id, 'affinity', affDelta, { min: 0, max: maxAff });
+    const rawAffDelta = Math.max(1, Math.round(picked.affinity * affMult));
+    const { afterAff, actualDelta: affDelta } = this._applyAffectionDelta(actor.id, rawAffDelta, 'daily-port-event');
     const afterMorale = this._entities.adjustStat(actor.id, 'morale', picked.morale, { min: 0, max: 100 });
 
     const rewardSummary = [];
@@ -580,37 +642,44 @@ export class InteractionSystem {
   }
 
   async performOath(characterId, { oathTitle = '永恒誓约', customVow = '' } = {}) {
-    const cid = String(characterId);
+    const cid = String(characterId || '');
     const check = this.canOath(cid);
     if (!check.ok) throw new Error(check.reason);
 
     const actor = this._entities.get(cid);
     const cleanTitle = String(oathTitle || '永恒誓约').trim() || '永恒誓约';
     const cleanVow = String(customVow || '').trim();
+    const oathedAt = Date.now();
 
     this._oaths[cid] = {
-      oathedAt: Date.now(),
+      oathedAt,
       oathTitle: cleanTitle,
       customVow: cleanVow,
     };
     this.syncOathModifiers();
 
-    // Update HP ceiling cleanly after +12 maxHp oath bonus
-    const effMaxHp = Math.round(this._entities.getEffectiveStat(cid, 'maxHp', { round: 'round' }).final);
-    this._entities.setStat(cid, 'hp', effMaxHp, { min: 0, max: effMaxHp });
+    // Restore morale to 100 on ceremony completion
     this._entities.setStat(cid, 'morale', 100, { min: 0, max: 100 });
 
     const vars = this._buildDialogueVariables(actor);
-    const rendered = await this._narrative.run({
-      template:
-        '在港湾晴空与海风的见证下，{commander.name}与穿着{outfit}的{actor.name}正式缔结【{oathTitle}】！{customVowLine}好感上限突破至 200，全战斗属性获得 +8% 誓约羁绊加成与耐久 +12！',
-      variables: {
-        ...vars,
-        oathTitle: cleanTitle,
-        customVowLine: cleanVow ? `誓言：「${cleanVow}」 ` : '',
-      },
-      polishInstruction: `请庄重温馨地描写指挥官与「${actor.name}」完成誓约仪式的瞬间：`,
-    });
+    const fallbackText = `在港湾晴空与海风的见证下，${vars.commander.name}与穿着${vars.outfit}的${actor.name}正式缔结【${cleanTitle}】！好感上限突破至 ${OATH_AFFINITY_CAP}，永久激活基础六维各 +4、出征油弹消耗 -10% 与宿舍心情加速恢复！`;
+    let rendered = { text: fallbackText, source: 'local', degraded: false };
+    if (this._narrative && typeof this._narrative.run === 'function') {
+      try {
+        rendered = await this._narrative.run({
+          template:
+            '在港湾晴空与海风的见证下，{commander.name}与穿着{outfit}的{actor.name}正式缔结【{oathTitle}】！{customVowLine}好感上限突破至 150，永久激活基础六维各 +4、出征油弹 -10% 与宿舍心情加速恢复！',
+          variables: {
+            ...vars,
+            oathTitle: cleanTitle,
+            customVowLine: cleanVow ? `誓言：「${cleanVow}」 ` : '',
+          },
+          polishInstruction: `请庄重温馨地描写指挥官与「${actor.name}」完成誓约仪式的瞬间：`,
+        });
+      } catch {
+        rendered = { text: fallbackText, source: 'local', degraded: true };
+      }
+    }
 
     const entry = {
       id: `oath_${Date.now().toString(36)}`,
@@ -618,28 +687,34 @@ export class InteractionSystem {
       characterId: cid,
       characterName: actor.name,
       oathTitle: cleanTitle,
-      text: rendered.text,
-      source: rendered.source,
-      degraded: rendered.degraded,
-      timestamp: Date.now(),
+      oathedAt,
+      text: rendered?.text || fallbackText,
+      source: rendered?.source || 'local',
+      degraded: Boolean(rendered?.degraded),
+      timestamp: oathedAt,
     };
     this._lastInteraction = entry;
     this._interactionHistory.unshift(entry);
     await this.persist();
 
     this._emit('fx:play', { type: 'crit-flash', payload: {} });
-    this._emit('fx:play', { type: 'float-text', payload: { text: `誓约达成 · ${actor.name}`, tone: 'ok' } });
+    this._emit('fx:play', { type: 'float-text', payload: { text: `💍 誓约达成 · ${actor.name}`, tone: 'ok' } });
     if (this._logs) {
       this._logs.add({
         category: LOG_CATEGORIES.CHARACTER,
         actorId: cid,
         actorName: actor.name,
-        title: `★ 与「${actor.name}」缔结誓约【${cleanTitle}】`,
-        detail: '好感上限提升至 200，解锁全战斗属性 +8% 与耐久 +12 永久誓约加成',
+        title: `💍 与「${actor.name}」缔结誓约【${cleanTitle}】`,
+        detail: `好感上限提升至 ${OATH_AFFINITY_CAP}，永久激活基础六维各 +4、出征油弹 -10% 与宿舍心情加速恢复`,
       });
     }
     this._emit('interaction:oathed', { characterId: cid, oath: deepClone(this._oaths[cid]), entry });
     return entry;
+  }
+
+  /** Backward-compatible alias so any caller invoking `performOathCeremony` never crashes. */
+  async performOathCeremony(characterId, opts = {}) {
+    return this.performOath(characterId, opts);
   }
 
   serialize() {

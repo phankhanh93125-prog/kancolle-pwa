@@ -241,4 +241,16 @@
    - Tab 5「设施」船坞建造全面升级为 100% 确定性定向舰船建造（涵盖全舰种与自定义工坊蓝图，实时应用 `dispatch` 调度减免）；Tab 4「工坊」新增 100% 确定性定向装备制造区（涵盖主炮/鱼雷/雷达/声呐/防空炮/舰载机/AR·AO 支援装/核心件及自定义装备），完整保留仓库强化升阶与批量拆解。
    - Tab 4「工坊」船坞区与 Tab 3「出征」第 1 步均新增醒目「一键全员维修」入口，支持按空闲席位批量入渠及一键批量快修恢复全部受损舰娘至满血。
 
+---
+
+## v31 好感度六阶段硬性上限拦截与完整誓约仪式羁绊体系
+
+1. **统一好感收口与六阶段硬性上限拦截（`src/core/story-engine.js`、`src/core/save-manager.js`、`src/modules/port-hub.js`、`src/core/port-buildings.js`、`src/core/expedition-system.js`、`src/core/interaction-system.js`、`src/modules/sortie-console.js`）**：
+   - 将日常交谈、赠礼、出征节点/胜利、船坞出渠维修、宿舍离线/投喂、远征与外置剧情等全部好感增减入口统一收口至唯一方法 `StoryEngine.gainAffection(shipId, delta)`。
+   - 严格实行六阶段硬性天花板：`陌生 (0~20)`、`熟悉 (20~40)`、`信赖 (40~60)`、`心动 (60~80)`、`恋慕 (80~100)`、`誓约 (100~150)`；触及当前阶段上限（`20/40/60/80/100`）时强制截断锁定绝不自动溢出，同时在「互动」气泡窗顶部显示上限提示与「✨ 触发阶段突破小剧场」按钮，完整观看并抉择后方可解锁下一阶段上限；历史存档迁移仅同步已跨过的旧分数段并保留下一 20 点整数门槛拦截。
+2. **修复誓约点击报错并实装完整誓约仪式与实战羁绊收益（`src/modules/port-hub.js`、`src/core/story-engine.js`、`src/core/interaction-system.js`、`src/core/stat-rules.js`、`src/data/default-dialogues.js`、`src/core/formation-system.js`、`src/core/tactical-combat.js`、`src/modules/character-console.js`）**：
+   - 修复原 `interaction.performOathCeremony` 不存在导致的点击报错，并为所有舰娘补全 `isOathed` / `oathDate` 安全默认字段与历史存档双向兼容。
+   - 好感达 `100` 且完成恋慕突破后亮起「💍 发起誓约」，点击在气泡聊天窗内展开专属「誓约仪式小剧场」（誓言选项 + 仪式旁白），缔结誓约后正式生效三大收益：① 好感上限由 `100` 解放至 `150`；② `stat-rules.js` 永久施加「誓约羁绊」基础六维（火力/装甲/雷击/机动/侦查/防空）各 `+4`、出征油弹消耗 `-10%`、宿舍心情恢复速度 `+35%`；③ 「互动」铭牌与「档案」卡片/详情卡永久展示 `💍 誓约` 徽记并解锁专属誓约后日常/深夜/立绘触碰台词库。
+
+
 

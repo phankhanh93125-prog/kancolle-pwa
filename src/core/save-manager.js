@@ -320,14 +320,37 @@ export function migrateSavePayload(rawData = {}) {
     }
   }
 
-  // Schema v9: Ensure storyEngine bubble-chat & 6-stage breakthrough state exists,
-  // auto-unlock crossed gates for legacy high-affinity ships, and purge deprecated legacy built-in story packs
+  // Schema v9/v10: Ensure safe oath fields (`isOathed`, `oathDate`), 150 oath affinity cap,
+  // and lossless legacy 6-stage breakthrough migration (only strictly crossed bands `aff > g` unlock; next 20-pt gate still intercepts!)
+  const oathsMap = data.interaction?.oaths && typeof data.interaction.oaths === 'object' ? data.interaction.oaths : {};
+  for (const ent of data.entities?.entities || []) {
+    if (ent?.kind !== 'character' || !ent.id) continue;
+    if (!ent.meta || typeof ent.meta !== 'object') ent.meta = {};
+    if (!ent.statBounds || typeof ent.statBounds !== 'object') ent.statBounds = {};
+    const oathRec = oathsMap[ent.id] || null;
+    const isOathed = Boolean(oathRec || ent.meta.isOathed || ent.isOathed);
+    const oathDate = oathRec?.oathedAt || ent.meta.oathDate || ent.oathDate || null;
+    if (ent.meta.isOathed !== isOathed || ent.meta.oathDate !== oathDate) {
+      ent.meta.isOathed = isOathed;
+      ent.meta.oathDate = oathDate;
+      ent.isOathed = isOathed;
+      ent.oathDate = oathDate;
+      migrated = true;
+    }
+    const targetMax = isOathed ? 150 : 100;
+    if (!ent.statBounds.affinity || Number(ent.statBounds.affinity.max) !== targetMax) {
+      ent.statBounds.affinity = { min: 0, max: targetMax };
+      migrated = true;
+    }
+  }
+
   if (!data.storyEngine || typeof data.storyEngine !== 'object') {
     const unlockedBreakthroughs = {};
     for (const ent of data.entities?.entities || []) {
       if (ent?.kind !== 'character' || !ent.id) continue;
       const aff = Math.round(Number(ent.stats?.affinity ?? 0));
-      const crossed = [20, 40, 60, 80, 100].filter((g) => aff >= g);
+      const isOathed = Boolean(oathsMap[ent.id] || ent.meta?.isOathed || ent.isOathed);
+      const crossed = [20, 40, 60, 80, 100].filter((g) => aff > g || (isOathed && g <= 100));
       if (crossed.length > 0) unlockedBreakthroughs[ent.id] = crossed;
     }
     data.storyEngine = {

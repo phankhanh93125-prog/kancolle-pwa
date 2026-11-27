@@ -89,6 +89,7 @@ export class StoryPackEngine {
     this._commander = commander;
     this._narrative = narrative;
     this._interaction = interaction;
+    this._storyEngine = null;
     this._logs = logs;
     this._bus = bus;
 
@@ -99,6 +100,10 @@ export class StoryPackEngine {
     /** @type {Array<object>} */
     this._playHistory = [];
     this._hydrated = false;
+  }
+
+  setStoryEngine(se) {
+    this._storyEngine = se;
   }
 
   _emit(event, payload) {
@@ -544,9 +549,17 @@ export class StoryPackEngine {
       if (activeEffects.affinity) {
         const mult = this._commander ? this._commander.getAffinityGainMultiplier() : 1.0;
         const affDelta = Math.round(Number(activeEffects.affinity) * (activeEffects.affinity > 0 ? mult : 1));
-        const maxAff = this._interaction ? this._interaction.getMaxAffinityFor(actor.id) : 100;
-        this._entities.adjustStat(actor.id, 'affinity', affDelta, { min: 0, max: maxAff });
-        appliedChips.push({ text: `好感 ${affDelta >= 0 ? `+${affDelta}` : affDelta}`, negative: affDelta < 0 });
+        if (this._storyEngine && typeof this._storyEngine.gainAffection === 'function') {
+          const res = this._storyEngine.gainAffection(actor.id, affDelta, { source: 'story-pack' });
+          appliedChips.push({
+            text: res.gained >= 0 ? `好感 +${res.gained}${res.hitGate ? `（达上限${res.hitGate}）` : ''}` : `好感 ${res.gained}`,
+            negative: res.gained < 0,
+          });
+        } else {
+          const maxAff = this._interaction ? this._interaction.getMaxAffinityFor(actor.id) : 100;
+          this._entities.adjustStat(actor.id, 'affinity', affDelta, { min: 0, max: maxAff });
+          appliedChips.push({ text: `好感 ${affDelta >= 0 ? `+${affDelta}` : affDelta}`, negative: affDelta < 0 });
+        }
       }
       if (activeEffects.morale) {
         const mDelta = Math.round(Number(activeEffects.morale));

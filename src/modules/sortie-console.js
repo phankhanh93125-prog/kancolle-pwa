@@ -1048,10 +1048,15 @@ async function resolveActiveNodeStoryChoice(choiceIdx) {
     }
 
     const affMult = commander ? commander.getAffinityGainMultiplier() : 1.0;
+    const se = sortieState.context?.storyEngine;
     if (isSuccess) {
       const aff = Math.max(1, Math.round((Number(node.affinityGain) || 2) * affMult));
       for (const m of aliveMembers) {
-        entities.adjustStat(m.id, 'affinity', aff, { min: 0, max: 100 });
+        if (se && typeof se.gainAffection === 'function') {
+          se.gainAffection(m.id, aff, { source: 'sortie-node' });
+        } else {
+          entities.adjustStat(m.id, 'affinity', aff, { min: 0, max: 100 });
+        }
         entities.adjustStat(m.id, 'morale', 5, { min: 0, max: 100 });
       }
       chips.push({ text: `全队好感 +${aff}`, negative: false });
@@ -1254,7 +1259,9 @@ async function finalizeBattleOutcome(session) {
       const shipExp = node.type === NODE_TYPES.BOSS ? 65 : node.type === NODE_TYPES.ELITE ? 45 : 28;
       const se = sortieState.context?.storyEngine;
       for (const m of fleetMembers) {
-        if (se && typeof se.applySlowAffinityGain === 'function') {
+        if (se && typeof se.gainAffection === 'function') {
+          se.gainAffection(m.id, aff, { source: 'sortie-victory' });
+        } else if (se && typeof se.applySlowAffinityGain === 'function') {
           se.applySlowAffinityGain(m.id, aff, { source: 'sortie-victory' });
         } else {
           entities.adjustStat(m.id, 'affinity', aff, { min: 0, max: 100 });

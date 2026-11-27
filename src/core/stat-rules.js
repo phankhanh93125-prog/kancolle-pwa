@@ -1750,24 +1750,32 @@ export class StatRulesEngine {
   }
 
   /**
-   * Map affinity (0..200) into the 6 slow-paced stages:
-   *   陌生 (0~19) -> 熟悉 (20~39) -> 信赖 (40~59) -> 心动 (60~79) -> 恋慕 (80~99) -> 誓约 (100+)
+   * Map affinity (0..150) into the 6 slow-paced stages:
+   *   陌生 (0~20) -> 熟悉 (20~40) -> 信赖 (40~60) -> 心动 (60~80) -> 恋慕 (80~100) -> 誓约 (100~150)
    */
   getAffinityStage(affinityValue, { isOathed = false } = {}) {
-    const val = clamp(Math.round(Number(affinityValue ?? 0)), 0, 200);
+    const val = clamp(Math.round(Number(affinityValue ?? 0)), 0, OATH_AFFINITY_CAP);
     const sixStages = [
-      { stageIndex: 0, id: 'stranger', label: '陌生', min: 0, max: 19, tone: 'muted' },
-      { stageIndex: 1, id: 'familiar', label: '熟悉', min: 20, max: 39, tone: 'info' },
-      { stageIndex: 2, id: 'trusted', label: '信赖', min: 40, max: 59, tone: 'ok' },
-      { stageIndex: 3, id: 'flutter', label: '心动', min: 60, max: 79, tone: 'warn' },
-      { stageIndex: 4, id: 'adoration', label: '恋慕', min: 80, max: 99, tone: 'warn' },
-      { stageIndex: 5, id: 'oath', label: '誓约', min: 100, max: 200, tone: 'ok' },
+      { stageIndex: 0, id: 'stranger', label: '陌生', min: 0, max: 20, tone: 'muted' },
+      { stageIndex: 1, id: 'familiar', label: '熟悉', min: 20, max: 40, tone: 'info' },
+      { stageIndex: 2, id: 'trusted', label: '信赖', min: 40, max: 60, tone: 'ok' },
+      { stageIndex: 3, id: 'flutter', label: '心动', min: 60, max: 80, tone: 'warn' },
+      { stageIndex: 4, id: 'adoration', label: '恋慕', min: 80, max: 100, tone: 'warn' },
+      { stageIndex: 5, id: 'oath', label: '誓约', min: 100, max: OATH_AFFINITY_CAP, tone: 'ok' },
     ];
     const stage =
-      isOathed || val >= 100
+      isOathed || val > 100
         ? sixStages[5]
-        : sixStages.find((s) => val >= s.min && val <= s.max) || sixStages[0];
-    const span = Math.max(1, stage.max - stage.min + 1);
+        : val >= 80
+        ? sixStages[4]
+        : val >= 60
+        ? sixStages[3]
+        : val >= 40
+        ? sixStages[2]
+        : val >= 20
+        ? sixStages[1]
+        : sixStages[0];
+    const span = Math.max(1, stage.max - stage.min);
     const progressInStage = clamp((val - stage.min) / span, 0, 1);
     return {
       value: val,
@@ -2672,6 +2680,31 @@ export function normalizeLegacyItemBonusesToCompressedScale(item) {
   item.statScaleVersion = 2;
   return item;
 }
+
+export const BASE_AFFINITY_CAP = 100;
+export const OATH_AFFINITY_CAP = 150;
+export const OATH_BOND_STAT_BONUS = 4;
+export const OATH_BOND_STAT_KEYS = Object.freeze(['firepower', 'armor', 'torpedo', 'evasion', 'recon', 'aa']);
+export const OATH_SORTIE_COST_DISCOUNT = 0.1;
+export const OATH_DORM_MORALE_MULT = 1.35;
+
+/**
+ * Authoritative permanent 「誓约羁绊」 stat modifiers (+4 to all 6 core combat stats)
+ * keeping 2-digit / late-game balance clean across EntitySystem & UI breakdown panels.
+ */
+export function getOathBondModifiers(characterId, oathTitle = '永恒誓约') {
+  const cid = String(characterId || '');
+  const title = String(oathTitle || '永恒誓约').trim() || '永恒誓约';
+  return OATH_BOND_STAT_KEYS.map((stat, idx) => ({
+    id: `oath_bond_${cid}_${idx}`,
+    stat,
+    layer: 'baseAdd',
+    value: OATH_BOND_STAT_BONUS,
+    source: `誓约羁绊 · ${title}`,
+    enabled: true,
+  }));
+}
+
 
 
 
