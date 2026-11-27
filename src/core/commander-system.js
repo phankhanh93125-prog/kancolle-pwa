@@ -43,7 +43,7 @@ export const COMMANDER_STAT_DEFS = Object.freeze([
     defaultValue: 10,
     min: 1,
     max: 200,
-    desc: '决定单次出征编队人数上限（3~12人），降低多船协同损耗',
+    desc: '基础 10 点解锁 4 席位，之后每 +2 点立增 1 出战席位（上限 12），且每点即刻提升全队攻击与命中',
   },
   {
     key: 'tactics',
@@ -52,7 +52,7 @@ export const COMMANDER_STAT_DEFS = Object.freeze([
     defaultValue: 10,
     min: 1,
     max: 200,
-    desc: '提升遇敌「扫描/迂回」成功率，提高随机航线提前看穿节点概率',
+    desc: '每投入 1 点即刻提高舰队索敌侦察加值、航线透视概率与阵型战术加成',
   },
   {
     key: 'charisma',
@@ -61,7 +61,7 @@ export const COMMANDER_STAT_DEFS = Object.freeze([
     defaultValue: 10,
     min: 1,
     max: 200,
-    desc: '提升初始好感、降低好感突破门槛，解锁特殊日常互动选项与语气',
+    desc: '每投入 1 点即刻提升舰娘好感度获取效率与宿舍士气恢复速度',
   },
   {
     key: 'affinity',
@@ -70,7 +70,7 @@ export const COMMANDER_STAT_DEFS = Object.freeze([
     defaultValue: 10,
     min: 1,
     max: 200,
-    desc: '提升战后好感倍率、加快士气恢复，提高僚机援护挡伤与协同补刀率',
+    desc: '每投入 1 点即刻提升舰队协同作战、AR/AO 支援技能与援护效果及互动奇遇好感收益',
   },
   {
     key: 'dispatch',
@@ -79,7 +79,7 @@ export const COMMANDER_STAT_DEFS = Object.freeze([
     defaultValue: 10,
     min: 1,
     max: 200,
-    desc: '降低出征单步油弹与入渠钢铝消耗，提升远征物资与银条收益',
+    desc: '每投入 1 点即刻提升随舰油弹携带上限（+25油/+25弹）、远征收益并降低定向建造消耗',
   },
   {
     key: 'maintenance',
@@ -88,7 +88,7 @@ export const COMMANDER_STAT_DEFS = Object.freeze([
     defaultValue: 10,
     min: 1,
     max: 200,
-    desc: '降低工坊强化材料消耗，并放大「引擎/装甲/核心」三核心部件效能',
+    desc: '每投入 1 点即刻加快船坞维修速度、降低维修与强化消耗并提升装备强化效能',
   },
 ]);
 
@@ -97,10 +97,10 @@ export const COMMANDER_STAT_MAP = Object.freeze(
 );
 
 export const DEFAULT_COMMANDER_FORMULA = Object.freeze({
-  minFleetCap: 3,
+  minFleetCap: 4,
   maxFleetCap: 12,
   baseCommandForMinCap: 10,
-  commandPerExtraSlot: 10,
+  commandPerExtraSlot: 2,
   pointsPerLevel: 3,
 });
 
@@ -162,11 +162,18 @@ export class CommanderSystem {
       stats[d.key] = clamp(Math.round(Number(rawStats[d.key] ?? d.defaultValue) || d.defaultValue), d.min, d.max);
     }
     const rawFormula = raw.formula || {};
+    // Losslessly migrate legacy 10-point stair-step formula (minFleetCap: 3, commandPerExtraSlot: 10) -> v30 immediate formula (4 slots, +1 per 2 pts)
+    const isLegacyStairStep =
+      Number(rawFormula.minFleetCap) === 3 && Number(rawFormula.commandPerExtraSlot) === 10;
     const formula = {
-      minFleetCap: clamp(Math.floor(Number(rawFormula.minFleetCap ?? def.formula.minFleetCap)), 1, 12),
-      maxFleetCap: clamp(Math.floor(Number(rawFormula.maxFleetCap ?? def.formula.maxFleetCap)), 3, 12),
+      minFleetCap: isLegacyStairStep
+        ? def.formula.minFleetCap
+        : clamp(Math.floor(Number(rawFormula.minFleetCap ?? def.formula.minFleetCap)), 1, 12),
+      maxFleetCap: clamp(Math.floor(Number(rawFormula.maxFleetCap ?? def.formula.maxFleetCap)), 4, 12),
       baseCommandForMinCap: clamp(Math.floor(Number(rawFormula.baseCommandForMinCap ?? def.formula.baseCommandForMinCap)), 1, 50),
-      commandPerExtraSlot: clamp(Math.floor(Number(rawFormula.commandPerExtraSlot ?? def.formula.commandPerExtraSlot)), 1, 50),
+      commandPerExtraSlot: isLegacyStairStep
+        ? def.formula.commandPerExtraSlot
+        : clamp(Math.floor(Number(rawFormula.commandPerExtraSlot ?? def.formula.commandPerExtraSlot)), 1, 50),
       pointsPerLevel: clamp(Math.floor(Number(rawFormula.pointsPerLevel ?? def.formula.pointsPerLevel)), 1, 20),
     };
     if (formula.maxFleetCap < formula.minFleetCap) {
@@ -227,63 +234,89 @@ export class CommanderSystem {
     return this._state.luck;
   }
 
+  /**
+   * Faster early-game leveling curve: Lv.1->2 requires 50 EXP, +30 per subsequent level
+   * so 1~2 sorties or expeditions smoothly level up the Commander.
+   */
   getExpToNextLevel(level = this._state.level) {
     const lv = Math.max(1, Math.floor(Number(level) || 1));
-    return 100 + (lv - 1) * 50;
+    return 50 + (lv - 1) * 30;
   }
 
   // ------------------------------------------------------------
-  // Formula-Driven Derived Gameplay Modifiers
+  // Formula-Driven Per-Point Immediate Gameplay Modifiers (All 7 Stats)
   // ------------------------------------------------------------
 
   /**
-   * Fleet size cap strictly between minFleetCap (default 3) and maxFleetCap (default 12),
-   * governed by Commander `command` (统率).
-   * Default: command 10 -> 3 ships; +1 slot per +10 command up to 12 ships at command 100.
+   * 1. `command` (统率): Base 10 -> 4 deployable slots; every +2 points immediately unlocks +1 slot (max 12).
    */
   getFleetSizeCap() {
     const f = this._state.formula;
     const cmd = this._state.stats.command;
-    const extraSlots = Math.max(0, Math.floor((cmd - f.baseCommandForMinCap) / f.commandPerExtraSlot));
+    const extraSlots = Math.max(0, Math.floor((cmd - f.baseCommandForMinCap) / Math.max(1, f.commandPerExtraSlot)));
     return clamp(f.minFleetCap + extraSlots, f.minFleetCap, f.maxFleetCap);
   }
 
-  /** Reduces multi-ship coordination penalty/overhead as command grows (0..35%). */
-  getFleetSynergyOverheadReduction() {
-    return Number(clamp(this._state.stats.command * 0.0035, 0, 0.35).toFixed(4));
+  /** Every +1 `command` immediately grants +0.5% fleet attack bonus (up to +45%). */
+  getCommandAttackBonusPct() {
+    return Number(clamp(this._state.stats.command * 0.005, 0, 0.45).toFixed(4));
   }
 
-  /** Bonus check modifier for Scan & Evade from Commander `tactics` (+1 per 10 pts). */
+  /** Every +1 `command` immediately grants +0.35 accuracy rating to the fleet. */
+  getCommandHitBonus() {
+    return Number(clamp(this._state.stats.command * 0.35, 0, 25).toFixed(2));
+  }
+
+  /** Reduces multi-ship coordination penalty/overhead immediately per point (0..40%). */
+  getFleetSynergyOverheadReduction() {
+    return Number(clamp(this._state.stats.command * 0.005, 0, 0.4).toFixed(4));
+  }
+
+  /**
+   * 2. `tactics` (战术): Per-point continuous recon bonus (+1.2 per pt), check modifier (+0.18 per pt),
+   * route intel reveal chance, and formation tactical multiplier (+0.5% per pt).
+   */
+  getTacticsReconBonus() {
+    return Number(clamp(this._state.stats.tactics * 1.2, 0, 90).toFixed(1));
+  }
+
   getTacticsCheckBonus() {
-    return Math.floor(this._state.stats.tactics / 10);
+    return Number(clamp(this._state.stats.tactics * 0.18, 0, 12).toFixed(2));
+  }
+
+  getTacticsFormationBonusPct() {
+    return Number(clamp(this._state.stats.tactics * 0.005, 0, 0.45).toFixed(4));
   }
 
   /** Probability of revealing unknown node types ahead of time on procedural route generation. */
   getRouteRevealChance() {
-    return Number(clamp(0.15 + this._state.stats.tactics * 0.008, 0.15, 0.9).toFixed(4));
+    return Number(clamp(0.18 + this._state.stats.tactics * 0.012, 0.18, 0.95).toFixed(4));
   }
 
-  /** Extra starting affinity for newly recruited shipgirls from Commander `charisma`. */
+  /**
+   * 3. `charisma` (魅力): Every +1 point immediately improves affinity gain efficiency (+1.5%/pt)
+   * and dormitory morale recovery speed (+1.8%/pt).
+   */
   getInitialAffinityBonus() {
-    return clamp(Math.floor(this._state.stats.charisma * 0.4), 0, 40);
+    return clamp(Math.round(this._state.stats.charisma * 0.5), 0, 45);
   }
 
-  /** Reduces affinity stage breakthrough thresholds (0..15 pts). */
+  /** Smooth per-point affinity breakthrough threshold reduction (0..18 pts). */
   getAffinityThresholdReduction() {
-    return clamp(Math.floor(this._state.stats.charisma / 10) * 2, 0, 15);
+    return clamp(Math.round(this._state.stats.charisma * 0.2), 0, 18);
   }
 
   /** Special daily interaction options & tone tendencies unlocked by `charisma`. */
   getInteractionProfile() {
     const ch = this._state.stats.charisma;
-    if (ch >= 60) {
+    if (ch >= 35) {
       return {
         tier: 3,
         toneLabel: '极具号召力（核心信赖语气）',
         unlockedOptions: ['战术鼓舞演讲', '港区茶会邀约', '私密心声倾听'],
       };
     }
-    if (ch >= 30) {
+    if (ch >= 18) {
       return {
         tier: 2,
         toneLabel: '亲切可靠（温和鼓励语气）',
@@ -297,61 +330,98 @@ export class CommanderSystem {
     };
   }
 
-  /** Post-combat & event affinity gain multiplier from Commander `affinity`. */
-  getAffinityGainMultiplier() {
-    return Number((1 + clamp(this._state.stats.affinity * 0.01, 0, 1.5)).toFixed(4));
+  /** Morale recovery acceleration multiplier at Port Hub & Dormitory from Commander `charisma` (+1.8%/pt). */
+  getMoraleRecoveryMultiplier() {
+    return Number((1 + clamp(this._state.stats.charisma * 0.018, 0, 2.0)).toFixed(4));
   }
 
-  /** Morale recovery acceleration multiplier at Port Hub from Commander `affinity`. */
-  getMoraleRecoveryMultiplier() {
-    return Number((1 + clamp(this._state.stats.affinity * 0.015, 0, 1.5)).toFixed(4));
+  /**
+   * 4. `affinity` (亲和): Every +1 point immediately boosts fleet synergy combat (+0.45%/pt),
+   * AR/AO/escort support skill multiplier (+1.2%/pt), wingman assist chance, and daily interaction affinity gain.
+   */
+  getAffinitySynergyBonusPct() {
+    return Number(clamp(this._state.stats.affinity * 0.0045, 0, 0.45).toFixed(4));
+  }
+
+  getSupportSkillMultiplier() {
+    return Number((1 + clamp(this._state.stats.affinity * 0.012, 0, 1.5)).toFixed(4));
+  }
+
+  /** Combined affinity gain multiplier driven immediately by `charisma` (+1.5%/pt) and `affinity` (+1.2%/pt). */
+  getAffinityGainMultiplier() {
+    const chBonus = this._state.stats.charisma * 0.015;
+    const afBonus = this._state.stats.affinity * 0.012;
+    return Number((1 + clamp(chBonus + afBonus, 0, 2.2)).toFixed(4));
   }
 
   /** Wingman Cover (援护挡伤) & Coordinated Follow-up (协同补刀) base trigger chance. */
   getWingmanAssistChance() {
-    return Number(clamp(0.12 + this._state.stats.affinity * 0.006, 0.12, 0.65).toFixed(4));
+    return Number(clamp(0.14 + this._state.stats.affinity * 0.008, 0.14, 0.72).toFixed(4));
   }
 
-  /** Sortie step fuel & ammo discount from Commander `dispatch` (0..40%). */
+  /**
+   * 5. `dispatch` (调度): Every +1 point immediately adds +25 carried fuel & +25 carried ammo cap,
+   * raises expedition rewards (+1.5%/pt), and discounts deterministic ship/gear crafting costs (-0.6%/pt).
+   */
   getSortieStepDiscount() {
-    return Number(clamp(this._state.stats.dispatch * 0.004, 0, 0.4).toFixed(4));
+    return Number(clamp(this._state.stats.dispatch * 0.005, 0, 0.42).toFixed(4));
   }
 
-  /** Port repair steel & bauxite discount from Commander `dispatch` (0..45%). */
-  getRepairCostDiscount() {
-    return Number(clamp(this._state.stats.dispatch * 0.005, 0, 0.45).toFixed(4));
+  getCraftingCostDiscount() {
+    return Number(clamp(this._state.stats.dispatch * 0.006, 0, 0.36).toFixed(4));
   }
 
-  /** Expedition resource & silver reward multiplier from Commander `dispatch`. */
+  /** Expedition resource & silver reward multiplier from Commander `dispatch` (+1.5%/pt). */
   getExpeditionRewardMultiplier() {
-    return Number((1 + clamp(this._state.stats.dispatch * 0.012, 0, 1.5)).toFixed(4));
+    return Number((1 + clamp(this._state.stats.dispatch * 0.015, 0, 2.0)).toFixed(4));
+  }
+
+  /**
+   * 6. `maintenance` (整备): Every +1 point immediately speeds up Dockyard repair (+2.0%/pt),
+   * reduces Dockyard repair resource costs (-0.8%/pt), discounts Workshop enhancement (-0.7%/pt),
+   * and amplifies equipment enhancement effectiveness (+0.8%/pt).
+   */
+  getRepairSpeedMultiplier() {
+    return Number((1 + clamp(this._state.stats.maintenance * 0.02, 0, 2.5)).toFixed(4));
+  }
+
+  /** Port repair steel & bauxite discount from Commander `maintenance` (0..48%). */
+  getRepairCostDiscount() {
+    return Number(clamp(this._state.stats.maintenance * 0.008, 0, 0.48).toFixed(4));
   }
 
   /** Workshop enhancement cost discount from Commander `maintenance` (0..45%). */
   getEnhanceCostDiscount() {
-    return Number(clamp(this._state.stats.maintenance * 0.005, 0, 0.45).toFixed(4));
+    return Number(clamp(this._state.stats.maintenance * 0.007, 0, 0.45).toFixed(4));
+  }
+
+  /** Workshop enhancement bonus multiplier from Commander `maintenance` (+0.8%/pt). */
+  getEnhanceEffectivenessMultiplier() {
+    return Number((1 + clamp(this._state.stats.maintenance * 0.008, 0, 0.65)).toFixed(4));
   }
 
   /** Effectiveness multiplier for the 3 mandatory core slots (engine / armor / core). */
   getCorePartsAmplifier() {
-    return Number((1 + clamp(this._state.stats.maintenance * 0.003, 0, 0.35)).toFixed(4));
+    return Number((1 + clamp(this._state.stats.maintenance * 0.004, 0, 0.45)).toFixed(4));
   }
 
   /**
-   * Independent Luck (`luck`, 0-based, +/-) adjustments:
-   *  - Edge shifts on D20 crit-success / crit-fail natural roll thresholds
-   *  - Rare drop rate delta on salvage & supply pool
-   *  - Hidden encounter bonus chance
+   * 7. Independent Luck (`luck`, 0-based, +/-) — ZERO 10-point stair-step!
+   * Every 1 point directly provides d20 check modifier, crit chance bonus, and rare salvage drop bonus.
    */
   getLuckEffects() {
     const lk = this._state.luck;
-    const critSuccessShift = lk > 0 ? Math.min(3, Math.floor(lk / 10)) : 0; // lowers crit-success natural threshold (e.g. 20 -> 19)
-    const critFailShift = lk < 0 ? Math.min(3, Math.floor(Math.abs(lk) / 10)) : 0; // raises crit-fail natural threshold (e.g. 1 -> 2)
-    const edgeCheckMod = lk >= 0 ? Math.floor(lk / 15) : Math.ceil(lk / 15);
-    const rareDropBonus = Number(clamp(lk * 0.01, -0.25, 0.5).toFixed(4));
-    const hiddenEncounterBonus = Number(clamp(lk * 0.008, -0.15, 0.4).toFixed(4));
+    const d20CheckBonus = Number(clamp(lk * 0.25, -6, 10).toFixed(2));
+    const critChanceBonus = Number(clamp(lk * 0.008, -0.15, 0.45).toFixed(4));
+    const critSuccessShift = lk >= 8 ? Math.min(3, Math.floor(lk / 8)) : 0;
+    const critFailShift = lk <= -8 ? Math.min(3, Math.floor(Math.abs(lk) / 8)) : 0;
+    const edgeCheckMod = lk >= 0 ? Math.round(lk * 0.25) : -Math.round(Math.abs(lk) * 0.25);
+    const rareDropBonus = Number(clamp(lk * 0.012, -0.25, 0.6).toFixed(4));
+    const hiddenEncounterBonus = Number(clamp(lk * 0.01, -0.15, 0.45).toFixed(4));
     return {
       luck: lk,
+      d20CheckBonus,
+      critChanceBonus,
       critSuccessShift,
       critFailShift,
       edgeCheckMod,
@@ -364,20 +434,30 @@ export class CommanderSystem {
     const luckFx = this.getLuckEffects();
     return {
       fleetCap: this.getFleetSizeCap(),
+      commandAttackBonusPct: this.getCommandAttackBonusPct(),
+      commandHitBonus: this.getCommandHitBonus(),
       synergyOverheadReduction: this.getFleetSynergyOverheadReduction(),
+      tacticsReconBonus: this.getTacticsReconBonus(),
       tacticsCheckBonus: this.getTacticsCheckBonus(),
+      tacticsFormationBonusPct: this.getTacticsFormationBonusPct(),
       routeRevealChance: this.getRouteRevealChance(),
       initialAffinityBonus: this.getInitialAffinityBonus(),
       affinityThresholdReduction: this.getAffinityThresholdReduction(),
       interactionProfile: this.getInteractionProfile(),
       affinityGainMultiplier: this.getAffinityGainMultiplier(),
+      affinitySynergyBonusPct: this.getAffinitySynergyBonusPct(),
+      supportSkillMultiplier: this.getSupportSkillMultiplier(),
       moraleRecoveryMultiplier: this.getMoraleRecoveryMultiplier(),
       wingmanAssistChance: this.getWingmanAssistChance(),
       sortieStepDiscount: this.getSortieStepDiscount(),
+      craftingCostDiscount: this.getCraftingCostDiscount(),
+      repairSpeedMultiplier: this.getRepairSpeedMultiplier(),
       repairCostDiscount: this.getRepairCostDiscount(),
       expeditionRewardMultiplier: this.getExpeditionRewardMultiplier(),
       enhanceCostDiscount: this.getEnhanceCostDiscount(),
+      enhanceEffectivenessMultiplier: this.getEnhanceEffectivenessMultiplier(),
       corePartsAmplifier: this.getCorePartsAmplifier(),
+      carriedSupplyCaps: this.getCarriedSupplyCaps(),
       luckEffects: luckFx,
     };
   }
@@ -427,26 +507,28 @@ export class CommanderSystem {
   }
 
   /**
-   * Combined Logistics capability (dispatch + maintenance) governing carried sortie oil/ammo caps.
+   * Combined Logistics capability (dispatch + maintenance) readout.
    */
   getLogisticsScore() {
     const dispatch = Number(this._state.stats?.dispatch ?? 10) || 10;
     const maintenance = Number(this._state.stats?.maintenance ?? 10) || 10;
-    return Math.round(dispatch * 0.65 + maintenance * 0.35);
+    return Math.round(dispatch * 0.7 + maintenance * 0.3);
   }
 
   /**
-   * Compute maximum carried Fuel & Ammo for a single sortie based on Commander Logistics,
-   * Port logistics facility upgrades, and Supply Ships (AO) in the active fleet.
+   * Compute maximum carried Fuel & Ammo for a single sortie:
+   * Every +1 `dispatch` immediately adds +25 Fuel & +25 Ammo cap!
    */
   getCarriedSupplyCaps({ aoCount = 0, logisticsBonus = 0 } = {}) {
+    const dispatch = Math.max(1, Number(this._state.stats?.dispatch ?? 10) || 10);
     const logScore = this.getLogisticsScore();
     const ao = Math.max(0, Math.floor(Number(aoCount) || 0));
     const bonus = Math.max(0, Math.round(Number(logisticsBonus) || 0));
-    const maxFuel = Math.round(220 + logScore * 14 + ao * 160 + bonus);
-    const maxAmmo = Math.round(220 + logScore * 14 + ao * 160 + bonus);
+    const maxFuel = Math.round(150 + dispatch * 25 + ao * 160 + bonus);
+    const maxAmmo = Math.round(150 + dispatch * 25 + ao * 160 + bonus);
     return {
       logisticsScore: logScore,
+      dispatch,
       aoCount: ao,
       maxFuel,
       maxAmmo,

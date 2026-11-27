@@ -44,6 +44,7 @@ import {
 } from '../core/route-generator.js';
 import { getActiveCharacterId, openCharacterCardById, persistCharacterRoster } from './character-console.js';
 import { openDockyardTacticalModal } from './port-facilities.js';
+import { openBatchRepairModal } from './supply-workshop.js';
 import {
   playBattleStepChoreography,
   playOpeningChoreography,
@@ -1062,7 +1063,7 @@ async function resolveActiveNodeStoryChoice(choiceIdx) {
     }
 
     if (commander) {
-      const expGain = 16;
+      const expGain = 26;
       await commander.grantExp(expGain, `出征节点 ${node.code}`);
       chips.push({ text: `指挥官 EXP +${expGain}`, negative: false });
     }
@@ -1269,7 +1270,7 @@ async function finalizeBattleOutcome(session) {
     }
 
     if (commander) {
-      const expGain = Math.round((node.type === NODE_TYPES.BOSS ? 45 : node.type === NODE_TYPES.ELITE ? 30 : 20) * lootBonus);
+      const expGain = Math.round((node.type === NODE_TYPES.BOSS ? 56 : node.type === NODE_TYPES.ELITE ? 42 : 34) * lootBonus);
       await commander.grantExp(expGain, `节点 ${node.code} 结算`);
     }
 
@@ -2487,9 +2488,10 @@ async function renderSortieConsole() {
           : ''
       }
 
-      <div class="lab-btn-grid" style="grid-template-columns: repeat(3, 1fr);">
-        <button type="button" id="btn-s1-autofill" class="btn-secondary uikit-touch-target" style="font-size:12px;">一键补满</button>
-        <button type="button" id="btn-s1-autoequip" class="btn-secondary uikit-touch-target" style="font-size:12px;" ${fState.count === 0 ? 'disabled' : ''}>全队最优配装</button>
+      <div class="lab-btn-grid" style="grid-template-columns: repeat(2, 1fr);">
+        <button type="button" id="btn-s1-autofill" class="btn-secondary uikit-touch-target" style="font-size:12px;">一键补满空位</button>
+        <button type="button" id="btn-s1-autoequip" class="btn-secondary uikit-touch-target" style="font-size:12px;" ${fState.count === 0 ? 'disabled' : ''}>全队一键最优配装</button>
+        <button type="button" id="btn-sortie-batch-repair-all" class="btn-primary uikit-touch-target" style="font-size:12px;">🔧 一键全员维修</button>
         <button type="button" id="btn-prep-open-dock" class="btn-secondary uikit-touch-target" style="font-size:12px;">快速船坞</button>
       </div>
 
@@ -2541,8 +2543,8 @@ async function renderSortieConsole() {
         ${
           freePoints > 0
             ? `<div class="lab-slot-head" style="background:rgba(20,184,166,0.1); padding:6px 10px; border-radius:var(--radius-sm); border:1px solid var(--border);">
-                <span class="muted-text" style="font-size:12px;">可用自由点：<strong>${freePoints}</strong>（每 +1 调度，上限 +10）</span>
-                <button type="button" id="btn-prep-add-logistics" class="btn-primary uikit-touch-target" style="min-height:32px; padding:0 10px; font-size:12px;">+1 后勤加点</button>
+                <span class="muted-text" style="font-size:12px;">可用自由点：<strong>${freePoints}</strong>（每 +1 调度，油/弹携带上限各 +25）</span>
+                <button type="button" id="btn-prep-add-logistics" class="btn-primary uikit-touch-target" style="min-height:32px; padding:0 10px; font-size:12px;">+1 调度加点</button>
               </div>`
             : ''
         }
@@ -2711,6 +2713,11 @@ async function renderSortieConsole() {
       narrative.setMode(next);
       uiKit.showToast(next === NARRATIVE_MODES.LOCAL ? '已切换为纯本地离线战报' : '已切换为 AI 润色战报', 'ok');
       renderSortieConsole();
+    });
+    prepCard.querySelector('#btn-sortie-batch-repair-all')?.addEventListener('click', () => {
+      openBatchRepairModal(sortieState.context, {
+        onUpdated: () => renderSortieConsole(),
+      });
     });
     prepCard.querySelector('#btn-prep-open-dock').addEventListener('click', () => openDockyardTacticalModal(sortieState.context));
     prepCard.querySelector('#btn-prep-add-logistics')?.addEventListener('click', async () => {

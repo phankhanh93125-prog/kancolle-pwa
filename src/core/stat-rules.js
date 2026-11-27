@@ -909,17 +909,131 @@ export function normalizeStarTierId(raw = 'star_1') {
  *     - total >= 11                     -> Normal Hit (1.0x damage)
  *     - total < 11                      -> Graze (0.4x chip damage)
  */
+/**
+ * Derived Evasion (`闪避`) calculated from Mobility (`机动`) + Lightweight Ship-Class Agility Correction.
+ * Keeps 2-digit baseline while allowing DD/SS (and CL) vanguards to evade incoming fire reliably.
+ */
+export function computeDerivedEvasion(mobility = 18, shipType = 'CL') {
+  const mob = Math.max(4, Number(mobility) || 16);
+  const cls = resolveShipClass(shipType);
+  let mult = 1.0;
+  let flatBonus = 0;
+  let agilityTag = '标准机动';
+  if (cls === 'DD' || cls === 'SS') {
+    mult = 1.25;
+    flatBonus = 6;
+    agilityTag = cls === 'DD' ? '轻量化高闪避 (DD)' : '水下高机动 (SS)';
+  } else if (cls === 'CL') {
+    mult = 1.12;
+    flatBonus = 3;
+    agilityTag = '中幅轻盈闪避 (CL)';
+  } else if (cls === 'BB' || cls === 'BOSS') {
+    mult = 0.88;
+    flatBonus = 0;
+    agilityTag = '重型低闪避';
+  }
+  const dodgeValue = clamp(Math.round(mob * mult + flatBonus), 6, 120);
+  return {
+    mobility: Math.round(mob),
+    dodgeValue,
+    shipClass: cls,
+    agilityBonus: dodgeValue - Math.round(mob),
+    agilityTag,
+  };
+}
+
+/**
+ * Compute Radar Fire-Control Lock-On profile from equipped items:
+ * Radar gear ignores a percentage of target derived evasion and provides bonus accuracy.
+ */
+export function computeRadarLockProfile(equippedMapOrList = []) {
+  const items = Array.isArray(equippedMapOrList)
+    ? equippedMapOrList.filter(Boolean)
+    : Object.values(equippedMapOrList || {}).filter(Boolean);
+  let radarCount = 0;
+  let ignorePct = 0;
+  let accBonus = 0;
+  let aaBonus = 0;
+  for (const it of items) {
+    const eqType = inferEquipmentTypeId(it, '');
+    const tags = Array.isArray(it.tags) ? it.tags.join(' ') : '';
+    const nameStr = String(it.name || '');
+    const isRadar = eqType === KNOWN_EQUIPMENT_TYPES.RADAR || /雷达|电探|火控/.test(nameStr + tags);
+    if (isRadar) {
+      radarCount += 1;
+      const rId = inferItemRarity(it);
+      const baseIgnore =
+        rId === 'legendary' ? 0.36 : rId === 'epic' ? 0.3 : rId === 'rare' ? 0.25 : 0.2;
+      ignorePct += baseIgnore + Math.min(0.08, (Number(it.level) || 0) * 0.008);
+      accBonus += 2 + Math.floor((Number(it.level) || 0) / 3);
+      if (/对空|防空|相控/.test(nameStr + tags)) {
+        aaBonus += 6 + Math.round((Number(it.level) || 0) * 0.6);
+      }
+    }
+  }
+  return {
+    hasRadar: radarCount > 0,
+    radarCount,
+    evasionIgnorePct: Number(clamp(ignorePct, 0, 0.55).toFixed(3)),
+    accBonus,
+    aaBonus,
+  };
+}
+
+/**
+ * Determine whether a unit can detect and attack submerged Submarines (SS):
+ * True for DD, CL, CVL, or any unit wearing ASW equipment (sonar / depth charge / ASW aircraft).
+ * False for BB, CA, AR, AO, and standard CV without ASW gear.
+ */
+export function hasUnitAswCapability(shipType = '', equippedMapOrList = [], explicitFlag = false) {
+  if (explicitFlag) return true;
+  const rawType = String(shipType || '');
+  const cls = resolveShipClass(rawType);
+  if (cls === 'DD' || cls === 'CL' || /轻母|轻航|CVL|护航航母/i.test(rawType)) {
+    return true;
+  }
+  const items = Array.isArray(equippedMapOrList)
+    ? equippedMapOrList.filter(Boolean)
+    : Object.values(equippedMapOrList || {}).filter(Boolean);
+  for (const it of items) {
+    const eqType = inferEquipmentTypeId(it, '');
+    const text = `${it.name || ''} ${(Array.isArray(it.tags) ? it.tags.join(' ') : '')} ${it.description || ''}`;
+    if (eqType === KNOWN_EQUIPMENT_TYPES.SONAR || /声呐|深水炸弹|深弹|反潜|水听/.test(text)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Enhanced Symmetric 1d20 Combat Roll:
+ *   - Supports both `{ accuracy, evasion }` and `{ attackerAcc, defenderEva }`
+ *   - Applies Radar Fire-Control Lock-On (`radarIgnorePct`) to penetrate target evasion
+ *   - Higher sensitivity to accuracy vs evasion difference (`round((acc - effEva) / 5)`)
+ *   - Immediate per-point Commander Luck bonus (`luckCheckBonus` / `commanderLuck * 0.25`) + crit shift
+ *   - Triggers 「高速规避」 extra damage reduction (`rollMult = 0.25`) when a high-evasion unit is grazed
+ */
 export function resolveD20CombatRoll({
-  accuracy = 20,
-  evasion = 20,
+  accuracy = undefined,
+  evasion = undefined,
+  attackerAcc = undefined,
+  defenderEva = undefined,
+  radarIgnorePct = 0,
   commanderLuck = 0,
   extraMod = 0,
   rng = Math.random,
 } = {}) {
-  const acc = Number(accuracy) || 0;
-  const eva = Number(evasion) || 0;
-  const baseDiffMod = clamp(Math.round((acc - eva) / 8), -5, 7);
-  const luckMod = Math.floor((Number(commanderLuck) || 0) / 5);
+  const acc = Number(accuracy ?? attackerAcc ?? 20) || 0;
+  const rawEva = Math.max(0, Number(evasion ?? defenderEva ?? 20) || 0);
+  const penPct = clamp(Number(radarIgnorePct) || 0, 0, 0.75);
+  const effEva = Math.max(0, Math.round(rawEva * (1 - penPct)));
+  const radarIgnoredEvasion = Math.max(0, Math.round(rawEva - effEva));
+
+  // Higher evasion difference sensitivity (/ 5 instead of / 8) so lightweight vanguards reliably dodge
+  const baseDiffMod = clamp(Math.round((acc - effEva) / 5), -7, 7);
+  const lk = Number(commanderLuck) || 0;
+  const luckMod = Math.round(lk * 0.25);
+  const critShift = lk >= 8 ? Math.min(3, Math.floor(lk / 8)) : 0;
   const bonusMod = Math.round(Number(extraMod) || 0);
   const modifier = baseDiffMod + luckMod + bonusMod;
   const naturalRoll = clamp(Math.floor(rng() * 20) + 1, 1, 20);
@@ -930,12 +1044,14 @@ export function resolveD20CombatRoll({
   let rollMult = 0.4;
   let isCrit = false;
   let isHit = false;
+  let highSpeedDodge = false;
 
   if (naturalRoll === 1) {
     outcome = 'graze';
-    outcomeLabel = '擦伤(1)';
-    rollMult = 0.4;
-  } else if (naturalRoll === 20 || total >= 19) {
+    outcomeLabel = effEva >= 26 ? '高速规避(1)' : '擦伤(1)';
+    rollMult = effEva >= 26 ? 0.25 : 0.4;
+    highSpeedDodge = effEva >= 26;
+  } else if (naturalRoll >= 20 - critShift || total >= 19) {
     outcome = 'crit';
     outcomeLabel = '要害暴击';
     rollMult = 1.5;
@@ -948,22 +1064,35 @@ export function resolveD20CombatRoll({
     isHit = true;
   } else {
     outcome = 'graze';
-    outcomeLabel = '擦伤';
-    rollMult = 0.4;
+    if (effEva >= 26) {
+      highSpeedDodge = true;
+      outcomeLabel = '高速规避';
+      rollMult = 0.25;
+    } else {
+      outcomeLabel = '擦伤';
+      rollMult = 0.4;
+    }
   }
 
   return {
     naturalRoll,
+    die: naturalRoll,
     baseDiffMod,
     luckMod,
     extraMod: bonusMod,
     modifier,
     total,
     outcome,
+    tier: outcome,
     outcomeLabel,
+    tierLabel: outcomeLabel,
     rollMult,
     isCrit,
     isHit,
+    highSpeedDodge,
+    rawEvasion: Math.round(rawEva),
+    effectiveEvasion: effEva,
+    radarIgnoredEvasion,
     formulaText: `1d20(${naturalRoll}) ${modifier >= 0 ? `+ ${modifier}` : `- ${Math.abs(modifier)}`} = ${total}`,
   };
 }
@@ -1913,6 +2042,131 @@ export function computeOpeningAirstrikeOutcome({
     interceptLabel: `防空拦截 ${Math.round(interceptPct * 100)}%`,
     passThrough,
     strikeDamageBase,
+  };
+}
+
+/**
+ * Air Superiority Fighter Contest (制空权争夺):
+ * Compares ally vs enemy fighter air power; determines AS+ / AS / AP / AD / AI,
+ * enemy/ally plane shoot-down percentages, and shelling d20 hit bonus.
+ */
+export function computeAirSuperiorityContest({
+  allyFighterPower = 0,
+  enemyFighterPower = 0,
+} = {}) {
+  const ally = Math.max(0, Number(allyFighterPower) || 0);
+  const enemy = Math.max(0, Number(enemyFighterPower) || 0);
+
+  if (ally <= 0 && enemy <= 0) {
+    return {
+      stateCode: 'NONE',
+      stateLabel: '无航空制空',
+      allyFighterPower: 0,
+      enemyFighterPower: 0,
+      allyHitBonus: 0,
+      enemyHitBonus: 0,
+      enemyPlanesShotDownPct: 0,
+      allyPlanesShotDownPct: 0,
+      allyBombMult: 1.0,
+      enemyBombMult: 1.0,
+    };
+  }
+
+  const ratio = enemy <= 0 ? 99 : ally / enemy;
+  if (ratio >= 2.0) {
+    return {
+      stateCode: 'AS+',
+      stateLabel: '制空确保',
+      allyFighterPower: Math.round(ally),
+      enemyFighterPower: Math.round(enemy),
+      allyHitBonus: 2,
+      enemyHitBonus: -1,
+      enemyPlanesShotDownPct: 0.55,
+      allyPlanesShotDownPct: 0.08,
+      allyBombMult: 1.18,
+      enemyBombMult: 0.45,
+    };
+  }
+  if (ratio >= 1.3) {
+    return {
+      stateCode: 'AS',
+      stateLabel: '航空优势',
+      allyFighterPower: Math.round(ally),
+      enemyFighterPower: Math.round(enemy),
+      allyHitBonus: 1,
+      enemyHitBonus: 0,
+      enemyPlanesShotDownPct: 0.35,
+      allyPlanesShotDownPct: 0.16,
+      allyBombMult: 1.08,
+      enemyBombMult: 0.65,
+    };
+  }
+  if (ratio >= 0.75) {
+    return {
+      stateCode: 'AP',
+      stateLabel: '制空均势',
+      allyFighterPower: Math.round(ally),
+      enemyFighterPower: Math.round(enemy),
+      allyHitBonus: 0,
+      enemyHitBonus: 0,
+      enemyPlanesShotDownPct: 0.22,
+      allyPlanesShotDownPct: 0.22,
+      allyBombMult: 0.92,
+      enemyBombMult: 0.85,
+    };
+  }
+  if (ratio >= 0.4) {
+    return {
+      stateCode: 'AD',
+      stateLabel: '航空劣势',
+      allyFighterPower: Math.round(ally),
+      enemyFighterPower: Math.round(enemy),
+      allyHitBonus: 0,
+      enemyHitBonus: 1,
+      enemyPlanesShotDownPct: 0.12,
+      allyPlanesShotDownPct: 0.42,
+      allyBombMult: 0.68,
+      enemyBombMult: 1.08,
+    };
+  }
+  return {
+    stateCode: 'AI',
+    stateLabel: '制空丧失',
+    allyFighterPower: Math.round(ally),
+    enemyFighterPower: Math.round(enemy),
+    allyHitBonus: -1,
+    enemyHitBonus: 2,
+    enemyPlanesShotDownPct: 0.05,
+    allyPlanesShotDownPct: 0.6,
+    allyBombMult: 0.45,
+    enemyBombMult: 1.18,
+  };
+}
+
+/**
+ * Combined AA Barrage Interception (防空弹幕联动拦截):
+ * Combines escort fighters + fleet total AA stat + AA gun / air-search radar gear.
+ */
+export function computeAaBarrageInterception({
+  incomingAirPower = 30,
+  fleetAa = 25,
+  aaGearBonus = 0,
+  escortFighterBonus = 0,
+  aaAlertActive = false,
+} = {}) {
+  const atk = Math.max(8, Number(incomingAirPower) || 8);
+  const totalDefense =
+    (Math.max(4, Number(fleetAa) || 4) +
+      Math.max(0, Number(aaGearBonus) || 0) +
+      Math.max(0, Number(escortFighterBonus) || 0)) *
+    (aaAlertActive ? 1.45 : 1.0);
+  const shootDownPct = Number(clamp((totalDefense / (atk * 1.15 + totalDefense)) * 0.86, 0.08, 0.82).toFixed(3));
+  const passThrough = Number(clamp(1 - shootDownPct, 0.18, 0.92).toFixed(3));
+  return {
+    totalDefense: Math.round(totalDefense),
+    shootDownPct,
+    passThrough,
+    label: `防空弹幕击落 ${Math.round(shootDownPct * 100)}% 来袭机群`,
   };
 }
 

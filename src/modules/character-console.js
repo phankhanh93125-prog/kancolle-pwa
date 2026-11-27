@@ -20,6 +20,7 @@ import {
   NAVAL_EIGHT_STAT_DEFS,
   NAVAL_EIGHT_STAT_MAP,
   SHIP_TYPE_PRESETS,
+  computeDerivedEvasion,
   getShipClassProfile,
   getShipClassSvg,
   inferEquipmentTypeId,
@@ -642,6 +643,11 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
             ? '退役 / 删除舰娘（编队中 · 可一键移出）'
             : '退役 / 删除舰娘';
 
+          const mobilityStatTotal =
+            breakdown.standardStats.find((st) => st.key === 'evasion')?.total ??
+            Math.round(Number(ch.stats?.evasion ?? 10));
+          const derivedEva = computeDerivedEvasion(mobilityStatTotal, ch.meta?.shipType);
+
           body.innerHTML = `
             <div class="module-stack" id="tactical-ship-detail-body">
               <div class="cc-hero-row">
@@ -673,6 +679,11 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
                 `
                   )
                   .join('')}
+              </div>
+
+              <div class="cc-badge-row" id="tm-derived-evasion-row">
+                <span class="status-badge badge-ok">衍生闪避 ${derivedEva.dodgeValue}（${escapeHtml(derivedEva.agilityTag)}）</span>
+                ${shipClass === 'SS' ? '<span class="status-badge badge-warn">水下潜航隐蔽（需反潜火力命中）</span>' : ''}
               </div>
 
               <div class="lab-btn-grid">
@@ -3292,11 +3303,22 @@ async function renderArchiveConsole() {
   root.className = 'cc-root archive-hub-root';
   root.id = 'page-character-archive';
 
-  // 1. Upper Section: Commander 6-Stat Card + Honor Medals
+  // 1. Upper Section: Commander 7-Stat Card (6-grid core stats + top independent Luck badge) + Traits + Honor Medals
   const cmdCard = document.createElement('section');
   cmdCard.className = 'surface-card lab-stack-sm archive-cmd-card';
   cmdCard.id = 'archive-commander-card';
   const expPct = Math.min(100, Math.round((Number(profile.exp || 0) / Math.max(1, Number(profile.expToNext || 100))) * 100));
+  const eff = profile.effects || commander.getEffectSummary();
+  const cmdTraits = Array.isArray(profile.personalityTags) ? profile.personalityTags.filter(Boolean) : [];
+  const luckSign = luckFx.luck >= 0 ? `+${luckFx.luck}` : `${luckFx.luck}`;
+  const statLiveHintMap = {
+    command: `上限 ${eff.fleetCap}/12 · 攻+${Math.round((eff.commandAttackBonusPct || 0) * 100)}% · 命中+${eff.commandHitBonus ?? 0}`,
+    tactics: `侦查+${eff.tacticsReconBonus ?? 0} · 检定+${eff.tacticsCheckBonus ?? 0} · 阵型+${Math.round((eff.tacticsFormationBonusPct || 0) * 100)}%`,
+    charisma: `好感×${Number(eff.affinityGainMultiplier || 1).toFixed(2)} · 士气+${Math.round(((eff.moraleRecoveryMultiplier || 1) - 1) * 100)}%`,
+    affinity: `协同+${Math.round((eff.affinitySynergyBonusPct || 0) * 100)}% · 支援+${Math.round(((eff.supportSkillMultiplier || 1) - 1) * 100)}%`,
+    dispatch: `携油弹 ${eff.carriedSupplyCaps?.maxFuel ?? 400}/${eff.carriedSupplyCaps?.maxAmmo ?? 400} · 造-${Math.round((eff.craftingCostDiscount || 0) * 100)}%`,
+    maintenance: `修速+${Math.round(((eff.repairSpeedMultiplier || 1) - 1) * 100)}% · 强效+${Math.round(((eff.enhanceEffectivenessMultiplier || 1) - 1) * 100)}%`,
+  };
 
   cmdCard.innerHTML = `
     <div class="archive-cmd-top">
@@ -3307,31 +3329,45 @@ async function renderArchiveConsole() {
             <strong style="font-size:15px;">${escapeHtml(profile.name)}</strong>
             <span class="status-badge badge-ok">Lv.${profile.level}</span>
             <span class="status-badge badge-muted">${escapeHtml(profile.title || '提督')}</span>
+            <span class="status-badge badge-warn" id="archive-cmd-luck-badge" title="独立运气属性：每点即时作用于d20检定、暴击与稀有掉落">🍀 运气 ${luckSign}</span>
           </div>
           <div style="display:flex; gap:4px; flex-shrink:0;">
             <button type="button" id="btn-arc-cmd-edit" class="interact-icon-btn">编辑</button>
             <button type="button" id="btn-arc-medals" class="interact-icon-btn">★ 勋章 ${medalsOv.unlockedCount}/${medalsOv.totalCount}</button>
           </div>
         </div>
-        <div class="cc-stat-sub">
-          EXP ${profile.exp}/${profile.expToNext} · 出战上限 ${fleetCap} 舰 · 永久运气 ${luckFx.luck}
+        <div class="cc-stat-sub" id="archive-cmd-summary-line">
+          EXP ${profile.exp}/${profile.expToNext} · 可部署上限 <strong>${fleetCap}/12 人</strong>
           ${profile.freePoints > 0 ? ` · <strong style="color:var(--accent);">可分配点数 ${profile.freePoints}</strong>` : ''}
+        </div>
+        <div class="cc-stat-sub" style="font-size:11px; opacity:0.88;">
+          运气实时生效：d20 ${luckFx.d20CheckBonus >= 0 ? '+' : ''}${luckFx.d20CheckBonus} · 暴击 ${luckFx.critChanceBonus >= 0 ? '+' : ''}${Math.round(luckFx.critChanceBonus * 100)}% · 稀有掉落 ${luckFx.rareDropBonus >= 0 ? '+' : ''}${Math.round(luckFx.rareDropBonus * 100)}%
         </div>
         <div class="interact-aff-track" style="margin-top:4px;">
           <div class="interact-aff-fill" style="width:${expPct}%"></div>
         </div>
+        ${
+          cmdTraits.length > 0
+            ? `<div class="cc-badge-row" id="archive-cmd-traits" style="margin-top:5px;">
+                <span class="muted-text" style="font-size:11px;">背景特质：</span>
+                ${cmdTraits.map((t) => `<span class="status-badge badge-muted">${escapeHtml(t)}</span>`).join('')}
+              </div>`
+            : ''
+        }
       </div>
     </div>
 
     <div class="archive-cmd-stats-grid" id="archive-cmd-stats">
       ${COMMANDER_STAT_DEFS.map((d) => {
         const val = Number(profile.stats?.[d.key] ?? 10);
+        const liveHint = statLiveHintMap[d.key] || d.shortEffect || '';
         return `
-          <div class="archive-cmd-stat-cell">
+          <div class="archive-cmd-stat-cell" data-cmd-stat-cell="${escapeHtml(d.key)}">
             <div class="archive-cmd-stat-head">
               <span class="muted-text" style="font-size:11.5px;">${escapeHtml(d.label)}</span>
               <strong>${val}</strong>
             </div>
+            <div class="cc-stat-sub" style="font-size:10.5px; line-height:1.25;">${escapeHtml(liveHint)}</div>
             ${
               profile.freePoints > 0
                 ? `<button type="button" class="archive-alloc-btn" data-cmd-alloc="${escapeHtml(d.key)}">+1</button>`

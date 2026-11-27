@@ -21,7 +21,9 @@ import {
   WAREHOUSE_GROUPS,
   WAREHOUSE_GROUP_DEFS,
   classifyItemWarehouseGroup,
+  computeDeterministicGearCost,
   computeEnhancedBonuses,
+  getDeterministicGearCatalog,
   getEnhanceCost,
   getItemIconSvg,
 } from '../core/inventory-system.js';
@@ -338,6 +340,9 @@ let workshopState = {
   warehouseGroup: WAREHOUSE_GROUPS.ALL,
   rarityFilter: 'all', // 'all' | 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary'
   equipStatus: 'all', // 'all' | 'idle' | 'equipped'
+  gearCraftFilter: 'ALL',
+  selectedGearBlueprintKey: null,
+  lastCraftedGear: null,
   expandedItemId: null,
   targetCharId: null,
   poolConfig: deepClone(DEFAULT_SUPPLY_POOL),
@@ -351,6 +356,7 @@ export function resetWorkshopState() {
   workshopState.expandedItemId = null;
   workshopState.targetCharId = null;
   workshopState.lastDrops = [];
+  workshopState.lastCraftedGear = null;
 }
 
 async function hydratePoolConfig() {
@@ -1697,6 +1703,301 @@ function renderWarehouseEnhanceTab(host) {
 }
 
 // ============================================================
+// Middle Section: 100% Deterministic Targeted Gear Crafting
+// ============================================================
+
+function renderDeterministicGearCraftSection(host) {
+  const { inventory, resources, commander, contentManager, uiKit } = workshopState.context;
+  if (!inventory || !resources) return;
+  const catalog = getDeterministicGearCatalog({ contentManager });
+  const hasCustom = catalog.some((g) => g.isCustom);
+  const typeFilters = [
+    { id: 'ALL', label: `全部 (${catalog.length})` },
+    { id: 'main_gun', label: '主炮' },
+    { id: 'torpedo', label: '鱼雷' },
+    { id: 'radar', label: '雷达' },
+    { id: 'sonar', label: '声呐/反潜' },
+    { id: 'aircraft', label: '舰载机' },
+    { id: 'aa_gun', label: '防空炮' },
+    { id: 'support', label: '后勤支援' },
+    { id: 'core', label: '核心必装' },
+    ...(hasCustom ? [{ id: 'CUSTOM', label: '自定义工坊' }] : []),
+  ];
+
+  const filtered = catalog.filter((bp) => {
+    if (workshopState.gearCraftFilter === 'ALL') return true;
+    if (workshopState.gearCraftFilter === 'CUSTOM') return Boolean(bp.isCustom);
+    if (workshopState.gearCraftFilter === 'core') {
+      return bp.subGroup === 'core' || ['engine', 'armor', 'core'].includes(bp.category);
+    }
+    return bp.equipmentType === workshopState.gearCraftFilter;
+  });
+
+  if (!workshopState.selectedGearBlueprintKey || !filtered.some((b) => b.key === workshopState.selectedGearBlueprintKey)) {
+    workshopState.selectedGearBlueprintKey = filtered[0]?.key || catalog[0]?.key || null;
+  }
+  const selectedBp =
+    filtered.find((b) => b.key === workshopState.selectedGearBlueprintKey) ||
+    catalog.find((b) => b.key === workshopState.selectedGearBlueprintKey) ||
+    catalog[0] ||
+    null;
+
+  const costInfo = selectedBp ? computeDeterministicGearCost(selectedBp, { commander }) : { cost: {}, discountPct: 0 };
+  const canAfford =
+    Boolean(selectedBp) &&
+    Object.entries(costInfo.cost || {}).every(
+      ([k, v]) => Math.floor(Number(resources.getBalance(k) ?? 0)) >= Number(v || 0)
+    );
+
+  const card = document.createElement('section');
+  card.className = 'surface-card lab-stack-sm';
+  card.id = 'sw-gear-craft-section';
+  card.innerHTML = `
+    <div class="section-header-row" style="margin-bottom:0;">
+      <h2 class="section-title">自由定向装备制造（100% 确定产出）</h2>
+      <div style="display:flex; gap:4px; flex-wrap:wrap;">
+        ${costInfo.discountPct > 0 ? `<span class="status-badge badge-ok">调度减免 -${costInfo.discountPct}%</span>` : ''}
+        <span class="status-badge badge-muted">含自定义装备</span>
+      </div>
+    </div>
+    <p class="muted-text" style="font-size:12px; margin:0;">
+      零随机赌装备：直接选择目标舰炮、雷达、反潜声呐、防空炮、舰载机、AR/AO支援件或核心部件，按透明配方 <strong>100% 制造入库</strong>。
+    </p>
+
+    <div class="chip-row" data-no-swipe="true" id="sw-gear-craft-filters">
+      ${typeFilters
+        .map(
+          (f) =>
+            `<button type="button" class="preset-chip ${workshopState.gearCraftFilter === f.id ? 'is-active' : ''}" data-sw-craft-filter="${escapeHtml(f.id)}">${escapeHtml(f.label)}</button>`
+        )
+        .join('')}
+    </div>
+
+    <div class="lab-stack-sm" id="sw-gear-blueprint-list" style="max-height:240px; overflow-y:auto; padding-right:2px;">
+      ${filtered
+        .map((bp) => {
+          const isSel = selectedBp && bp.key === selectedBp.key;
+          const bpCost = computeDeterministicGearCost(bp, { commander });
+          const costStr = Object.entries(bpCost.cost || {})
+            .map(([k, v]) => `${resources.get(k)?.name || k}${v}`)
+            .join(' ');
+          return `
+            <button
+              type="button"
+              class="lab-slot-card interact-pick-row ${isSel ? 'is-selected' : ''}"
+              data-sw-gear-bp="${escapeHtml(bp.key)}"
+              style="text-align:left; ${isSel ? 'border-color:var(--accent); box-shadow:0 0 0 1px var(--accent);' : ''}"
+            >
+              <div class="interact-pick-main">
+                <span class="wh-item-ico">${getItemIconSvg(bp.category, { size: 18 })}</span>
+                <div>
+                  <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
+                    <strong>${escapeHtml(bp.name)}</strong>
+                    ${bp.specialLabel ? `<span class="status-badge badge-warn">${escapeHtml(bp.specialLabel)}</span>` : ''}
+                    ${bp.isCustom ? '<span class="status-badge badge-ok">工坊自定义</span>' : ''}
+                  </div>
+                  <div class="cc-stat-sub">${escapeHtml(formatBonusSummary(bp.bonuses || []))}</div>
+                  <div class="cc-stat-sub" style="opacity:0.85;">消耗：${escapeHtml(costStr)}</div>
+                </div>
+              </div>
+              <span class="status-badge ${isSel ? 'badge-ok' : 'badge-muted'}">${isSel ? '已选定' : '选定'}</span>
+            </button>
+          `;
+        })
+        .join('')}
+    </div>
+
+    ${
+      selectedBp
+        ? `
+      <div class="surface-card lab-stack-sm" id="sw-gear-craft-selected" style="padding:9px 11px;">
+        <div class="lab-slot-head">
+          <strong>制造目标：${escapeHtml(selectedBp.name)}</strong>
+          <span class="status-badge badge-ok">100% 确定产出</span>
+        </div>
+        <div class="cc-stat-sub">${escapeHtml(selectedBp.description || '')}</div>
+        <div class="cc-badge-row">
+          ${Object.entries(costInfo.cost || {})
+            .map(([k, v]) => {
+              const have = Math.floor(Number(resources.getBalance(k) ?? 0));
+              const ok = have >= Number(v || 0);
+              return `<span class="status-badge ${ok ? 'badge-muted' : 'badge-danger'}">${escapeHtml(resources.get(k)?.name || k)} ${v} / ${have}</span>`;
+            })
+            .join('')}
+        </div>
+      </div>
+    `
+        : ''
+    }
+
+    ${
+      workshopState.lastCraftedGear
+        ? `<div class="surface-card" id="sw-gear-craft-result" style="padding:8px 10px; border-color:var(--accent);">
+             <strong>★ 制造成功：「${escapeHtml(workshopState.lastCraftedGear.name)}」已入库！</strong>
+             <span class="muted-text" style="font-size:11.5px; margin-left:6px;">可立即在上方仓库强化或前往舰娘档案装配。</span>
+           </div>`
+        : ''
+    }
+
+    <button type="button" id="btn-sw-do-craft" class="btn-primary uikit-touch-target" ${canAfford ? '' : 'disabled'}>
+      ${!selectedBp ? '请选择装备蓝图' : canAfford ? `立即定向制造「${escapeHtml(selectedBp.name)}」（100% 产出）` : '资源或银条不足'}
+    </button>
+  `;
+
+  card.querySelectorAll('[data-sw-craft-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      workshopState.gearCraftFilter = btn.getAttribute('data-sw-craft-filter') || 'ALL';
+      renderWorkshop();
+    });
+  });
+
+  card.querySelectorAll('[data-sw-gear-bp]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      workshopState.selectedGearBlueprintKey = btn.getAttribute('data-sw-gear-bp');
+      renderWorkshop();
+    });
+  });
+
+  card.querySelector('#btn-sw-do-craft')?.addEventListener('click', async () => {
+    if (!selectedBp) return;
+    try {
+      const res = await inventory.craftGearDeterministic(selectedBp, { resources, commander });
+      workshopState.lastCraftedGear = res.item;
+      uiKit.showToast(`定向制造成功！「${res.item.name}」已入库！`, 'ok');
+      renderWorkshop();
+    } catch (err) {
+      uiKit.showToast(err instanceof Error ? err.message : '制造失败', 'warn');
+    }
+  });
+
+  host.appendChild(card);
+}
+
+// ============================================================
+// Shared One-Click Batch Repair Modal (Tab 4 工坊 + Tab 3 出征)
+// ============================================================
+
+export function openBatchRepairModal(context, { onUpdated = null, characterIds = [] } = {}) {
+  const { buildings, entities, resources, rootStorage, commander, uiKit } = context || {};
+  if (!buildings || !entities || !uiKit) return;
+
+  const openFn = typeof uiKit.openTacticalModal === 'function' ? uiKit.openTacticalModal : uiKit.openModal;
+  openFn({
+    title: '一键全员维修 · 船坞批量整备',
+    subtitle: '支持按空闲渠位批量入渠，或直接一键批量快修恢复全部受损舰娘至满血',
+    renderContent: (body, close) => {
+      const dock = buildings.getDockyardState();
+      const preview = buildings.previewBatchQuickRepair(characterIds);
+      const freeBays = Math.max(0, dock.capacity - dock.queue.length);
+      const speedPct = commander ? Math.round((commander.getRepairSpeedMultiplier() - 1) * 100) : 0;
+      const discPct = preview.discountPct || 0;
+
+      const costBadges = Object.entries(preview.cost || {})
+        .map(([k, v]) => {
+          const have = Math.floor(Number(resources?.getBalance(k) ?? 0));
+          const ok = have >= Number(v || 0);
+          return `<span class="status-badge ${ok ? 'badge-muted' : 'badge-danger'}">${escapeHtml(resources?.get(k)?.name || k)} ${v} / ${have}</span>`;
+        })
+        .join('');
+      const canAffordQuick = Object.entries(preview.cost || {}).every(
+        ([k, v]) => Math.floor(Number(resources?.getBalance(k) ?? 0)) >= Number(v || 0)
+      );
+
+      body.innerHTML = `
+        <div class="lab-stack-sm" id="batch-repair-modal-body">
+          <div class="cc-badge-row">
+            <span class="status-badge ${preview.count > 0 ? 'badge-warn' : 'badge-ok'}">
+              ${preview.count > 0 ? `待修/在渠舰娘 ${preview.count} 名` : '全员满血完好'}
+            </span>
+            <span class="status-badge badge-muted">空闲船坞席位 ${freeBays}/${dock.capacity}</span>
+            ${discPct > 0 ? `<span class="status-badge badge-ok">整备省耗 -${discPct}% · 提速 +${speedPct}%</span>` : ''}
+          </div>
+
+          ${
+            preview.count === 0
+              ? '<p class="muted-text" style="font-size:12.5px; margin:4px 0;">当前没有受损或在渠中的舰娘，无需维修。</p>'
+              : `
+                <div class="lab-stack-sm" style="max-height:170px; overflow-y:auto;">
+                  ${preview.targets
+                    .map(
+                      (t) => `
+                    <div class="lab-slot-card" style="padding:7px 10px;">
+                      <div class="lab-slot-head">
+                        <strong>${escapeHtml(t.name)}</strong>
+                        <span class="status-badge ${t.inDock ? 'badge-warn' : 'badge-danger'}">
+                          ${t.inDock ? '维修渠位中' : `受损 -${t.missingHp} HP`}
+                        </span>
+                      </div>
+                    </div>
+                  `
+                    )
+                    .join('')}
+                </div>
+
+                <div class="surface-card lab-stack-sm" style="padding:9px 11px;">
+                  <strong style="font-size:12.5px;">方案 A · 批量入渠排队（按损血优先）</strong>
+                  <p class="muted-text" style="font-size:11.5px; margin:0;">
+                    将受损舰娘自动排入当前 ${freeBays} 个空闲船坞席位（省去快修费，等待完工后满血出渠）。
+                  </p>
+                  <button type="button" id="btn-batch-dock-queue" class="btn-secondary uikit-touch-target" ${freeBays <= 0 ? 'disabled' : ''}>
+                    ${freeBays > 0 ? `一键排入空闲船坞席位（最多 ${freeBays} 舰）` : '船坞席位已满（可使用下方批量快修）'}
+                  </button>
+                </div>
+
+                <div class="surface-card lab-stack-sm" style="padding:9px 11px; border-color:var(--accent);">
+                  <strong style="font-size:12.5px;">方案 B · 一键批量快修（立即可战）</strong>
+                  <div class="cc-badge-row">
+                    ${preview.medUsed > 0 ? `<span class="status-badge badge-ok">优先消耗损管包 ×${preview.medUsed}</span>` : ''}
+                    ${costBadges || '<span class="status-badge badge-ok">零额外资源消耗</span>'}
+                  </div>
+                  <button type="button" id="btn-batch-quick-repair" class="btn-primary uikit-touch-target" ${canAffordQuick ? '' : 'disabled'}>
+                    ${canAffordQuick ? `一键批量快修全部 ${preview.count} 舰（立刻 100% 满血）` : '资源或银条不足，无法全部快修'}
+                  </button>
+                </div>
+              `
+          }
+        </div>
+      `;
+
+      body.querySelector('#btn-batch-dock-queue')?.addEventListener('click', async () => {
+        try {
+          const res = await buildings.autoDockDamagedShipgirls(characterIds);
+          if (res.docked.length > 0) {
+            uiKit.showToast(
+              `已自动将 ${res.docked.length} 舰排入维修渠位${res.skippedFull.length > 0 ? `（${res.skippedFull.length} 舰因渠位已满待排）` : ''}`,
+              'ok'
+            );
+          } else {
+            uiKit.showToast('当前无新的受损舰娘可排入空闲席位', 'info');
+          }
+          if (typeof onUpdated === 'function') onUpdated();
+          close();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '批量入渠失败', 'warn');
+        }
+      });
+
+      body.querySelector('#btn-batch-quick-repair')?.addEventListener('click', async () => {
+        try {
+          const res = await buildings.batchQuickRepairAllDamaged(characterIds);
+          await persistCharacterRoster({ storage: rootStorage, entities });
+          uiKit.showToast(
+            res.repairedCount > 0
+              ? `一键批量快修完成！已将 ${res.repairedCount} 名舰娘全部恢复至满血！`
+              : '全员均已处于满血状态',
+            'ok'
+          );
+          if (typeof onUpdated === 'function') onUpdated();
+          close();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '批量快修失败', 'warn');
+        }
+      });
+    },
+  });
+}
+
+// ============================================================
 // Lower Section: Embedded Dockyard Repair Queue (Tab 4 「工坊」)
 // ============================================================
 
@@ -1721,16 +2022,22 @@ function renderEmbeddedDockyardSection(host) {
     .filter((c) => !inDockIds.has(c.id))
     .map((c) => ({ char: c, plan: buildings.computeDockRepairPlan(c.id) }))
     .sort((a, b) => (b.plan.missingHp || 0) - (a.plan.missingHp || 0));
+  const damagedCount = repairCandidates.filter((r) => r.plan.missingHp > 0).length + dock.queue.length;
 
   const card = document.createElement('section');
   card.className = 'surface-card lab-stack-sm';
   card.id = 'sw-dockyard-section';
   card.innerHTML = `
-    <div class="section-header-row" style="margin-bottom:0;">
+    <div class="section-header-row" style="margin-bottom:0; gap:6px; flex-wrap:wrap;">
       <h2 class="section-title">船坞入渠维修队列（${dock.queue.length}/${dock.capacity}）</h2>
-      <button type="button" id="btn-sw-dock-expand" class="btn-secondary fac-mini-btn" ${dock.canExpand ? '' : 'disabled'}>
-        ${dock.canExpand ? '+ 扩建渠位' : '渠位已满'}
-      </button>
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        <button type="button" id="btn-sw-batch-repair-all" class="${damagedCount > 0 ? 'btn-primary' : 'btn-secondary'} fac-mini-btn">
+          🔧 一键全员维修${damagedCount > 0 ? ` (${damagedCount})` : ''}
+        </button>
+        <button type="button" id="btn-sw-dock-expand" class="btn-secondary fac-mini-btn" ${dock.canExpand ? '' : 'disabled'}>
+          ${dock.canExpand ? '+ 扩建渠位' : '渠位已满'}
+        </button>
+      </div>
     </div>
 
     ${
@@ -1792,6 +2099,12 @@ function renderEmbeddedDockyardSection(host) {
     </div>
   `;
 
+  card.querySelector('#btn-sw-batch-repair-all')?.addEventListener('click', () => {
+    openBatchRepairModal(workshopState.context, {
+      onUpdated: () => renderWorkshop(),
+    });
+  });
+
   card.querySelector('#btn-sw-dock-expand')?.addEventListener('click', async () => {
     try {
       const next = await buildings.expandDockyard();
@@ -1844,7 +2157,7 @@ function renderEmbeddedDockyardSection(host) {
 }
 
 // ============================================================
-// Root View Renderer (Tab 4 「工坊」 — Pure Hardware & Dockyard)
+// Root View Renderer (Tab 4 「工坊」 — Pure Hardware, Crafting & Dockyard)
 // ============================================================
 
 function renderWorkshop() {
@@ -1858,7 +2171,10 @@ function renderWorkshop() {
   // Upper: Equipment Warehouse with category tabs, filters, pagination, enhance/promote/lock/disassemble
   renderWarehouseEnhanceTab(root);
 
-  // Lower: Embedded Dockyard Repair Queue
+  // Middle: 100% Deterministic Targeted Gear Crafting
+  renderDeterministicGearCraftSection(root);
+
+  // Lower: Embedded Dockyard Repair Queue + One-Click Batch Repair
   renderEmbeddedDockyardSection(root);
 
   workshopState.container.appendChild(root);

@@ -14,9 +14,9 @@
  */
 
 import {
-  CONSTRUCTION_RECIPE_PRESETS,
   CUSTOM_BUFF_TYPES,
-  computeConstructionProbabilities,
+  computeDeterministicShipCost,
+  getDeterministicShipCatalog,
 } from '../core/port-buildings.js';
 import {
   ITEM_RARITY_MAP,
@@ -56,7 +56,7 @@ function formatCostInline(costObj, resources) {
 
 const SECTION_TABS = [
   { id: 'shop', label: '四大货架商店' },
-  { id: 'build', label: '舰船建造' },
+  { id: 'build', label: '定向建造' },
   { id: 'infra', label: '远征与基建' },
   { id: 'studio', label: '图鉴总览' },
 ];
@@ -66,7 +66,9 @@ const state = {
   context: null,
   activeSection: 'shop', // 'shop' | 'build' | 'infra' | 'studio'
   activeShelf: 'outfits', // 'outfits' | 'gifts' | 'supplies' | 'permits'
-  recipe: { fuel: 240, ammo: 140, steel: 240, bauxite: 340, customName: '' },
+  buildClassFilter: 'ALL',
+  selectedBlueprintKey: null,
+  customBuildName: '',
   lastBuildResult: null,
   lastChestItem: null,
   selectedExpMissionId: 'exp_harbor_patrol',
@@ -453,18 +455,44 @@ function renderShopSection(stock) {
 }
 
 function renderBuildSection(stock) {
-  const { buildings, inventory, entities, rootStorage, uiKit } = state.context;
-  const recipe = state.recipe;
-  const probs = computeConstructionProbabilities(recipe);
+  const { buildings, inventory, entities, commander, resources, rootStorage, uiKit } = state.context;
+  const catalog = getDeterministicShipCatalog({ entities });
+  const hasCustom = catalog.some((b) => b.isCustom);
+  const classTabs = [
+    { id: 'ALL', label: `全部 (${catalog.length})` },
+    { id: 'DD', label: '驱逐 DD' },
+    { id: 'CL', label: '轻巡 CL' },
+    { id: 'CA', label: '重巡 CA' },
+    { id: 'BB', label: '战列 BB' },
+    { id: 'CV', label: '航母 CV' },
+    { id: 'SS', label: '潜艇 SS' },
+    { id: 'AR', label: '维修 AR' },
+    { id: 'AO', label: '补给 AO' },
+    ...(hasCustom ? [{ id: 'CUSTOM', label: '自定义工坊' }] : []),
+  ];
+
+  const filtered = catalog.filter((bp) => {
+    if (state.buildClassFilter === 'ALL') return true;
+    if (state.buildClassFilter === 'CUSTOM') return Boolean(bp.isCustom);
+    return bp.shipClass === state.buildClassFilter;
+  });
+
+  if (!state.selectedBlueprintKey || !filtered.some((b) => b.key === state.selectedBlueprintKey)) {
+    state.selectedBlueprintKey = filtered[0]?.key || catalog[0]?.key || null;
+  }
+  const selectedBp =
+    filtered.find((b) => b.key === state.selectedBlueprintKey) ||
+    catalog.find((b) => b.key === state.selectedBlueprintKey) ||
+    catalog[0] ||
+    null;
+
   const fastBpQty = Number(inventory.getItem('item_supply_fast_build_bp')?.quantity || 0);
-  const silverFee = fastBpQty > 0 ? 0 : 60;
-  const coresOwned = inventory.getRetrofitCores ? inventory.getRetrofitCores() : 0;
+  const costInfo = selectedBp
+    ? computeDeterministicShipCost(selectedBp, { commander, useFastBlueprint: fastBpQty > 0 })
+    : { cost: {}, discountPct: 0 };
   const canAfford =
-    stock.fuel >= recipe.fuel &&
-    stock.ammo >= recipe.ammo &&
-    stock.steel >= recipe.steel &&
-    stock.bauxite >= recipe.bauxite &&
-    stock.silver >= silverFee;
+    Boolean(selectedBp) &&
+    Object.entries(costInfo.cost || {}).every(([k, v]) => Number(stock[k] ?? 0) >= Number(v || 0));
 
   const card = document.createElement('section');
   card.className = 'surface-card lab-stack-sm';
@@ -472,75 +500,100 @@ function renderBuildSection(stock) {
 
   card.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">自由配方舰船建造（零等待出坞）</h2>
-      <span class="status-badge badge-ok">改造核心 ${coresOwned}</span>
+      <h2 class="section-title">自由定向舰船建造（100% 确定出坞）</h2>
+      <div style="display:flex; gap:4px; flex-wrap:wrap;">
+        ${costInfo.discountPct > 0 ? `<span class="status-badge badge-ok">调度减免 -${costInfo.discountPct}%</span>` : ''}
+        <span class="status-badge badge-muted">零等待 · 含自定义蓝图</span>
+      </div>
     </div>
 
-    <div class="chip-row" data-no-swipe="true">
-      ${CONSTRUCTION_RECIPE_PRESETS.map(
-        (p) => `<button type="button" class="preset-chip" data-fac-preset="${escapeHtml(p.id)}">${escapeHtml(p.label)}</button>`
-      ).join('')}
-    </div>
+    <p class="muted-text" style="font-size:12px; margin:0;">
+      告别随机赌船：直接点选目标舰种或自定义工坊舰娘蓝图，按吨位透明消耗资源 <strong>100% 精准建造成型</strong>，自动配发基础适航三件套。
+    </p>
 
-    <div class="lab-stack-sm" data-no-swipe="true">
-      ${[
-        { key: 'fuel', label: '燃油' },
-        { key: 'ammo', label: '弹药' },
-        { key: 'steel', label: '钢材' },
-        { key: 'bauxite', label: '铝材' },
-      ]
+    <div class="chip-row" data-no-swipe="true" id="fac-build-class-filters">
+      ${classTabs
         .map(
-          (r) => `
-        <div class="construction-slider-row">
-          <div class="construction-slider-head">
-            <label for="fac-sl-${r.key}"><strong>${r.label}</strong></label>
-            <span class="${stock[r.key] < recipe[r.key] ? 'stat-diff-inline-down' : 'muted-text'}" data-fac-val="${r.key}">
-              投入 <strong>${recipe[r.key]}</strong> / 库存 ${stock[r.key]}
-            </span>
-          </div>
-          <input id="fac-sl-${r.key}" data-fac-slider="${r.key}" type="range" min="30" max="600" step="10" value="${recipe[r.key]}" style="width:100%;">
-        </div>
-      `
+          (t) =>
+            `<button type="button" class="preset-chip ${state.buildClassFilter === t.id ? 'is-active' : ''}" data-fac-cls="${escapeHtml(t.id)}">${escapeHtml(t.label)}</button>`
         )
         .join('')}
     </div>
 
-    <div class="form-group">
-      <label class="form-label" for="fac-build-name">自定义新舰命名（留空按舰种随机名舰）</label>
-      <input id="fac-build-name" class="form-input" type="text" value="${escapeHtml(recipe.customName)}" placeholder="留空自动命名...">
+    <div class="lab-stack-sm" id="fac-blueprint-grid" style="max-height:280px; overflow-y:auto; padding-right:2px;">
+      ${
+        filtered.length === 0
+          ? '<p class="muted-text" style="font-size:12px;">该舰种分类下暂无蓝图。</p>'
+          : filtered
+              .map((bp) => {
+                const isSel = selectedBp && bp.key === selectedBp.key;
+                const bpCost = computeDeterministicShipCost(bp, { commander, useFastBlueprint: fastBpQty > 0 });
+                const isSup = bp.shipClass === 'AR' || bp.shipClass === 'AO';
+                const isSub = bp.shipClass === 'SS';
+                return `
+                  <button
+                    type="button"
+                    class="lab-slot-card interact-pick-row ${isSel ? 'is-selected' : ''}"
+                    data-fac-bp="${escapeHtml(bp.key)}"
+                    style="text-align:left; ${isSel ? 'border-color:var(--accent); box-shadow:0 0 0 1px var(--accent);' : ''}"
+                  >
+                    <div class="interact-pick-main">
+                      <span class="ship-class-ico">${getShipClassSvg(bp.shipClass, { size: 18 })}</span>
+                      <div>
+                        <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
+                          <strong>${escapeHtml(bp.name)}</strong>
+                          <span class="status-badge ${isSup || isSub ? 'badge-warn' : 'badge-muted'}">${escapeHtml(bp.shipType)} (${escapeHtml(bp.shipClass)})</span>
+                          ${bp.isCustom ? '<span class="status-badge badge-ok">工坊自定义</span>' : ''}
+                        </div>
+                        <div class="cc-stat-sub">${escapeHtml(bp.roleTag || bp.shipType)} · ${escapeHtml(formatCostInline(bpCost.cost, resources))}</div>
+                      </div>
+                    </div>
+                    <span class="status-badge ${isSel ? 'badge-ok' : 'badge-muted'}">${isSel ? '已选定' : '选定'}</span>
+                  </button>
+                `;
+              })
+              .join('')
+      }
     </div>
 
-    <div class="construction-prob-grid" id="fac-prob-grid">
-      ${probs
-        .map((p) => {
-          const isSup = p.shipClass === 'AR' || p.shipClass === 'AO';
-          return `
-          <div class="construction-prob-row ${isSup ? 'is-support' : ''}">
-            <div class="construction-prob-label">
-              <span class="ship-class-ico">${getShipClassSvg(p.shipClass, { size: 14 })}</span>
-              <span>${escapeHtml(p.shipType)} (${escapeHtml(p.shipClass)})</span>
-              <strong>${p.pct.toFixed(1)}%</strong>
-            </div>
-            <div class="construction-prob-track">
-              <div class="construction-prob-fill ${isSup ? 'is-support' : ''}" style="width:${Math.min(100, Math.max(2, p.pct * 1.4))}%"></div>
-            </div>
+    ${
+      selectedBp
+        ? `
+      <div class="surface-card lab-stack-sm" id="fac-build-selected-panel" style="padding:10px 12px;">
+        <div class="lab-slot-head">
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span class="ship-class-ico">${getShipClassSvg(selectedBp.shipClass, { size: 18 })}</span>
+            <strong>目标蓝图：${escapeHtml(selectedBp.name)}（${escapeHtml(selectedBp.shipType)}）</strong>
           </div>
-        `;
-        })
-        .join('')}
-    </div>
+          <span class="status-badge badge-ok">100% 精准出坞</span>
+        </div>
+
+        <div class="cc-badge-row" id="fac-build-cost-row">
+          ${Object.entries(costInfo.cost || {})
+            .map(([k, v]) => {
+              const have = Number(stock[k] ?? 0);
+              const enough = have >= Number(v || 0);
+              const label = resources?.get(k)?.name || k;
+              return `<span class="status-badge ${enough ? 'badge-muted' : 'badge-danger'}">${escapeHtml(label)} ${v} / ${have}</span>`;
+            })
+            .join('')}
+        </div>
+
+        <div class="form-group" style="margin:0;">
+          <label class="form-label" for="fac-build-name">自定义新舰命名（留空使用蓝图默认名「${escapeHtml(selectedBp.name)}」）</label>
+          <input id="fac-build-name" class="form-input" type="text" value="${escapeHtml(state.customBuildName)}" placeholder="${escapeHtml(selectedBp.name)}">
+        </div>
+      </div>
+    `
+        : ''
+    }
 
     ${
       state.lastBuildResult
         ? `
-      <div class="surface-card construction-result-card ${state.lastBuildResult.isDuplicate ? 'is-duplicate' : 'is-new'}" id="fac-build-result">
-        ${
-          state.lastBuildResult.isDuplicate
-            ? `<strong>♻ 重复舰转化：${escapeHtml(state.lastBuildResult.shipName)}</strong>
-               <p class="muted-text" style="font-size:12px; margin:4px 0 0;">获得改造核心 ×${state.lastBuildResult.retrofitCoreGained} · ${escapeHtml(state.lastBuildResult.giftName)} ×1 · 银条 +${state.lastBuildResult.silverBonus}</p>`
-            : `<strong>★ 建造成功：${escapeHtml(state.lastBuildResult.shipName)}（${escapeHtml(state.lastBuildResult.shipType)}）</strong>
-               <p class="muted-text" style="font-size:12px; margin:4px 0 0;">已配发基础核心件${state.lastBuildResult.classCode === 'AR' || state.lastBuildResult.classCode === 'AO' ? '与后勤支援槽位' : ''}，随时可编队出征！</p>`
-        }
+      <div class="surface-card construction-result-card is-new" id="fac-build-result">
+        <strong>★ 定向建造完成：${escapeHtml(state.lastBuildResult.shipName)}（${escapeHtml(state.lastBuildResult.shipType)}）</strong>
+        <p class="muted-text" style="font-size:12px; margin:4px 0 0;">100% 精准出坞！已自动配发基础核心三件套${state.lastBuildResult.classCode === 'AR' || state.lastBuildResult.classCode === 'AO' ? '与后勤支援槽位' : ''}，随时可编队出征。</p>
       </div>
     `
         : ''
@@ -548,87 +601,41 @@ function renderBuildSection(stock) {
 
     <button type="button" id="btn-fac-do-build" class="btn-primary uikit-touch-target" ${canAfford ? '' : 'disabled'}>
       ${
-        !canAfford
+        !selectedBp
+          ? '请先选择蓝图'
+          : !canAfford
           ? '资源或银条不足'
           : fastBpQty > 0
-          ? `立即建造（使用快建图纸免银条 · 剩余 ${fastBpQty}）`
-          : '立即建造（建坞费 银条 60）'
+          ? `立即定向建造「${escapeHtml(selectedBp.name)}」（快建图纸免银条 · 剩余 ${fastBpQty}）`
+          : `立即定向建造「${escapeHtml(selectedBp.name)}」（100% 出坞）`
       }
     </button>
   `;
 
-  card.querySelectorAll('[data-fac-preset]').forEach((btn) => {
+  card.querySelectorAll('[data-fac-cls]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const p = CONSTRUCTION_RECIPE_PRESETS.find((x) => x.id === btn.getAttribute('data-fac-preset'));
-      if (!p) return;
-      recipe.fuel = p.fuel;
-      recipe.ammo = p.ammo;
-      recipe.steel = p.steel;
-      recipe.bauxite = p.bauxite;
+      state.buildClassFilter = btn.getAttribute('data-fac-cls') || 'ALL';
       render();
     });
   });
 
-  card.querySelectorAll('[data-fac-slider]').forEach((sl) => {
-    sl.addEventListener('input', () => {
-      const key = sl.getAttribute('data-fac-slider');
-      recipe[key] = Number(sl.value) || 30;
-      const valEl = card.querySelector(`[data-fac-val="${key}"]`);
-      if (valEl) {
-        valEl.className = stock[key] < recipe[key] ? 'stat-diff-inline-down' : 'muted-text';
-        valEl.innerHTML = `投入 <strong>${recipe[key]}</strong> / 库存 ${stock[key]}`;
-      }
-      const nextProbs = computeConstructionProbabilities(recipe);
-      const grid = card.querySelector('#fac-prob-grid');
-      if (grid) {
-        grid.innerHTML = nextProbs
-          .map((p) => {
-            const isSup = p.shipClass === 'AR' || p.shipClass === 'AO';
-            return `
-            <div class="construction-prob-row ${isSup ? 'is-support' : ''}">
-              <div class="construction-prob-label">
-                <span class="ship-class-ico">${getShipClassSvg(p.shipClass, { size: 14 })}</span>
-                <span>${escapeHtml(p.shipType)} (${escapeHtml(p.shipClass)})</span>
-                <strong>${p.pct.toFixed(1)}%</strong>
-              </div>
-              <div class="construction-prob-track">
-                <div class="construction-prob-fill ${isSup ? 'is-support' : ''}" style="width:${Math.min(100, Math.max(2, p.pct * 1.4))}%"></div>
-              </div>
-            </div>
-          `;
-          })
-          .join('');
-      }
-      const btn = card.querySelector('#btn-fac-do-build');
-      if (btn) {
-        const okNow =
-          stock.fuel >= recipe.fuel &&
-          stock.ammo >= recipe.ammo &&
-          stock.steel >= recipe.steel &&
-          stock.bauxite >= recipe.bauxite &&
-          stock.silver >= silverFee;
-        btn.disabled = !okNow;
-        btn.textContent = !okNow
-          ? '资源或银条不足'
-          : fastBpQty > 0
-          ? `立即建造（使用快建图纸免银条 · 剩余 ${fastBpQty}）`
-          : '立即建造（建坞费 银条 60）';
-      }
+  card.querySelectorAll('[data-fac-bp]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.selectedBlueprintKey = btn.getAttribute('data-fac-bp');
+      render();
     });
   });
 
   card.querySelector('#fac-build-name')?.addEventListener('input', (e) => {
-    recipe.customName = e.target.value;
+    state.customBuildName = e.target.value;
   });
 
   card.querySelector('#btn-fac-do-build')?.addEventListener('click', async () => {
+    if (!selectedBp) return;
     try {
-      const res = await buildings.constructShipByRecipe({
-        fuel: recipe.fuel,
-        ammo: recipe.ammo,
-        steel: recipe.steel,
-        bauxite: recipe.bauxite,
-        customName: recipe.customName,
+      const res = await buildings.constructShipDeterministic({
+        blueprint: selectedBp,
+        customName: state.customBuildName,
       });
       await persistCharacterRoster({
         storage: rootStorage,
@@ -636,16 +643,11 @@ function renderBuildSection(stock) {
         activeCharacterId: res.entity?.id || undefined,
       });
       state.lastBuildResult = res;
-      recipe.customName = '';
-      uiKit.showToast(
-        res.isDuplicate
-          ? `重复舰「${res.shipName}」已转化为改造核心 ×1！`
-          : `建造成功！「${res.shipName}」（${res.shipType}）已入港！`,
-        'ok'
-      );
+      state.customBuildName = '';
+      uiKit.showToast(`定向建造成功！「${res.shipName}」（${res.shipType}）已入港！`, 'ok');
       render();
     } catch (err) {
-      uiKit.showToast(err instanceof Error ? err.message : '建造失败', 'warn');
+      uiKit.showToast(err instanceof Error ? err.message : '定向建造失败', 'warn');
     }
   });
 

@@ -693,24 +693,27 @@ export class PortBuildingsSystem {
     const missingHp = Math.max(0, effMaxHp - curHp);
     const isMaintenanceOnly = missingHp === 0;
 
-    const dispatchDisc = this._commander ? this._commander.getRepairCostDiscount() : 0;
-    const maintDisc = this._commander ? this._commander.getEnhanceCostDiscount() * 0.5 : 0;
-    const costScale = Math.max(0.45, 1 - dispatchDisc);
-    const timeScale = Math.max(0.5, 1 - maintDisc);
+    const repairCostDisc = this._commander ? this._commander.getRepairCostDiscount() : 0;
+    const repairSpeedMult =
+      this._commander && typeof this._commander.getRepairSpeedMultiplier === 'function'
+        ? this._commander.getRepairSpeedMultiplier()
+        : 1.0;
+    const costScale = Math.max(0.45, 1 - repairCostDisc);
+    const timeScale = Math.max(0.28, 1 / Math.max(1, repairSpeedMult));
 
     const cost = isMaintenanceOnly
       ? {
-          steel: Math.max(8, Math.round(18 * costScale)),
-          bauxite: Math.max(4, Math.round(8 * costScale)),
+          steel: Math.max(6, Math.round(18 * costScale)),
+          bauxite: Math.max(3, Math.round(8 * costScale)),
         }
       : {
-          steel: Math.max(12, Math.round(missingHp * 1.45 * costScale)),
-          bauxite: Math.max(5, Math.round(missingHp * 0.55 * costScale)),
+          steel: Math.max(8, Math.round(missingHp * 1.45 * costScale)),
+          bauxite: Math.max(4, Math.round(missingHp * 0.55 * costScale)),
         };
 
     const durationSec = isMaintenanceOnly
-      ? Math.max(20, Math.round(45 * timeScale))
-      : Math.max(30, Math.round((40 + missingHp * 3.5) * timeScale));
+      ? Math.max(12, Math.round(45 * timeScale))
+      : Math.max(15, Math.round((40 + missingHp * 3.5) * timeScale));
 
     return {
       characterId: cid,
@@ -722,7 +725,8 @@ export class PortBuildingsSystem {
       cost,
       durationSec,
       durationText: formatDurationZh(durationSec),
-      discountPct: Math.round(dispatchDisc * 100),
+      discountPct: Math.round(repairCostDisc * 100),
+      speedBonusPct: Math.round((repairSpeedMult - 1) * 100),
     };
   }
 
@@ -860,6 +864,123 @@ export class PortBuildingsSystem {
       alreadyInDock,
       freeBaysLeft: Math.max(0, dock.capacity - dock.queue.length),
       capacity: dock.capacity,
+    };
+  }
+
+  /**
+   * Preview total cost for one-click Batch Quick Repair of all damaged & docked shipgirls.
+   */
+  previewBatchQuickRepair(characterIds = []) {
+    const dock = this._state.dockyard;
+    const candidateIds =
+      Array.isArray(characterIds) && characterIds.length > 0
+        ? characterIds.map(String)
+        : (this._entities?.list({ kind: 'character' }) || []).map((c) => c.id);
+    const inDockIds = new Set(dock.queue.map((q) => q.characterId));
+    const med = this._inventory?.getItem('item_consumable_med');
+    let medAvailable = Math.max(0, Number(med?.quantity || 0));
+
+    const repairCostDisc = this._commander ? this._commander.getRepairCostDiscount() : 0;
+    const silverPerShip = Math.max(18, Math.round(35 * Math.max(0.5, 1 - repairCostDisc)));
+
+    let steel = 0;
+    let bauxite = 0;
+    let medUsed = 0;
+    let silver = 0;
+    const targets = [];
+
+    for (const cid of candidateIds) {
+      const actor = this._entities?.get(cid);
+      if (!actor || actor.kind !== 'character') continue;
+      const inDock = inDockIds.has(cid);
+      const effMaxHp = Math.max(1, Math.round(this._entities.getEffectiveStat(cid, 'maxHp', { round: 'round' }).final));
+      const curHp = Math.min(effMaxHp, Math.round(Number(actor.stats.hp ?? effMaxHp)));
+      const missingHp = Math.max(0, effMaxHp - curHp);
+      if (!inDock && missingHp <= 0) continue;
+
+      if (!inDock) {
+        const plan = this.computeDockRepairPlan(cid);
+        steel += plan.cost.steel || 0;
+        bauxite += plan.cost.bauxite || 0;
+      }
+      if (medAvailable > 0) {
+        medAvailable -= 1;
+        medUsed += 1;
+      } else {
+        silver += silverPerShip;
+      }
+      targets.push({ id: cid, name: actor.name, missingHp, inDock });
+    }
+
+    const cost = {};
+    if (steel > 0) cost.steel = steel;
+    if (bauxite > 0) cost.bauxite = bauxite;
+    if (silver > 0) cost.silver = silver;
+
+    return {
+      targets,
+      count: targets.length,
+      medUsed,
+      cost,
+      discountPct: Math.round(repairCostDisc * 100),
+    };
+  }
+
+  /**
+   * One-Click Batch Quick Repair: restores ALL damaged & currently docked shipgirls to 100% HP immediately!
+   */
+  async batchQuickRepairAllDamaged(characterIds = []) {
+    const preview = this.previewBatchQuickRepair(characterIds);
+    if (preview.count === 0) {
+      return { repairedCount: 0, repairedNames: [], medUsed: 0, cost: {} };
+    }
+
+    if (Object.keys(preview.cost).length > 0) {
+      const spend = await this._resources.spendBatch(preview.cost, {
+        reason: `一键全员批量快修（${preview.count} 舰）`,
+      });
+      if (!spend.ok) throw new Error(spend.reason);
+    }
+
+    if (preview.medUsed > 0) {
+      const med = this._inventory?.getItem('item_consumable_med');
+      if (med && med.quantity >= preview.medUsed) {
+        await this._inventory.updateItem(med.id, { quantity: med.quantity - preview.medUsed });
+      }
+    }
+
+    const dock = this._state.dockyard;
+    const repairedNames = [];
+    for (const t of preview.targets) {
+      const actor = this._entities?.get(t.id);
+      if (actor) {
+        const effMaxHp = Math.max(1, Math.round(this._entities.getEffectiveStat(t.id, 'maxHp', { round: 'round' }).final));
+        this._entities.setStat(t.id, 'hp', effMaxHp, { min: 0, max: effMaxHp });
+        this._entities.adjustStat(t.id, 'morale', 6, { min: 0, max: 100 });
+        repairedNames.push(actor.name);
+      }
+      const qIdx = dock.queue.findIndex((q) => q.characterId === t.id);
+      if (qIdx >= 0) {
+        dock.queue.splice(qIdx, 1);
+        this._entities?.removeTask(`dock_task_${t.id}`);
+      }
+      dock.completedRepairs += 1;
+    }
+
+    await this.persist();
+    if (this._logs) {
+      this._logs.add({
+        category: LOG_CATEGORIES.STAT,
+        title: `一键全员批量快修完成（${repairedNames.length} 舰）`,
+        detail: `${repairedNames.join('、')} 已恢复满耐久${preview.medUsed > 0 ? ` · 消耗损管 ×${preview.medUsed}` : ''}`,
+      });
+    }
+    this._emit('buildings:updated', { reason: 'dock-batch-quick-repair', count: repairedNames.length });
+    return {
+      repairedCount: repairedNames.length,
+      repairedNames,
+      medUsed: preview.medUsed,
+      cost: preview.cost,
     };
   }
 
@@ -1597,6 +1718,221 @@ export class PortBuildingsSystem {
     this.syncCustomBuildingModifiers();
     if (persist) this.persist();
   }
+
+  /**
+   * 100% Deterministic Targeted Ship Construction (自由定向舰船建造):
+   * Builds the EXACT chosen ship class & blueprint (including Custom Workshop templates),
+   * charging tonnage/rarity resources discounted immediately by Commander `dispatch`.
+   */
+  async constructShipDeterministic({ blueprint = null, customName = '' } = {}) {
+    if (!blueprint || !blueprint.shipType) {
+      throw new Error('请先选择目标舰娘建造蓝图');
+    }
+    const shipType = String(blueprint.shipType || '驱逐舰');
+    const shipClass = String(blueprint.shipClass || resolveShipClass(shipType));
+    const finalName = String(customName || '').trim() || blueprint.name || shipType;
+
+    const fastBp = this._inventory?.getItem ? this._inventory.getItem('item_supply_fast_build_bp') : null;
+    const useFastBp = Boolean(fastBp && Number(fastBp.quantity || 0) > 0);
+    const costInfo = computeDeterministicShipCost(blueprint, {
+      commander: this._commander,
+      useFastBlueprint: useFastBp,
+    });
+
+    const spend = await this._resources.spendBatch(costInfo.cost, {
+      reason: `自由定向建造「${finalName}」（${shipType}${costInfo.discountPct > 0 ? ` · 调度减免 -${costInfo.discountPct}%` : ''}）`,
+    });
+    if (!spend.ok) throw new Error(spend.reason);
+    if (useFastBp && typeof this._inventory?.consumeItemQuantity === 'function') {
+      await this._inventory.consumeItemQuantity(fastBp.id, 1);
+    }
+
+    const baseTpl =
+      blueprint.customStats ||
+      SHIP_TYPE_BASE_TEMPLATES[shipType] ||
+      SHIP_TYPE_BASE_TEMPLATES['驱逐舰'];
+    const initialAffBonus = this._commander ? this._commander.getInitialAffinityBonus() : 0;
+    const charId = `char_craft_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`;
+
+    const existingSameName = this._entities
+      .list({ kind: 'character' })
+      .filter((c) => c.name === finalName && c.meta?.personalityCombo?.key);
+    const avoidKey =
+      existingSameName.length > 0 ? existingSameName[existingSameName.length - 1].meta.personalityCombo.key : null;
+    const rolledCombo = this._personalityPool ? this._personalityPool.rollCombination({ avoidKey }) : null;
+
+    const entity = this._entities.register({
+      id: charId,
+      kind: 'character',
+      name: finalName,
+      tags: [shipType, '定向建造', ...(rolledCombo ? [rolledCombo.primaryName, rolledCombo.secondaryName] : [])],
+      stats: {
+        ...baseTpl,
+        hp: baseTpl.maxHp,
+        morale: 85,
+        ap: 100,
+        maxAp: 100,
+        affinity: clamp(20 + initialAffBonus, 0, 100),
+        level: 1,
+        exp: 0,
+        maxExp: 100,
+      },
+      statBounds: {
+        hp: { min: 0, max: 500 },
+        morale: { min: 0, max: 100 },
+        ap: { min: 0, max: 100 },
+        affinity: { min: 0, max: 100 },
+      },
+      meta: {
+        shipType,
+        blueprintKey: blueprint.key || null,
+        roleTag: rolledCombo ? `${blueprint.roleTag || shipType} · ${rolledCombo.comboLabel}` : blueprint.roleTag || shipType,
+        avatarAssetId: blueprint.avatarAssetId || null,
+        statScaleVersion: 2,
+        lv1BaseStats: { ...baseTpl },
+        personalityCombo: rolledCombo,
+        personality: blueprint.personality || rolledCombo?.description || `由港区定向建造成型的${shipType}，整备完毕。`,
+        speechHabit: blueprint.speechHabit || rolledCombo?.speechHabit || `「${shipType} ${finalName}，奉命入列！」`,
+        locked: false,
+      },
+    });
+
+    // Equip dedicated seaworthy core 3-piece gear so the newly constructed ship is immediately combat-ready
+    if (this._inventory) {
+      const coreCreates = [
+        { slot: 'engine', name: `${finalName}制式轮机`, category: 'engine', bonuses: [{ stat: 'evasion', layer: 'baseAdd', value: 4 }] },
+        { slot: 'armor', name: `${finalName}舰体装甲`, category: 'armor', bonuses: [{ stat: 'armor', layer: 'baseAdd', value: 4 }, { stat: 'maxHp', layer: 'baseAdd', value: 4 }] },
+        { slot: 'core', name: `${finalName}火控中枢`, category: 'core', bonuses: [{ stat: 'firepower', layer: 'baseAdd', value: 4 }, { stat: 'recon', layer: 'baseAdd', value: 3 }] },
+      ];
+      for (const c of coreCreates) {
+        const gearItem = await this._inventory.createItem({
+          name: c.name,
+          category: c.category,
+          rarity: 'common',
+          statScaleVersion: 2,
+          bonuses: c.bonuses,
+        });
+        await this._inventory.equipItem(charId, c.slot, gearItem.id);
+      }
+      if (shipClass === 'AR' || shipClass === 'AO') {
+        await this._inventory.addExpandedSlot(charId, 'support', { skipCost: true });
+      }
+      const effMaxHp = Math.round(this._entities.getEffectiveStat(charId, 'maxHp', { round: 'round' }).final);
+      this._entities.setStat(charId, 'hp', effMaxHp, { min: 0, max: effMaxHp });
+    }
+
+    this._state.dockyard.constructedCount += 1;
+    await this.persist();
+
+    if (this._logs) {
+      this._logs.add({
+        category: LOG_CATEGORIES.CHARACTER,
+        actorId: charId,
+        actorName: finalName,
+        title: `自由定向建造完成：「${finalName}」（${shipType}）`,
+        detail: `100% 确定出坞 | 耐久 ${baseTpl.maxHp} · 火力 ${baseTpl.firepower} · 装甲 ${baseTpl.armor}`,
+      });
+    }
+
+    const res = {
+      isDuplicate: false,
+      deterministic: true,
+      entity,
+      shipName: finalName,
+      shipType,
+      classCode: shipClass,
+      roleTag: blueprint.roleTag || shipType,
+      comboLabel: rolledCombo?.comboLabel || '',
+      costInfo,
+    };
+    this._emit('character:saved', { characterId: charId, name: finalName, isEdit: false, source: 'deterministic-construction' });
+    this._emit('buildings:ship-constructed', res);
+    this._emit('buildings:updated', { reason: 'dock-construct' });
+    return res;
+  }
+}
+
+export const SHIP_CLASS_BASE_CRAFT_COSTS = Object.freeze({
+  DD: { fuel: 80, ammo: 70, steel: 90, bauxite: 40, silver: 60 },
+  SS: { fuel: 90, ammo: 90, steel: 80, bauxite: 50, silver: 70 },
+  CL: { fuel: 130, ammo: 110, steel: 150, bauxite: 70, silver: 90 },
+  CA: { fuel: 190, ammo: 160, steel: 230, bauxite: 90, silver: 120 },
+  BB: { fuel: 300, ammo: 240, steel: 380, bauxite: 100, silver: 180 },
+  CV: { fuel: 260, ammo: 160, steel: 240, bauxite: 360, silver: 180 },
+  AR: { fuel: 180, ammo: 100, steel: 240, bauxite: 220, silver: 130 },
+  AO: { fuel: 220, ammo: 180, steel: 180, bauxite: 200, silver: 130 },
+});
+
+export function computeDeterministicShipCost(blueprint = {}, { commander = null, useFastBlueprint = false } = {}) {
+  const cls = String(blueprint.shipClass || resolveShipClass(blueprint.shipType || '驱逐舰'));
+  const base = SHIP_CLASS_BASE_CRAFT_COSTS[cls] || SHIP_CLASS_BASE_CRAFT_COSTS.DD;
+  const rarityMult = blueprint.rarity === 'legendary' ? 1.4 : blueprint.rarity === 'epic' ? 1.2 : 1.0;
+  const discount =
+    commander && typeof commander.getCraftingCostDiscount === 'function'
+      ? commander.getCraftingCostDiscount()
+      : 0;
+  const scale = Math.max(0.64, 1 - discount) * rarityMult;
+  const cost = {
+    fuel: Math.max(20, Math.round(base.fuel * scale)),
+    ammo: Math.max(20, Math.round(base.ammo * scale)),
+    steel: Math.max(20, Math.round(base.steel * scale)),
+    bauxite: Math.max(15, Math.round(base.bauxite * scale)),
+  };
+  if (!useFastBlueprint && base.silver > 0) {
+    cost.silver = Math.max(20, Math.round(base.silver * scale));
+  }
+  return {
+    cost,
+    discountPct: Math.round(discount * 100),
+  };
+}
+
+export function getDeterministicShipCatalog({ entities = null } = {}) {
+  const list = [];
+  for (const [cls, pool] of Object.entries(CONSTRUCTION_SHIP_POOL)) {
+    for (const bp of pool) {
+      list.push({
+        ...bp,
+        shipClass: cls,
+        rarity: cls === 'BB' || cls === 'CV' ? 'rare' : cls === 'AR' || cls === 'AO' || cls === 'CA' ? 'uncommon' : 'common',
+        isCustom: false,
+      });
+    }
+  }
+  // Include any Custom Workshop shipgirls currently in roster as reusable blueprints
+  const roster = entities?.list ? entities.list({ kind: 'character' }) : [];
+  const seenCustom = new Set();
+  for (const ch of roster) {
+    if (!ch || !ch.name) continue;
+    const isCustom = String(ch.id || '').startsWith('char_custom_') || (ch.tags || []).includes('自定义舰娘');
+    if (!isCustom || seenCustom.has(ch.name)) continue;
+    seenCustom.add(ch.name);
+    const shipType = ch.meta?.shipType || '驱逐舰';
+    list.push({
+      key: `custom_ship_${ch.id}`,
+      name: ch.name,
+      shipType,
+      shipClass: resolveShipClass(shipType),
+      roleTag: ch.meta?.roleTag || '自定义工坊蓝图',
+      rarity: 'rare',
+      isCustom: true,
+      avatarAssetId: ch.meta?.avatarAssetId || null,
+      personality: ch.meta?.personality || '',
+      speechHabit: ch.meta?.speechHabit || '',
+      customStats: ch.meta?.lv1BaseStats || {
+        maxHp: Number(ch.stats?.maxHp || 28),
+        firepower: Number(ch.stats?.firepower || 16),
+        armor: Number(ch.stats?.armor || 14),
+        torpedo: Number(ch.stats?.torpedo || 16),
+        evasion: Number(ch.stats?.evasion || 18),
+        recon: Number(ch.stats?.recon || 18),
+        aa: Number(ch.stats?.aa || 16),
+        asw: Number(ch.stats?.asw || 16),
+      },
+    });
+  }
+  return list;
 }
 
 export { SHIP_TYPE_PRESETS };
+

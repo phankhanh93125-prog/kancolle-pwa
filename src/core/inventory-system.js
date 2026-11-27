@@ -1887,15 +1887,23 @@ export class InventorySystem {
   }
 
   /**
-   * Compute amplified bonus value when the item sits in one of the 3 mandatory core slots
-   * (amplified by Commander `maintenance`).
+   * Compute amplified bonus value from Commander `maintenance`:
+   *   - Mandatory 3 core slots amplified by `getCorePartsAmplifier()`
+   *   - Enhanced items (`level > 0`) amplified by `getEnhanceEffectivenessMultiplier()`
    */
-  _resolveSlotBonusValue(slotId, bonus) {
+  _resolveSlotBonusValue(slotId, bonus, item = null) {
     const rawVal = Number(bonus.value) || 0;
-    if (!MANDATORY_SLOT_IDS.has(slotId) || rawVal <= 0 || bonus.stat === 'checkBonus') {
+    if (rawVal <= 0 || bonus.stat === 'checkBonus') {
       return rawVal;
     }
-    const amp = this.getCorePartsAmplifier();
+    let amp = 1.0;
+    if (MANDATORY_SLOT_IDS.has(slotId)) {
+      amp *= this.getCorePartsAmplifier();
+    }
+    if (item && Number(item.level || 0) > 0 && this._commander?.getEnhanceEffectivenessMultiplier) {
+      const enhMult = this._commander.getEnhanceEffectivenessMultiplier();
+      amp *= 1 + (enhMult - 1) * Math.min(1, Number(item.level) / 5);
+    }
     if (amp <= 1.0) return rawVal;
     if (bonus.layer === 'percentAdd' || bonus.layer === 'percentMult') {
       return Number((rawVal * amp).toFixed(4));
@@ -1913,7 +1921,7 @@ export class InventorySystem {
       if (!item) continue;
       items.push({ slotId, id: item.id, name: item.name, category: item.category, level: item.level || 0 });
       for (const b of item.bonuses || []) {
-        const effVal = this._resolveSlotBonusValue(slotId, b);
+        const effVal = this._resolveSlotBonusValue(slotId, b, item);
         if (b.stat === 'checkBonus') {
           checkBonus += effVal;
         } else {
@@ -2551,4 +2559,298 @@ export class InventorySystem {
       this.persist();
     }
   }
+
+  /**
+   * 100% Deterministic Equipment Crafting (自由定向装备制造):
+   * Spends exact resources discounted by Commander `dispatch` and immediately crafts the exact selected gear.
+   */
+  async craftGearDeterministic(blueprint, { resources = null, commander = null } = {}) {
+    if (!blueprint || !blueprint.name) {
+      throw new Error('请选择有效的装备制造蓝图');
+    }
+    const costInfo = computeDeterministicGearCost(blueprint, { commander: commander || this._commander });
+    if (resources && typeof resources.spendBatch === 'function') {
+      const spend = await resources.spendBatch(costInfo.cost, {
+        reason: `定向制造装备「${blueprint.name}」`,
+      });
+      if (!spend.ok) throw new Error(spend.reason);
+    }
+    const created = await this.createItem({
+      name: blueprint.name,
+      category: blueprint.category || ITEM_CATEGORIES.EXTENSION,
+      subGroup: blueprint.subGroup || 'weapon',
+      subCategory: blueprint.equipmentType || blueprint.subCategory || 'main_gun',
+      equipmentType: blueprint.equipmentType || 'main_gun',
+      supportRole: blueprint.supportRole || undefined,
+      rarity: blueprint.rarity || ITEM_RARITIES.UNCOMMON,
+      statScaleVersion: 2,
+      tags: Array.isArray(blueprint.tags) ? [...blueprint.tags] : ['定向制造'],
+      description: blueprint.description || '港区工坊定向制造的制式装备。',
+      bonuses: deepClone(blueprint.bonuses || []),
+    });
+    return { item: created, costInfo };
+  }
 }
+
+// ============================================================
+// Deterministic Equipment Crafting Catalog & Dispatch Discount
+// ============================================================
+
+export const DETERMINISTIC_GEAR_CATALOG = Object.freeze([
+  {
+    key: 'craft_main_gun_dd',
+    name: '双联高平驱逐主炮',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'weapon',
+    equipmentType: 'main_gun',
+    rarity: ITEM_RARITIES.UNCOMMON,
+    specialLabel: '轻量化炮击+防空',
+    baseCost: { fuel: 30, ammo: 60, steel: 70, bauxite: 20, silver: 60 },
+    tags: ['主炮', '定向制造'],
+    description: '适用于驱逐/轻巡的高射速双联主炮，兼顾炮击与防空。',
+    bonuses: [
+      { stat: 'firepower', layer: 'baseAdd', value: 6 },
+      { stat: 'aa', layer: 'baseAdd', value: 4 },
+    ],
+  },
+  {
+    key: 'craft_main_gun_bb',
+    name: '410mm 三联穿甲重炮',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'weapon',
+    equipmentType: 'main_gun',
+    rarity: ITEM_RARITIES.RARE,
+    specialLabel: '高破甲齐射火力',
+    baseCost: { fuel: 50, ammo: 130, steel: 160, bauxite: 30, silver: 120 },
+    tags: ['主炮', '重炮', '定向制造'],
+    description: '战列舰主力重炮，大幅提升火力与装甲压制。',
+    bonuses: [
+      { stat: 'firepower', layer: 'baseAdd', value: 11 },
+      { stat: 'armor', layer: 'baseAdd', value: 4 },
+    ],
+  },
+  {
+    key: 'craft_torpedo_oxygen',
+    name: '五联装酸素重型鱼雷',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'weapon',
+    equipmentType: 'torpedo',
+    rarity: ITEM_RARITIES.RARE,
+    specialLabel: '开幕雷击高破甲',
+    baseCost: { fuel: 70, ammo: 110, steel: 90, bauxite: 20, silver: 100 },
+    tags: ['鱼雷', '开幕雷击', '定向制造'],
+    description: '高装药酸素鱼雷，显著强化开幕雷击前排突击与夜战爆发。',
+    bonuses: [
+      { stat: 'torpedo', layer: 'baseAdd', value: 11 },
+      { stat: 'evasion', layer: 'baseAdd', value: 3 },
+    ],
+  },
+  {
+    key: 'craft_aa_gun_flak',
+    name: '双联高角防空机炮阵',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'tactical',
+    equipmentType: 'aa_gun',
+    rarity: ITEM_RARITIES.RARE,
+    specialLabel: '强化防空弹幕拦截',
+    baseCost: { fuel: 30, ammo: 90, steel: 90, bauxite: 80, silver: 90 },
+    tags: ['防空炮', '防空弹幕', '定向制造'],
+    description: '高密度防空弹幕炮，显著提高敌方开幕空袭拦截击落率。',
+    bonuses: [
+      { stat: 'aa', layer: 'baseAdd', value: 11 },
+      { stat: 'firepower', layer: 'baseAdd', value: 3 },
+    ],
+  },
+  {
+    key: 'craft_sonar_asw',
+    name: '三式主动声呐与深弹套组',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'tactical',
+    equipmentType: 'sonar',
+    rarity: ITEM_RARITIES.RARE,
+    specialLabel: '解锁水下反潜锁定',
+    baseCost: { fuel: 40, ammo: 70, steel: 75, bauxite: 75, silver: 90 },
+    tags: ['声呐', '深弹', '反潜', '定向制造'],
+    description: '装配后可锁定并重创水下隐匿潜艇，大幅提升反潜与索敌。',
+    bonuses: [
+      { stat: 'asw', layer: 'baseAdd', value: 12 },
+      { stat: 'recon', layer: 'baseAdd', value: 4 },
+    ],
+  },
+  {
+    key: 'craft_radar_fcs',
+    name: '精密火控对空相控雷达',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'tactical',
+    equipmentType: 'radar',
+    rarity: ITEM_RARITIES.RARE,
+    specialLabel: '火控锁定无视闪避 + 防空',
+    baseCost: { fuel: 45, ammo: 45, steel: 100, bauxite: 130, silver: 120 },
+    tags: ['雷达', '火控', '对空', '定向制造'],
+    description: '赋予「火控锁定」特效（无视目标部分闪避值），强化全队索敌与防空。',
+    bonuses: [
+      { stat: 'recon', layer: 'baseAdd', value: 9 },
+      { stat: 'aa', layer: 'baseAdd', value: 6 },
+      { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
+    ],
+  },
+  {
+    key: 'craft_aircraft_squadron',
+    name: '制空战斗轰炸机混编联队',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'weapon',
+    equipmentType: 'aircraft',
+    rarity: ITEM_RARITIES.RARE,
+    specialLabel: '制空权争夺 + 越前排开幕轰炸',
+    baseCost: { fuel: 70, ammo: 70, steel: 60, bauxite: 170, silver: 130 },
+    tags: ['舰载机', '制空', '开幕轰炸', '定向制造'],
+    description: '开战阶段参与制空权争夺并发动越过前排的开幕轰炸。',
+    bonuses: [
+      { stat: 'firepower', layer: 'baseAdd', value: 9 },
+      { stat: 'recon', layer: 'baseAdd', value: 7 },
+      { stat: 'aa', layer: 'baseAdd', value: 7 },
+    ],
+  },
+  {
+    key: 'craft_support_repair',
+    name: '战地抢修损管工作艇',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'support',
+    equipmentType: 'support',
+    supportRole: 'repair',
+    rarity: ITEM_RARITIES.RARE,
+    specialLabel: 'AR 维修舰专精 · 战地抢修',
+    baseCost: { fuel: 60, ammo: 30, steel: 120, bauxite: 90, silver: 100 },
+    tags: ['后勤支援', '维修', '定向制造'],
+    description: '解锁战斗中「战地抢修」指令，维修舰 (AR) 装配获得额外抢修增幅。',
+    bonuses: [
+      { stat: 'armor', layer: 'baseAdd', value: 6 },
+      { stat: 'maxHp', layer: 'baseAdd', value: 6 },
+      { stat: 'recon', layer: 'baseAdd', value: 3 },
+    ],
+  },
+  {
+    key: 'craft_support_resupply',
+    name: '海上洋上油弹补给包',
+    category: ITEM_CATEGORIES.EXTENSION,
+    subGroup: 'support',
+    equipmentType: 'support',
+    supportRole: 'resupply',
+    rarity: ITEM_RARITIES.RARE,
+    specialLabel: 'AO 补给舰专精 · 前线补给',
+    baseCost: { fuel: 100, ammo: 100, steel: 60, bauxite: 70, silver: 100 },
+    tags: ['后勤支援', '补给', '定向制造'],
+    description: '解锁战斗中「前线补给」指令，补给舰 (AO) 装配获得额外补给与士气增幅。',
+    bonuses: [
+      { stat: 'recon', layer: 'baseAdd', value: 6 },
+      { stat: 'evasion', layer: 'baseAdd', value: 5 },
+      { stat: 'aa', layer: 'baseAdd', value: 3 },
+    ],
+  },
+  {
+    key: 'craft_core_engine',
+    name: '高出力舰用蒸汽轮机',
+    category: ITEM_CATEGORIES.ENGINE,
+    subGroup: 'core',
+    equipmentType: 'engine',
+    rarity: ITEM_RARITIES.RARE,
+    specialLabel: '核心必装 · 高机动闪避',
+    baseCost: { fuel: 90, ammo: 30, steel: 110, bauxite: 50, silver: 100 },
+    tags: ['核心必装', '引擎', '定向制造'],
+    description: '高性能轮机，大幅提升机动与派生闪避值。',
+    bonuses: [
+      { stat: 'evasion', layer: 'baseAdd', value: 9 },
+      { stat: 'firepower', layer: 'baseAdd', value: 3 },
+    ],
+  },
+  {
+    key: 'craft_core_armor',
+    name: '精炼复合主装甲带',
+    category: ITEM_CATEGORIES.ARMOR,
+    subGroup: 'core',
+    equipmentType: 'armor',
+    rarity: ITEM_RARITIES.RARE,
+    specialLabel: '核心必装 · 耐久护甲',
+    baseCost: { fuel: 40, ammo: 30, steel: 150, bauxite: 40, silver: 100 },
+    tags: ['核心必装', '装甲', '定向制造'],
+    description: '重型复合装甲带，提升舰体耐久与抗炮击防护。',
+    bonuses: [
+      { stat: 'armor', layer: 'baseAdd', value: 8 },
+      { stat: 'maxHp', layer: 'baseAdd', value: 9 },
+    ],
+  },
+  {
+    key: 'craft_core_fcs',
+    name: '精密战术火控核心',
+    category: ITEM_CATEGORIES.CORE,
+    subGroup: 'core',
+    equipmentType: 'core',
+    rarity: ITEM_RARITIES.RARE,
+    specialLabel: '核心必装 · 火力侦查检定',
+    baseCost: { fuel: 50, ammo: 60, steel: 90, bauxite: 100, silver: 110 },
+    tags: ['核心必装', '控制核心', '定向制造'],
+    description: '精密火控中枢，均衡强化火力、索敌与 d20 检定。',
+    bonuses: [
+      { stat: 'firepower', layer: 'baseAdd', value: 6 },
+      { stat: 'recon', layer: 'baseAdd', value: 6 },
+      { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
+    ],
+  },
+]);
+
+export function computeDeterministicGearCost(blueprint = {}, { commander = null } = {}) {
+  const discount =
+    commander && typeof commander.getCraftingCostDiscount === 'function'
+      ? commander.getCraftingCostDiscount()
+      : 0;
+  const scale = Math.max(0.64, 1 - discount);
+  const rarityMult =
+    blueprint.rarity === ITEM_RARITIES.LEGENDARY
+      ? 1.65
+      : blueprint.rarity === ITEM_RARITIES.EPIC
+      ? 1.3
+      : blueprint.rarity === ITEM_RARITIES.RARE
+      ? 1.0
+      : 0.78;
+  const base = blueprint.baseCost || {
+    fuel: Math.round(50 * rarityMult),
+    ammo: Math.round(60 * rarityMult),
+    steel: Math.round(85 * rarityMult),
+    bauxite: Math.round(65 * rarityMult),
+    silver: Math.round(90 * rarityMult),
+  };
+  const cost = {};
+  for (const [k, v] of Object.entries(base)) {
+    const n = Number(v) || 0;
+    if (n > 0) cost[k] = Math.max(10, Math.round(n * scale));
+  }
+  return {
+    cost,
+    discountPct: Math.round(discount * 100),
+  };
+}
+
+export function getDeterministicGearCatalog({ contentManager = null } = {}) {
+  const list = DETERMINISTIC_GEAR_CATALOG.map((g) => ({ ...deepClone(g), isCustom: false }));
+  const customEq = contentManager?.serialize?.()?.customEquipment || [];
+  for (const c of customEq) {
+    if (!c || !c.name) continue;
+    const eqType = inferEquipmentTypeId(c, KNOWN_EQUIPMENT_TYPES.MAIN_GUN);
+    list.push({
+      key: `custom_eq_${c.id || c.name}`,
+      name: c.name,
+      category: c.category || ITEM_CATEGORIES.EXTENSION,
+      subGroup: c.subGroup || (eqType === 'support' ? 'support' : 'weapon'),
+      equipmentType: eqType,
+      supportRole: c.supportRole || (eqType === 'support' ? 'repair' : undefined),
+      rarity: c.rarity || ITEM_RARITIES.RARE,
+      specialLabel: '自定义工坊蓝图',
+      tags: Array.isArray(c.tags) ? [...c.tags] : ['自定义装备'],
+      description: c.description || '来自自定义工坊/外置 JSON 的装备蓝图。',
+      bonuses: sanitizeBonuses(c.bonuses || []),
+      isCustom: true,
+    });
+  }
+  return list;
+}
+

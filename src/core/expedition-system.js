@@ -340,10 +340,11 @@ export class ExpeditionSystem {
       }
     }
 
-    // Grant Commander EXP
+    // Grant Commander EXP (accelerated v30 pace so 1-2 expeditions/sorties smoothly level up)
     let expResult = null;
     if (this._commander) {
-      expResult = await this._commander.grantExp(run.commanderExp || 20, `远征完成：${run.missionName}`);
+      const cmdExpGain = Math.max(30, Math.round((run.commanderExp || 24) * 1.6));
+      expResult = await this._commander.grantExp(cmdExpGain, `远征完成：${run.missionName}`);
     }
 
     this._activeRuns.splice(idx, 1);

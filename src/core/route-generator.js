@@ -492,8 +492,30 @@ export function buildEnemyUnitByClass(shipClass, idx, tierCfg, {
   const baseSec = Math.round((rawAtk + rawArmor) * 0.5);
   const evasion = clamp(Math.round(baseSec * arch.evaMult), 10, 115);
   const aa = clamp(Math.round(baseSec * arch.aaMult), 8, 120);
-  const asw = clamp(Math.round(baseSec * arch.aswMult), 8, 105);
+  let asw = clamp(Math.round(baseSec * arch.aswMult), 8, 105);
   const torpedo = clamp(Math.round(rawAtk * arch.torpMult), 8, maxAtkCap);
+
+  // Enemy DD & CL automatically occupy 1 equipment slot with star-calibrated ASW gear
+  const ASW_GEAR_BY_STAR = {
+    1: { name: '深海简易水听器', bonusAsw: 6 },
+    2: { name: '深海主动探测声呐', bonusAsw: 9 },
+    3: { name: '深海三式深弹投射机', bonusAsw: 13 },
+    4: { name: '深海高频反潜声呐阵', bonusAsw: 17 },
+    5: { name: '深渊精密反潜鱼雷', bonusAsw: 22 },
+  };
+  const enemySlots = [];
+  let hasAswCapability = false;
+  if (arch.shipClass === 'DD' || arch.shipClass === 'CL') {
+    const aswTier = ASW_GEAR_BY_STAR[clamp(starNum, 1, 5)] || ASW_GEAR_BY_STAR[1];
+    enemySlots.push({
+      slotType: 'sonar',
+      name: aswTier.name,
+      star: starNum,
+      bonusAsw: aswTier.bonusAsw,
+    });
+    asw = clamp(asw + aswTier.bonusAsw, 12, 125);
+    hasAswCapability = true;
+  }
 
   const labelIdx = idx === 0 && baseName ? `${baseName} · 旗舰` : `${arch.title} #${idx + 1}`;
   return {
@@ -511,6 +533,9 @@ export function buildEnemyUnitByClass(shipClass, idx, tierCfg, {
     aa,
     asw,
     torpedo,
+    submerged: arch.shipClass === 'SS',
+    hasAswCapability,
+    equippedGear: enemySlots,
     stealth: Math.round(arch.stealth + starSpec.star * 4),
     airThreat: arch.shipClass === 'CV' || arch.shipClass === 'BOSS' ? Math.round(unitAtk * 0.72) : 0,
     subThreat: arch.shipClass === 'SS' ? Math.round(torpedo * 0.68) : 0,
@@ -518,13 +543,15 @@ export function buildEnemyUnitByClass(shipClass, idx, tierCfg, {
     weaknessLabel: arch.weaknessLabel,
     threatLabel:
       arch.shipClass === 'SS'
-        ? '水下潜艇'
+        ? '水下潜艇（隐匿）'
         : arch.shipClass === 'CV'
         ? '深海航空编队'
         : arch.shipClass === 'CA'
         ? '重巡护卫'
         : arch.shipClass === 'BB' || arch.shipClass === 'BOSS'
         ? '主力重炮'
+        : hasAswCapability
+        ? `高速前卫（配装${enemySlots[0]?.name || '反潜装'}）`
         : '高速前卫',
   };
 }
