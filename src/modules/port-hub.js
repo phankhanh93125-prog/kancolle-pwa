@@ -384,7 +384,7 @@ function openMemoirsDrawer(sec, status = null) {
                 : `<div class="lab-stack-sm" style="gap:6px;">
                     ${gates
                       .map((gate) => {
-                        const t = BREAKTHROUGH_THEATRES[gate];
+                        const t = storyEngine?.getBreakthroughTheatreForGate?.(gate) || BREAKTHROUGH_THEATRES[gate];
                         if (!t) return '';
                         return `
                         <div class="lab-slot-card interact-drawer-item" style="padding:8px 10px;">
@@ -503,39 +503,101 @@ function openMemoirsDrawer(sec, status = null) {
 // Optional External Imported Story Pack Player (Zero Legacy Built-ins)
 // ============================================================
 function renderExternalStorySessionCard() {
-  const { storyPacks, uiKit } = portState.context;
+  const { storyPacks, commander, uiKit } = portState.context;
   const sess = storyPacks?.getActiveTheatreSession?.();
-  if (!sess || !sess.pack || sess.pack.builtIn) return null;
+  if (!sess || !sess.packId) return null;
+  const pack = storyPacks.getPack(sess.packId);
+  if (!pack || pack.builtIn) return null;
 
-  const node = sess.node;
+  const sec = getActiveSecretary();
+  const actorName = sec?.name || '秘书舰';
+  const cmdName = commander?.getProfile?.()?.name || '指挥官';
+  const fmt = (str) =>
+    String(str || '')
+      .replaceAll('{actor.name}', actorName)
+      .replaceAll('{actor}', actorName)
+      .replaceAll('{commander.name}', cmdName)
+      .replaceAll('{cmd}', cmdName)
+      .replaceAll('{{flagship}}', actorName);
+
+  const isCompleted = Boolean(sess.lastOutcome && !sess.lastOutcome.nextNodeId);
+  const node = !isCompleted
+    ? pack.nodes.find((n) => n.id === sess.nodeId) || pack.nodes[0] || null
+    : null;
+  const nodeCond = node && typeof storyPacks.checkConditions === 'function'
+    ? storyPacks.checkConditions(node.conditions || [], { actor: sec })
+    : { ok: true, unmetReasons: [] };
+
   const card = document.createElement('section');
   card.className = 'surface-card lab-stack-sm interact-ext-story-card';
+
+  const lastOutcomeHtml = sess.lastOutcome
+    ? `
+      <div class="lab-slot-card" style="padding:8px 10px;">
+        <p style="font-size:12.5px; line-height:1.65; margin:0; white-space:pre-line;">${escapeHtml(fmt(sess.lastOutcome.text || '抉择已完成。'))}</p>
+        ${
+          Array.isArray(sess.lastOutcome.chips) && sess.lastOutcome.chips.length > 0
+            ? `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;">
+                ${sess.lastOutcome.chips
+                  .map(
+                    (chip) =>
+                      `<span class="status-badge ${chip.negative ? 'badge-warn' : 'badge-ok'}">${escapeHtml(chip.text)}</span>`
+                  )
+                  .join('')}
+              </div>`
+            : ''
+        }
+      </div>
+    `
+    : '';
+
+  const nodeBodyHtml = node
+    ? `
+      ${node.title ? `<div class="cc-stat-sub" style="font-weight:600;">${escapeHtml(fmt(node.title))}</div>` : ''}
+      <p style="font-size:13px; line-height:1.65; margin:0; white-space:pre-line;">${escapeHtml(fmt(node.body || node.text || '剧情正在展开……'))}</p>
+      ${
+        !nodeCond.ok
+          ? `<div class="status-badge badge-warn" style="white-space:normal;">前置条件未满足：${escapeHtml(nodeCond.unmetReasons.join('；'))}</div>`
+          : ''
+      }
+      <div class="lab-stack-sm">
+        ${(node.choices || [])
+          .map((ch) => {
+            const chCond = typeof storyPacks.checkConditions === 'function'
+              ? storyPacks.checkConditions(ch.conditions || [], { actor: sec })
+              : { ok: true, unmetReasons: [] };
+            const unlocked = nodeCond.ok && chCond.ok;
+            return `<button type="button" class="btn-secondary uikit-touch-target" data-ext-choice="${escapeHtml(ch.id)}" ${unlocked ? '' : 'disabled'}>${escapeHtml(fmt(ch.label || '继续'))}</button>`;
+          })
+          .join('')}
+      </div>
+    `
+    : `<button type="button" id="btn-ext-story-finish" class="btn-primary uikit-touch-target">完成剧场并返回日常</button>`;
+
   card.innerHTML = `
     <div class="section-header-row" style="margin-bottom:0;">
-      <strong>📖 外置剧情 · ${escapeHtml(sess.pack.title || '外置扩展包')}</strong>
+      <strong>📖 外置剧情 · ${escapeHtml(pack.name || pack.title || '外置扩展包')}</strong>
       <button type="button" id="btn-ext-story-exit" class="btn-secondary fac-mini-btn">收起</button>
     </div>
-    <p style="font-size:13px; line-height:1.65; margin:0;">${escapeHtml(node?.text || node?.body || '剧情节点已完成。')}</p>
-    <div class="lab-stack-sm">
-      ${(node?.choices || [])
-        .map(
-          (ch, idx) =>
-            `<button type="button" class="btn-secondary uikit-touch-target" data-ext-choice="${idx}">${escapeHtml(ch.label || `选项 ${idx + 1}`)}</button>`
-        )
-        .join('')}
-    </div>
+    ${lastOutcomeHtml}
+    ${nodeBodyHtml}
   `;
 
-  card.querySelector('#btn-ext-story-exit')?.addEventListener('click', () => {
+  const closeTheatre = () => {
     storyPacks.clearActiveTheatreSession();
-    renderPortHub();
-  });
+    renderPortHub({ forceFull: true });
+  };
+  card.querySelector('#btn-ext-story-exit')?.addEventListener('click', closeTheatre);
+  card.querySelector('#btn-ext-story-finish')?.addEventListener('click', closeTheatre);
+
   card.querySelectorAll('[data-ext-choice]').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      const idx = Number(btn.getAttribute('data-ext-choice'));
+      if (!node) return;
+      const choiceId = btn.getAttribute('data-ext-choice');
       try {
-        await storyPacks.chooseOption(sess.pack.id, node?.id, idx);
-        renderPortHub();
+        const rec = await storyPacks.executeChoice(pack.id, node.id, choiceId, { actorId: sec?.id || null });
+        storyPacks.updateActiveTheatreOutcome(rec, rec.nextNodeId || null);
+        renderPortHub({ forceFull: true });
       } catch (err) {
         uiKit.showToast(err instanceof Error ? err.message : '剧情推进失败', 'warn');
       }
@@ -717,7 +779,8 @@ async function renderPortHub({ forceFull = false } = {}) {
   const retroStage = Number(sec.meta?.retrofitStage || 0);
   const retroTag = retroStage >= 2 ? '★ 改二' : retroStage === 1 ? '★ 改' : '';
   const activeExtSess = storyPacks?.getActiveTheatreSession?.();
-  const hasExtSession = Boolean(activeExtSess && activeExtSess.pack && !activeExtSess.pack.builtIn);
+  const activeExtPack = activeExtSess?.packId ? storyPacks.getPack(activeExtSess.packId) : null;
+  const hasExtSession = Boolean(activeExtPack && !activeExtPack.builtIn);
 
   // FAST INCREMENTAL PATH: Same secretary already mounted -> NEVER rebuild viewport or reset scrollTop to 0!
   const existingViewport = portState.container.querySelector('#chat-bubble-viewport');

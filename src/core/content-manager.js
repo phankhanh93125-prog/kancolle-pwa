@@ -255,12 +255,26 @@ function deepClone(v) {
   return JSON.parse(JSON.stringify(v ?? null));
 }
 
+function createEmptyStoryExtensions() {
+  return {
+    dialogueBank: {},
+    portraitTouchLines: {},
+    outfitFlavorLines: {},
+    favoriteGiftReactions: [],
+    breakthroughTheatres: {},
+    oathRitualTheatre: null,
+    maritimeEncounters: [],
+  };
+}
+
 function createDefaultContentState() {
   return {
     customEnemies: [],
     customDialogues: [],
     customGifts: [],
     customEquipment: [],
+    storyExtensions: createEmptyStoryExtensions(),
+    loadedStoryPackFiles: {},
     encounteredEnemyNames: ['前哨巡逻编队'],
     clearedRouteIds: [],
     updatedAt: Date.now(),
@@ -435,7 +449,7 @@ export class ContentManager {
   async createCustomDialogue({ id = null, stage = 'any', text = '' } = {}) {
     const cleanText = String(text || '').trim();
     if (!cleanText) throw new Error('台词模板内容不能为空');
-    const validStages = ['any', 'stranger', 'familiar', 'trusted', 'close', 'oath'];
+    const validStages = ['any', 'stranger', 'familiar', 'trusted', 'flutter', 'adoration', 'close', 'oath'];
     const dlg = {
       id: String(id || `dlg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`),
       stage: validStages.includes(stage) ? stage : 'any',
@@ -460,6 +474,284 @@ export class ContentManager {
       return true;
     }
     return false;
+  }
+
+  // ------------------------------------------------------------
+  // 2B. Extended Story Engine Banks (dialogueBank, portraitTouchLines,
+  //     outfitFlavorLines, favoriteGiftReactions, breakthroughTheatres,
+  //     oathRitualTheatre, maritimeEncounters)
+  // ------------------------------------------------------------
+
+  getStoryExtensions() {
+    if (!this._state.storyExtensions || typeof this._state.storyExtensions !== 'object') {
+      this._state.storyExtensions = createEmptyStoryExtensions();
+    }
+    return deepClone(this._state.storyExtensions);
+  }
+
+  mergeStoryExtensions(rawExt = {}) {
+    if (!rawExt || typeof rawExt !== 'object') return 0;
+    if (!this._state.storyExtensions || typeof this._state.storyExtensions !== 'object') {
+      this._state.storyExtensions = createEmptyStoryExtensions();
+    }
+    const ext = this._state.storyExtensions;
+    let mergedCount = 0;
+
+    // 1. Six-stage x day/night dialogueBank
+    if (rawExt.dialogueBank && typeof rawExt.dialogueBank === 'object') {
+      const validStageKeys = ['stranger', 'familiar', 'trusted', 'flutter', 'adoration', 'oath'];
+      for (const stageKey of validStageKeys) {
+        const srcStage = rawExt.dialogueBank[stageKey];
+        if (!srcStage || typeof srcStage !== 'object') continue;
+        if (!ext.dialogueBank[stageKey]) ext.dialogueBank[stageKey] = { day: [], night: [] };
+        for (const tod of ['day', 'night']) {
+          const arr = Array.isArray(srcStage[tod]) ? srcStage[tod] : [];
+          const dest = ext.dialogueBank[stageKey][tod];
+          for (const entry of arr) {
+            if (!entry || typeof entry !== 'object' || !String(entry.text || '').trim()) continue;
+            const norm = {
+              narration: String(entry.narration || '').trim(),
+              text: String(entry.text || '').trim(),
+              ...(Array.isArray(entry.choices) && entry.choices.length > 0
+                ? {
+                    choices: entry.choices
+                      .filter((c) => c && (c.label || c.reply))
+                      .map((c) => ({
+                        label: String(c.label || '').trim(),
+                        narration: String(c.narration || '').trim(),
+                        reply: String(c.reply || '').trim(),
+                      })),
+                  }
+                : {}),
+            };
+            const existIdx = dest.findIndex((x) => x.text === norm.text);
+            if (existIdx >= 0) dest[existIdx] = norm;
+            else dest.push(norm);
+            mergedCount += 1;
+          }
+        }
+      }
+    }
+
+    // 2. Portrait touch reactions (head / shoulder / hand x low / mid / high / oath)
+    if (rawExt.portraitTouchLines && typeof rawExt.portraitTouchLines === 'object') {
+      for (const zone of ['head', 'shoulder', 'hand']) {
+        const srcZone = rawExt.portraitTouchLines[zone];
+        if (!srcZone || typeof srcZone !== 'object') continue;
+        if (!ext.portraitTouchLines[zone]) ext.portraitTouchLines[zone] = { low: [], mid: [], high: [], oath: [] };
+        for (const band of ['low', 'mid', 'high', 'oath']) {
+          const arr = Array.isArray(srcZone[band]) ? srcZone[band] : [];
+          const dest = ext.portraitTouchLines[zone][band];
+          for (const item of arr) {
+            if (!item || typeof item !== 'object' || !String(item.text || '').trim()) continue;
+            const norm = {
+              narration: String(item.narration || '').trim(),
+              text: String(item.text || '').trim(),
+            };
+            const existIdx = dest.findIndex((x) => x.text === norm.text);
+            if (existIdx >= 0) dest[existIdx] = norm;
+            else dest.push(norm);
+            mergedCount += 1;
+          }
+        }
+      }
+    }
+
+    // 3. Outfit flavor lines (outfitStyle -> array of { narration, text })
+    if (rawExt.outfitFlavorLines && typeof rawExt.outfitFlavorLines === 'object') {
+      for (const [styleKey, val] of Object.entries(rawExt.outfitFlavorLines)) {
+        const key = String(styleKey || '').trim();
+        if (!key || !val) continue;
+        const list = Array.isArray(val) ? val : [val];
+        if (!Array.isArray(ext.outfitFlavorLines[key])) ext.outfitFlavorLines[key] = [];
+        const dest = ext.outfitFlavorLines[key];
+        for (const item of list) {
+          if (!item || typeof item !== 'object' || !String(item.text || '').trim()) continue;
+          const norm = {
+            narration: String(item.narration || '').trim(),
+            text: String(item.text || '').trim(),
+          };
+          const existIdx = dest.findIndex((x) => x.text === norm.text);
+          if (existIdx >= 0) dest[existIdx] = norm;
+          else dest.push(norm);
+          mergedCount += 1;
+        }
+      }
+    }
+
+    // 4. Favorite gift reactions
+    if (Array.isArray(rawExt.favoriteGiftReactions)) {
+      if (!Array.isArray(ext.favoriteGiftReactions)) ext.favoriteGiftReactions = [];
+      for (const item of rawExt.favoriteGiftReactions) {
+        if (!item || typeof item !== 'object' || !String(item.text || '').trim()) continue;
+        const norm = {
+          ...(item.giftId ? { giftId: String(item.giftId).trim() } : {}),
+          ...(item.giftName ? { giftName: String(item.giftName).trim() } : {}),
+          narration: String(item.narration || '').trim(),
+          text: String(item.text || '').trim(),
+        };
+        const existIdx = ext.favoriteGiftReactions.findIndex((x) => x.text === norm.text);
+        if (existIdx >= 0) ext.favoriteGiftReactions[existIdx] = norm;
+        else ext.favoriteGiftReactions.push(norm);
+        mergedCount += 1;
+      }
+    }
+
+    // 5. Stage breakthrough mini-theatres (20 / 40 / 60 / 80 / 100)
+    if (rawExt.breakthroughTheatres && typeof rawExt.breakthroughTheatres === 'object') {
+      for (const gate of [20, 40, 60, 80, 100]) {
+        const rawVal = rawExt.breakthroughTheatres[gate] ?? rawExt.breakthroughTheatres[String(gate)];
+        if (!rawVal) continue;
+        const list = Array.isArray(rawVal) ? rawVal : [rawVal];
+        const gk = String(gate);
+        if (!Array.isArray(ext.breakthroughTheatres[gk])) ext.breakthroughTheatres[gk] = [];
+        const dest = ext.breakthroughTheatres[gk];
+        for (const t of list) {
+          if (!t || typeof t !== 'object' || !String(t.openingLine || '').trim() || !Array.isArray(t.choices) || t.choices.length === 0) {
+            continue;
+          }
+          const norm = {
+            gate,
+            fromLabel: String(t.fromLabel || '').trim(),
+            toLabel: String(t.toLabel || '').trim(),
+            title: String(t.title || `阶段突破 · ${gate}`).trim(),
+            introNarration: String(t.introNarration || '').trim(),
+            openingLine: String(t.openingLine || '').trim(),
+            choices: t.choices
+              .filter((c) => c && String(c.label || '').trim())
+              .map((c, idx) => ({
+                id: String(c.id || `bt${gate}_ext_${idx + 1}`),
+                label: String(c.label || '').trim(),
+                narration: String(c.narration || '').trim(),
+                reply: String(c.reply || '').trim(),
+                closingNarration: String(c.closingNarration || '').trim(),
+              })),
+          };
+          if (norm.choices.length === 0) continue;
+          const existIdx = dest.findIndex((x) => x.title === norm.title && x.openingLine === norm.openingLine);
+          if (existIdx >= 0) dest[existIdx] = norm;
+          else dest.push(norm);
+          mergedCount += 1;
+        }
+      }
+    }
+
+    // 6. Custom Oath Ritual Theatre
+    if (rawExt.oathRitualTheatre && typeof rawExt.oathRitualTheatre === 'object') {
+      const r = rawExt.oathRitualTheatre;
+      if (String(r.openingLine || '').trim() && Array.isArray(r.choices) && r.choices.length > 0) {
+        ext.oathRitualTheatre = {
+          title: String(r.title || '誓约仪式').trim(),
+          introNarration: String(r.introNarration || '').trim(),
+          openingLine: String(r.openingLine || '').trim(),
+          choices: r.choices
+            .filter((c) => c && String(c.label || '').trim())
+            .map((c, idx) => ({
+              id: String(c.id || `oath_ext_${idx + 1}`),
+              label: String(c.label || '').trim(),
+              oathTitle: String(c.oathTitle || '永恒誓约').trim(),
+              narration: String(c.narration || '').trim(),
+              reply: String(c.reply || '').trim(),
+              closingNarration: String(c.closingNarration || '').trim(),
+            })),
+        };
+        mergedCount += 1;
+      }
+    }
+
+    // 7. Maritime encounters
+    if (Array.isArray(rawExt.maritimeEncounters)) {
+      if (!Array.isArray(ext.maritimeEncounters)) ext.maritimeEncounters = [];
+      for (const enc of rawExt.maritimeEncounters) {
+        if (!enc || typeof enc !== 'object' || !String(enc.body || '').trim()) continue;
+        const norm = {
+          id: String(enc.id || `sea_enc_ext_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`),
+          title: String(enc.title || '海面奇遇').trim(),
+          speaker: String(enc.speaker || '{actor}').trim(),
+          body: String(enc.body || '').trim(),
+          choices: Array.isArray(enc.choices)
+            ? enc.choices
+                .filter((c) => c && String(c.label || '').trim())
+                .map((c, idx) => ({
+                  id: String(c.id || `me_ext_${idx + 1}`),
+                  label: String(c.label || '').trim(),
+                  statKey: c.statKey || null,
+                  dc: Number(c.dc) || 0,
+                  successText: String(c.successText || '').trim(),
+                  failText: String(c.failText || '').trim(),
+                  reward: c.reward && typeof c.reward === 'object' ? deepClone(c.reward) : {},
+                  affinity: Number(c.affinity) || 2,
+                  morale: Number(c.morale) || 10,
+                }))
+            : [],
+        };
+        if (norm.choices.length === 0) continue;
+        const existIdx = ext.maritimeEncounters.findIndex((x) => x.id === norm.id || x.title === norm.title);
+        if (existIdx >= 0) ext.maritimeEncounters[existIdx] = norm;
+        else ext.maritimeEncounters.push(norm);
+        mergedCount += 1;
+      }
+    }
+
+    return mergedCount;
+  }
+
+  /**
+   * Auto-load bundled external story packs declared in `custom-packs/stories/index.json`.
+   * Tracks `file -> version` so each version is imported once non-destructively (never resurrects
+   * user-deleted packs or overwrites saves; safely no-ops offline or when manifest is absent).
+   */
+  async syncStoryPackManifest(
+    manifestUrl = './custom-packs/stories/index.json',
+    { storyPacks = null, personalityPool = null, statRules = null, fetchImpl = null } = {}
+  ) {
+    const fetcher = fetchImpl || (typeof fetch === 'function' ? fetch : null);
+    if (!fetcher) return { loaded: 0, skipped: 0 };
+    if (!this._state.loadedStoryPackFiles || typeof this._state.loadedStoryPackFiles !== 'object') {
+      this._state.loadedStoryPackFiles = {};
+    }
+
+    let manifest;
+    try {
+      const resp = await fetcher(manifestUrl, { cache: 'no-cache' });
+      if (!resp || !resp.ok) return { loaded: 0, skipped: 0 };
+      manifest = await resp.json();
+    } catch {
+      return { loaded: 0, skipped: 0 };
+    }
+
+    const entries = Array.isArray(manifest?.packs) ? manifest.packs : Array.isArray(manifest) ? manifest : [];
+    const baseDir = manifestUrl.replace(/[^/]+$/, '');
+    let loaded = 0;
+    let skipped = 0;
+
+    for (const entry of entries) {
+      if (!entry || entry.enabled === false || !entry.file) continue;
+      const fileKey = String(entry.file).trim();
+      const ver = String(entry.version || '1.0.0').trim();
+      if (this._state.loadedStoryPackFiles[fileKey] === ver) {
+        skipped += 1;
+        continue;
+      }
+      try {
+        const packUrl = fileKey.startsWith('./') || fileKey.startsWith('/') || /^https?:\/\//i.test(fileKey)
+          ? fileKey
+          : `${baseDir}${fileKey}`;
+        const packResp = await fetcher(packUrl, { cache: 'no-cache' });
+        if (!packResp || !packResp.ok) continue;
+        const rawText = await packResp.text();
+        await this.smartImportJSONText(rawText, { mode: 'merge', storyPacks, personalityPool, statRules });
+        this._state.loadedStoryPackFiles[fileKey] = ver;
+        loaded += 1;
+      } catch (err) {
+        console.warn(`[ContentManager] Failed to auto-load story pack "${fileKey}":`, err);
+      }
+    }
+
+    if (loaded > 0) {
+      await this.persist();
+    }
+    return { loaded, skipped };
   }
 
   // ------------------------------------------------------------
@@ -743,6 +1035,7 @@ export class ContentManager {
         customDialogues: this.listCustomDialogues(),
         customGifts: this.listCustomGifts(),
         customEquipment: this.listCustomEquipment(),
+        storyExtensions: this.getStoryExtensions(),
         oaths: this._interaction ? this._interaction.getAllOaths() : {},
       },
     };
@@ -764,6 +1057,7 @@ export class ContentManager {
       dialogues: 0,
       gifts: 0,
       customEquipment: 0,
+      storyExtensions: 0,
     };
 
     // 1. Characters
@@ -828,12 +1122,13 @@ export class ContentManager {
       }
     }
 
-    // 5. Custom Enemies, Dialogues, Gifts, Equipment Templates
+    // 5. Custom Enemies, Dialogues, Gifts, Equipment Templates & Story Extensions
     if (isReplace) {
       this._state.customEnemies = [];
       this._state.customDialogues = [];
       this._state.customGifts = [];
       this._state.customEquipment = [];
+      this._state.storyExtensions = createEmptyStoryExtensions();
     }
     if (Array.isArray(p.customEnemies)) {
       for (const e of p.customEnemies) {
@@ -867,6 +1162,9 @@ export class ContentManager {
         }
       }
     }
+    if (p.storyExtensions && typeof p.storyExtensions === 'object') {
+      counts.storyExtensions += this.mergeStoryExtensions(p.storyExtensions);
+    }
 
     await this.persist();
     if (this._logs) {
@@ -890,6 +1188,8 @@ export class ContentManager {
    *   - Events & Story Packs: `events` / `storyPacks` / `stories` / `chapters` / `packs`
    *     with `scenes`/`nodes`/`steps`/`dialogues`, `speaker`/`name`/`character`, `text`/`content`/`line`,
    *     `choices`/`options`/`branches`, `nextText`/`reply`, and `nextNodeId`/`nextSceneId`
+   *   - Extended Story Engine Banks: `dialogueBank`, `portraitTouchLines`, `outfitFlavorLines`,
+   *     `favoriteGiftReactions`, `breakthroughTheatres`, `oathRitualTheatre`, `maritimeEncounters`
    *   - Ships & Equipment/Outfits: `ships`/`characters`, `equipments`/`equipment`/`outfits`/`items`
    *     with automatic Chinese/English rarity normalization (`白/绿/蓝/紫/橙` or `common..legendary`).
    */
@@ -921,6 +1221,7 @@ export class ContentManager {
       personalities: 0,
       traits: 0,
       storyPacks: 0,
+      storyExtensions: 0,
       characters: 0,
       equipment: 0,
       enemies: 0,
@@ -1326,6 +1627,28 @@ export class ContentManager {
         }
       }
 
+      // 7. Extended Story Engine Banks (6-stage day/night dialogueBank, portraitTouchLines,
+      //    outfitFlavorLines, favoriteGiftReactions, breakthroughTheatres, oathRitualTheatre, maritimeEncounters)
+      const extSource =
+        rootObj.storyExtensions && typeof rootObj.storyExtensions === 'object'
+          ? { ...rootObj, ...rootObj.storyExtensions }
+          : rootObj;
+      const hasStoryExtKeys =
+        Boolean(extSource.dialogueBank) ||
+        Boolean(extSource.portraitTouchLines) ||
+        Boolean(extSource.outfitFlavorLines) ||
+        Array.isArray(extSource.favoriteGiftReactions) ||
+        Boolean(extSource.breakthroughTheatres) ||
+        Boolean(extSource.oathRitualTheatre) ||
+        Array.isArray(extSource.maritimeEncounters);
+      if (hasStoryExtKeys) {
+        const extMerged = this.mergeStoryExtensions(extSource);
+        if (extMerged > 0) {
+          matched = true;
+          counts.storyExtensions += extMerged;
+        }
+      }
+
       return matched;
     };
 
@@ -1337,6 +1660,7 @@ export class ContentManager {
       counts.enemies += modRes.enemies || 0;
       counts.dialogues += modRes.dialogues || 0;
       counts.gifts += modRes.gifts || 0;
+      counts.storyExtensions += modRes.storyExtensions || 0;
       await processContainer(parsed.payload);
     } else if (Array.isArray(parsed)) {
       // Case 2: Bare JSON Array `[...]`
@@ -1355,6 +1679,7 @@ export class ContentManager {
       counts.personalities +
       counts.traits +
       counts.storyPacks +
+      counts.storyExtensions +
       counts.characters +
       counts.equipment +
       counts.enemies +
@@ -1366,7 +1691,7 @@ export class ContentManager {
         ? `数组长度 ${parsed.length}`
         : `检测到字段：${Object.keys(parsed).slice(0, 8).join(', ') || '(空对象)'}`;
       throw new Error(
-        `自适应识别失败（${detectedKeys}）：未匹配到性格(personalities/personas)、特质(traits/quirks)、剧情事件(events/storyPacks/scenes)、舰娘(ships/characters)或装备服装(equipments/outfits/items)结构`
+        `自适应识别失败（${detectedKeys}）：未匹配到性格(personalities/personas)、特质(traits/quirks)、剧情事件(events/storyPacks/scenes)、扩展剧情词库(dialogueBank/portraitTouchLines/breakthroughTheatres)、舰娘(ships/characters)或装备服装(equipments/outfits/items)结构`
       );
     }
 
@@ -1375,6 +1700,7 @@ export class ContentManager {
     if (counts.personalities > 0) parts.push(`新增 ${counts.personalities} 种性格`);
     if (counts.traits > 0) parts.push(`${counts.traits} 个特质`);
     if (counts.storyPacks > 0) parts.push(`${counts.storyPacks} 个剧情事件`);
+    if (counts.storyExtensions > 0) parts.push(`${counts.storyExtensions} 条互动/触摸/突破剧情词库`);
     if (counts.characters > 0) parts.push(`${counts.characters} 名舰娘`);
     if (counts.equipment > 0) parts.push(`${counts.equipment} 件装备/服装`);
     if (counts.enemies > 0) parts.push(`${counts.enemies} 种敌舰`);
@@ -1547,6 +1873,11 @@ export class ContentManager {
       customDialogues: Array.isArray(snapshot.customDialogues) ? deepClone(snapshot.customDialogues) : [],
       customGifts: Array.isArray(snapshot.customGifts) ? deepClone(snapshot.customGifts) : [],
       customEquipment: Array.isArray(snapshot.customEquipment) ? deepClone(snapshot.customEquipment) : [],
+      storyExtensions: createEmptyStoryExtensions(),
+      loadedStoryPackFiles:
+        snapshot.loadedStoryPackFiles && typeof snapshot.loadedStoryPackFiles === 'object'
+          ? deepClone(snapshot.loadedStoryPackFiles)
+          : {},
       encounteredEnemyNames: Array.isArray(snapshot.encounteredEnemyNames)
         ? snapshot.encounteredEnemyNames.map(String)
         : def.encounteredEnemyNames,
@@ -1555,6 +1886,9 @@ export class ContentManager {
         : [],
       updatedAt: Number(snapshot.updatedAt) || Date.now(),
     };
+    if (snapshot.storyExtensions && typeof snapshot.storyExtensions === 'object') {
+      this.mergeStoryExtensions(snapshot.storyExtensions);
+    }
     if (persist) this.persist();
   }
 }

@@ -69,14 +69,15 @@
 }
 ```
 
-- **立即生效导入字段**（`ContentManager.smartImportJSONText` 直接写入 IndexedDB 并实时生效）：
+- **全部字段均已实时挂载生效**（`ContentManager.smartImportJSONText` 直接写入 IndexedDB 并由各引擎精准分流，启动时自动同步 `custom-packs/stories/index.json` 清单）：
   - `personalities` → 写入 `PersonalityPool` 主性格语音库
   - `traits` → 写入 `PersonalityPool` 副特质/口癖库
-  - `customDialogues` → 写入 `ContentManager` 自定义日常互动台词库（`StoryEngine.dailyTalk` 直接抽取）
-  - `storyPacks` → 写入 `StoryPackEngine` 外置剧场与海图奇遇包（港区剧场与出征海遇节点直接播放）
+  - `customDialogues` → 写入 `ContentManager` 自定义日常互动台词库（`StoryEngine.dailyTalk` 直接抽取，完整支持全部六阶段 + `any`）
+  - `storyPacks` → 写入 `StoryPackEngine` 外置剧场与海图奇遇包（`port_daily` / `main_chapter` 供港区/图鉴剧场游玩，`sortie_encounter` 专供出征突发海遇抽选，互不串台）
+  - `dialogueBank` / `portraitTouchLines` / `outfitFlavorLines` / `favoriteGiftReactions` / `breakthroughTheatres` / `oathRitualTheatre` / `maritimeEncounters` → 写入 `ContentManager.storyExtensions`，由 `StoryEngine` 按阶段、昼夜、服装风格、触摸部位/档位、偏爱礼物 ID、20/40/60/80/100 突破节点、誓约仪式与海图奇遇**精准分流并优先抽取**（无自定义条目时无缝回退内置词库）
   - （可选扩展）`customGifts`、`outfits`、`ships`、`customEnemies`
-- **完整引擎对齐结构**（与 `src/data/default-dialogues.js` 一一对应，且被 `smartImportJSONText` 无报错兼容保留，方便审阅、导出及后续扩展挂载）：
-  - `dialogueBank`、`portraitTouchLines`、`outfitFlavorLines`、`favoriteGiftReactions`、`breakthroughTheatres`、`oathRitualTheatre`、`maritimeEncounters`
+
+> **自动挂载清单**：每次在 `custom-packs/stories/` 新增正式剧情包后，将其登记到 `custom-packs/stories/index.json` 的 `packs` 数组中（含 `id`、`file`、`version`、`enabled`），游戏启动时即会自动无损增量加载（同版本仅加载一次，绝不覆盖存档或复活玩家主动删除的包）。
 
 ---
 
@@ -105,7 +106,7 @@
 ]
 ```
 
-> **导入器兼容备注**：当前 `ContentManager.createCustomDialogue()` 的 `validStages` 为 `['any', 'stranger', 'familiar', 'trusted', 'close', 'oath']`。若填写 `flutter` 或 `adoration`，导入器会自动无报错归类为 `'any'` 并在全阶段生效；如需严格限定阶段，建议在 `customDialogues` 中使用 `stranger` / `familiar` / `trusted` / `oath` / `any`，同时在 `dialogueBank` 中完整保留全部六阶段细分键。
+> `ContentManager.createCustomDialogue()` 已完整支持全部六阶段 `stranger` / `familiar` / `trusted` / `flutter` / `adoration` / `oath` 及 `any`（保留 `close` 向后兼容）。
 
 #### B. `dialogueBank`（六阶段 × 白天/深夜时段问候与分支选项）
 

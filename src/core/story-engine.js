@@ -218,6 +218,55 @@ export class StoryEngine {
   }
 
   // ------------------------------------------------------------
+  // External Imported Story Extension Resolvers (with Built-in Fallback)
+  // ------------------------------------------------------------
+
+  _getStoryExtensions() {
+    if (this._contentManager && typeof this._contentManager.getStoryExtensions === 'function') {
+      return this._contentManager.getStoryExtensions();
+    }
+    return null;
+  }
+
+  _pickFromImportedOrBuiltin(importedList = [], builtinList = [], importedWeight = 0.68) {
+    const hasImported = Array.isArray(importedList) && importedList.length > 0;
+    const hasBuiltin = Array.isArray(builtinList) && builtinList.length > 0;
+    if (hasImported && hasBuiltin) {
+      return Math.random() < importedWeight ? pickRandom(importedList) : pickRandom(builtinList);
+    }
+    if (hasImported) return pickRandom(importedList);
+    if (hasBuiltin) return pickRandom(builtinList);
+    return null;
+  }
+
+  getBreakthroughTheatreForGate(gate, { random = false } = {}) {
+    const gNum = Number(gate);
+    const builtin = BREAKTHROUGH_THEATRES[gNum] || null;
+    const ext = this._getStoryExtensions();
+    const extList = ext?.breakthroughTheatres?.[String(gNum)];
+    if (Array.isArray(extList) && extList.length > 0) {
+      const picked = random ? pickRandom(extList) : extList[extList.length - 1];
+      if (picked) {
+        return {
+          ...picked,
+          gate: gNum,
+          fromLabel: picked.fromLabel || builtin?.fromLabel || '',
+          toLabel: picked.toLabel || builtin?.toLabel || '',
+        };
+      }
+    }
+    return builtin;
+  }
+
+  getOathRitualTheatre() {
+    const ext = this._getStoryExtensions();
+    if (ext?.oathRitualTheatre && ext.oathRitualTheatre.openingLine && Array.isArray(ext.oathRitualTheatre.choices) && ext.oathRitualTheatre.choices.length > 0) {
+      return ext.oathRitualTheatre;
+    }
+    return OATH_RITUAL_THEATRE;
+  }
+
+  // ------------------------------------------------------------
   // Affection Stage & Hard Gate Helpers (20 / 40 / 60 / 80 / 100 / 150)
   // ------------------------------------------------------------
 
@@ -277,7 +326,7 @@ export class StoryEngine {
       stages: AFFINITY_STAGES_6,
       unlockedGates: unlockedList,
       pendingGate,
-      pendingTheatre: pendingGate ? BREAKTHROUGH_THEATRES[pendingGate] || null : null,
+      pendingTheatre: pendingGate ? this.getBreakthroughTheatreForGate(pendingGate) : null,
       currentCap,
       atStageCap,
       canStartOath,
@@ -418,8 +467,12 @@ export class StoryEngine {
     const vars = this._buildVars(actor);
     const tod = getTimeOfDayBucket();
     const st = this.getAffectionStatus(actor.id);
+    const ext = this._getStoryExtensions();
+    const extStage = ext?.dialogueBank?.[st.stage.id];
+    const extList = extStage?.[tod]?.length ? extStage[tod] : extStage?.day || [];
     const stageBank = DEFAULT_DIALOGUE_BANK[st.stage.id] || DEFAULT_DIALOGUE_BANK.stranger;
-    const sample = pickRandom(stageBank[tod] || stageBank.day) || stageBank.day[0];
+    const builtinList = stageBank[tod] || stageBank.day;
+    const sample = this._pickFromImportedOrBuiltin(extList, builtinList, 0.68) || stageBank.day[0];
 
     if (sample?.narration) {
       this._appendMessage(actor.id, {
@@ -460,6 +513,7 @@ export class StoryEngine {
     const status = this.getAffectionStatus(cid);
     const tod = getTimeOfDayBucket();
     const topic = String(customTopic || '').trim();
+    const ext = this._getStoryExtensions();
 
     if (topic) {
       this._appendMessage(cid, {
@@ -469,7 +523,7 @@ export class StoryEngine {
       });
     }
 
-    // Pick natural dialogue (compatible with custom JSON dialogues, outfit flavors, and 6-stage bank)
+    // Pick natural dialogue (compatible with custom JSON dialogues, extended dialogueBank, outfit flavors, and 6-stage bank)
     const customDialogues = this._contentManager?.listCustomDialogues
       ? this._contentManager
           .listCustomDialogues()
@@ -480,18 +534,23 @@ export class StoryEngine {
     let spokenText = '';
     let quickChoices = null;
 
-    const outfitFlavor = vars.outfitStyle ? OUTFIT_FLAVOR_LINES[vars.outfitStyle] : null;
-    if (!topic && customDialogues.length > 0 && Math.random() < 0.35) {
+    const extOutfitList = vars.outfitStyle ? ext?.outfitFlavorLines?.[vars.outfitStyle] || [] : [];
+    const builtinOutfit = vars.outfitStyle && OUTFIT_FLAVOR_LINES[vars.outfitStyle] ? [OUTFIT_FLAVOR_LINES[vars.outfitStyle]] : [];
+    const outfitFlavor = this._pickFromImportedOrBuiltin(extOutfitList, builtinOutfit, 0.7);
+
+    if (!topic && outfitFlavor && Math.random() < 0.3) {
+      narrationText = formatDialogueText(outfitFlavor.narration, vars);
+      spokenText = formatDialogueText(outfitFlavor.text, vars);
+    } else if (!topic && customDialogues.length > 0 && Math.random() < 0.25) {
       const pickedCustom = pickRandom(customDialogues);
       spokenText = formatDialogueText(pickedCustom.text, vars);
       narrationText = `${actor.name}看着你，轻声分享了港区近况。`;
-    } else if (!topic && outfitFlavor && Math.random() < 0.32) {
-      narrationText = formatDialogueText(outfitFlavor.narration, vars);
-      spokenText = formatDialogueText(outfitFlavor.text, vars);
     } else if (topic) {
       // Respond naturally to commander's typed message (with optional AI polish via PromptPipeline)
+      const extStage = ext?.dialogueBank?.[status.stage.id];
+      const extList = extStage?.[tod]?.length ? extStage[tod] : extStage?.day || [];
       const stagePool = DEFAULT_DIALOGUE_BANK[status.stage.id] || DEFAULT_DIALOGUE_BANK.familiar;
-      const fallbackEntry = pickRandom(stagePool[tod] || stagePool.day) || stagePool.day[0];
+      const fallbackEntry = this._pickFromImportedOrBuiltin(extList, stagePool[tod] || stagePool.day, 0.65) || stagePool.day[0];
       const baseReply =
         this._dialogueEngine && typeof this._dialogueEngine.composeSecretaryTalk === 'function'
           ? this._dialogueEngine.composeSecretaryTalk({
@@ -526,9 +585,11 @@ export class StoryEngine {
       narrationText = `${actor.name}认真听完你的话，轻轻抬起眼眸。`;
       spokenText = finalReply;
     } else {
+      const extStage = ext?.dialogueBank?.[status.stage.id];
+      const extList = extStage?.[tod]?.length ? extStage[tod] : [];
       const stagePool = DEFAULT_DIALOGUE_BANK[status.stage.id] || DEFAULT_DIALOGUE_BANK.stranger;
-      const list = stagePool[tod] || stagePool.day;
-      const entry = pickRandom(list) || list[0];
+      const builtinList = stagePool[tod] || stagePool.day;
+      const entry = this._pickFromImportedOrBuiltin(extList, builtinList, 0.68) || builtinList[0];
       narrationText = formatDialogueText(entry.narration || '', vars);
       spokenText = formatDialogueText(entry.text || '', vars);
       if (Array.isArray(entry.choices) && entry.choices.length > 0) {
@@ -616,7 +677,8 @@ export class StoryEngine {
     const cid = actor.id;
     const vars = this._buildVars(actor);
     const status = this.getAffectionStatus(cid);
-    const zonePool = PORTRAIT_TOUCH_LINES[zone] || PORTRAIT_TOUCH_LINES.head;
+    const safeZone = PORTRAIT_TOUCH_LINES[zone] ? zone : 'head';
+    const zonePool = PORTRAIT_TOUCH_LINES[safeZone];
     const band = status.isOathed && Array.isArray(zonePool.oath)
       ? 'oath'
       : status.stage.index >= 4
@@ -624,7 +686,10 @@ export class StoryEngine {
       : status.stage.index >= 2
       ? 'mid'
       : 'low';
-    const picked = pickRandom(zonePool[band] || zonePool.low) || zonePool.low[0];
+    const ext = this._getStoryExtensions();
+    const extList = ext?.portraitTouchLines?.[safeZone]?.[band] || [];
+    const builtinList = zonePool[band] || zonePool.low;
+    const picked = this._pickFromImportedOrBuiltin(extList, builtinList, 0.7) || zonePool.low[0];
 
     const zoneLabels = { head: '轻抚发顶', shoulder: '轻触肩头', hand: '轻握指尖' };
     this._appendMessage(cid, {
@@ -638,8 +703,8 @@ export class StoryEngine {
     });
     this._entities.adjustStat(cid, 'morale', 2, { min: 0, max: 100 });
     await this.persist();
-    this._emit('story-engine:updated', { characterId: cid, action: 'touch', zone });
-    return { zoneLabel: zoneLabels[zone] || '互动', text: formatDialogueText(picked.text, vars) };
+    this._emit('story-engine:updated', { characterId: cid, action: 'touch', zone: safeZone });
+    return { zoneLabel: zoneLabels[safeZone] || '互动', text: formatDialogueText(picked.text, vars) };
   }
 
   async giveBackpackGift(actor, itemId) {
@@ -678,7 +743,17 @@ export class StoryEngine {
     const postStatus = this.getAffectionStatus(cid);
     const stage = postStatus.stage;
     if (isFavorite) {
-      const favReact = pickRandom(FAVORITE_GIFT_REACTIONS) || FAVORITE_GIFT_REACTIONS[0];
+      const ext = this._getStoryExtensions();
+      const allExtFav = Array.isArray(ext?.favoriteGiftReactions) ? ext.favoriteGiftReactions : [];
+      const exactExtFav = allExtFav.filter(
+        (r) =>
+          (r.giftId && (item.id === r.giftId || String(item.id || '').includes(r.giftId))) ||
+          (r.giftName && item.name === r.giftName)
+      );
+      const extCandidates = exactExtFav.length > 0 ? exactExtFav : allExtFav.filter((r) => !r.giftId && !r.giftName);
+      const favReact =
+        this._pickFromImportedOrBuiltin(extCandidates, FAVORITE_GIFT_REACTIONS, exactExtFav.length > 0 ? 0.85 : 0.68) ||
+        FAVORITE_GIFT_REACTIONS[0];
       this._appendMessage(cid, {
         role: 'narration',
         text: formatDialogueText(favReact.narration, vars),
@@ -829,7 +904,7 @@ export class StoryEngine {
    */
   async startBreakthroughTheatre(actor, gate, { isReplay = false } = {}) {
     if (!actor || !actor.id) throw new Error('舰娘不存在');
-    const theatre = BREAKTHROUGH_THEATRES[Number(gate)];
+    const theatre = this.getBreakthroughTheatreForGate(gate, { random: true });
     if (!theatre) throw new Error('未找到对应阶段突破小剧场');
 
     const cid = actor.id;
@@ -890,7 +965,7 @@ export class StoryEngine {
     }
 
     const vars = this._buildVars(actor);
-    const ritual = OATH_RITUAL_THEATRE;
+    const ritual = this.getOathRitualTheatre();
 
     this._appendMessage(cid, {
       role: 'system',
@@ -961,12 +1036,13 @@ export class StoryEngine {
         this._state.unlockedBreakthroughs[cid] = Array.from(set).sort((a, b) => a - b);
         unlockedGate = gate;
         const postSt = this.getAffectionStatus(cid);
+        const theatreMeta = this.getBreakthroughTheatreForGate(gate) || BREAKTHROUGH_THEATRES[gate];
         this._appendMessage(cid, {
           role: 'system',
           text:
             gate >= BASE_AFFINITY_CAP
               ? `🎉 恋慕阶段突破完成！现在可以点击上方「💍 发起誓约」举行誓约仪式，解放 150 好感上限！`
-              : `🎉 阶段突破成功！已解锁【${BREAKTHROUGH_THEATRES[gate]?.toLabel || ''}】阶段，好感上限已解除至 ${postSt.currentCap}！`,
+              : `🎉 阶段突破成功！已解锁【${theatreMeta?.toLabel || ''}】阶段，好感上限已解除至 ${postSt.currentCap}！`,
         });
       }
     } else if (prompt.kind === 'oath_ritual') {
@@ -1012,7 +1088,9 @@ export class StoryEngine {
    */
   pickMaritimeEncounter({ actor }) {
     const vars = this._buildVars(actor || { id: '', name: '旗舰' });
-    const raw = pickRandom(MARITIME_ENCOUNTER_STORIES) || MARITIME_ENCOUNTER_STORIES[0];
+    const ext = this._getStoryExtensions();
+    const extList = Array.isArray(ext?.maritimeEncounters) ? ext.maritimeEncounters : [];
+    const raw = this._pickFromImportedOrBuiltin(extList, MARITIME_ENCOUNTER_STORIES, 0.72) || MARITIME_ENCOUNTER_STORIES[0];
     return {
       id: raw.id,
       title: raw.title,

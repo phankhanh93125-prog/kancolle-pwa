@@ -1,0 +1,12 @@
+{
+  "schema": "kancolle-pwa-story-manifest-v1",
+  "packs": [
+    {
+      "id": "story-style-preview",
+      "file": "story-style-preview.json",
+      "version": "1.0.0",
+      "enabled": true,
+      "title": "文风试写样张 · 微甜傲娇型（日常/深夜/触摸/40好感突破）"
+    }
+  ]
+}

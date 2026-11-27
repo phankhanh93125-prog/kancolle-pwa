@@ -764,18 +764,22 @@ export function openCustomWorkshopModal(services, { initialTab = 'ship' } = {}) 
       try {
         await storyPacks.savePack({
           id: `custom_enc_${Date.now().toString(36)}`,
+          name: title,
           title,
-          category: 'maritime',
+          category: 'sortie_encounter',
           builtIn: false,
           enabled: true,
+          entryNodeId: 'n_start',
           startNodeId: 'n_start',
           nodes: [
             {
               id: 'n_start',
+              title,
+              body: text,
               text,
               choices: [
-                { id: 'c1', label: c1, nextText: '舰队顺利完成调查，收获补给与好感！' },
-                { id: 'c2', label: c2, nextText: '舰队平稳通过该海域，全员状态良好。' },
+                { id: 'c1', label: c1, resultText: '舰队顺利完成调查，收获补给与好感！', nextText: '舰队顺利完成调查，收获补给与好感！' },
+                { id: 'c2', label: c2, resultText: '舰队平稳通过该海域，全员状态良好。', nextText: '舰队平稳通过该海域，全员状态良好。' },
               ],
             },
           ],
@@ -832,7 +836,7 @@ export function openCustomWorkshopModal(services, { initialTab = 'ship' } = {}) 
           statRules,
         });
         await persistCharacterRoster({ storage, entities });
-        const summary = res?.summary || res?.message || '外部 JSON 内容包导入成功！';
+        const summary = res?.summaryText || res?.summary || res?.message || '外部 JSON 内容包导入成功！';
         cwState.lastImportReport = summary;
         uiKit.showToast(summary, 'ok');
         render();
@@ -862,6 +866,11 @@ export function openCustomWorkshopModal(services, { initialTab = 'ship' } = {}) 
     wrap.appendChild(importCard);
 
     // Imported External Story/Mod Packs List + Backup Export
+    const categoryLabelMap = {
+      port_daily: '港区日常',
+      sortie_encounter: '出征奇遇',
+      main_chapter: '章节主线',
+    };
     const listCard = document.createElement('section');
     listCard.className = 'surface-card lab-stack-sm';
     listCard.innerHTML = `
@@ -877,8 +886,8 @@ export function openCustomWorkshopModal(services, { initialTab = 'ship' } = {}) 
                 (p) => `
             <div class="lab-slot-card interact-drawer-item" data-cw-pack="${escapeHtml(p.id)}">
               <div class="interact-drawer-info">
-                <strong>${escapeHtml(p.title || p.id)}</strong>
-                <div class="cc-stat-sub">节点数 ${(p.nodes || []).length} · ${p.enabled !== false ? '已启用' : '已停用'}</div>
+                <strong>${escapeHtml(p.name || p.title || p.id)}</strong>
+                <div class="cc-stat-sub">${escapeHtml(categoryLabelMap[p.category] || p.category || '港区日常')} · 节点数 ${(p.nodes || []).length} · ${p.enabled !== false ? '已启用' : '已停用'}</div>
               </div>
               <div style="display:flex; gap:6px; flex-shrink:0;">
                 <button type="button" class="btn-secondary fac-mini-btn" data-cw-pack-toggle="${escapeHtml(p.id)}">${p.enabled !== false ? '停用' : '启用'}</button>

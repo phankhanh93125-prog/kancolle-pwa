@@ -850,8 +850,13 @@ export function normalizeAdaptiveStoryPack(raw = {}) {
     ? raw.category
     : rawCategory.includes('main') || rawCategory.includes('chapter')
     ? PACK_CATEGORIES.MAIN_CHAPTER
-    : rawCategory.includes('season') || rawCategory.includes('fest') || rawCategory.includes('holiday')
-    ? PACK_CATEGORIES.SEASONAL_EVENT
+    : rawCategory.includes('maritime') ||
+      rawCategory.includes('sortie') ||
+      rawCategory.includes('encounter') ||
+      rawCategory === 'sea' ||
+      rawCategory.startsWith('sea_') ||
+      rawCategory.startsWith('sea-')
+    ? PACK_CATEGORIES.SORTIE_ENCOUNTER
     : PACK_CATEGORIES.PORT_DAILY;
 
   const rawParagraphs =

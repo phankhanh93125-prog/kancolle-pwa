@@ -573,22 +573,43 @@ async function resolveAnchorageAction(mode = 'rest') {
 }
 
 /**
- * Build a Random Maritime Encounter story card by automatically pulling from user-imported
- * external JSON story packs (`storyPacks`) whenever available, with rich built-in fallback!
+ * Build a Random Maritime Encounter story card by automatically pulling from enabled external
+ * `sortie_encounter` JSON story packs (`storyPacks`) whenever available, with rich built-in &
+ * StoryEngine `maritimeEncounters` fallback!
  */
 function buildMaritimeEncounterStory({ node, nodeIdx, stepCost, char, memberIds, run, storyPacks, storyEngine }) {
+  const cmdName = sortieState.context?.commander?.getProfile?.()?.name || '指挥官';
+  const formatEncounterText = (str) =>
+    String(str || '')
+      .replaceAll('{{flagship}}', char.name)
+      .replaceAll('{actor.name}', char.name)
+      .replaceAll('{actor}', char.name)
+      .replaceAll('{commander.name}', cmdName)
+      .replaceAll('{cmd}', cmdName);
+
   const allPacks = storyPacks && typeof storyPacks.listPacks === 'function' ? storyPacks.listPacks() : [];
-  const customPacks = allPacks.filter((p) => p && !p.builtIn && Array.isArray(p.nodes) && p.nodes.length > 0);
+  const customPacks = allPacks.filter(
+    (p) =>
+      p &&
+      !p.builtIn &&
+      p.enabled !== false &&
+      p.category === 'sortie_encounter' &&
+      Array.isArray(p.nodes) &&
+      p.nodes.length > 0
+  );
 
   if (customPacks.length > 0) {
     const pickedPack = customPacks[Math.floor(Math.random() * customPacks.length)];
-    const startNode = pickedPack.nodes.find((n) => n.id === pickedPack.startNodeId) || pickedPack.nodes[0];
+    const startId = pickedPack.entryNodeId || pickedPack.startNodeId;
+    const startNode = pickedPack.nodes.find((n) => n.id === startId) || pickedPack.nodes[0];
     if (startNode) {
+      const packTitle = pickedPack.name || pickedPack.title || '外置奇遇剧情包';
+      const rawPrompt = startNode.body || startNode.text || `舰队在节点 ${node.code}「${node.name}」遭遇奇遇事件：`;
       const rawChoices = Array.isArray(startNode.choices) && startNode.choices.length > 0
         ? startNode.choices.slice(0, 3)
         : [
-            { label: '上前调查并记录海图情报', text: '舰队抵近查明真相，收获额外补给与好感。' },
-            { label: '谨慎警戒并绕航推进', text: '舰队稳妥绕过异象区域，安全继续航程。' },
+            { label: '上前调查并记录海图情报', resultText: '舰队抵近查明真相，收获额外补给与好感。' },
+            { label: '谨慎警戒并绕航推进', resultText: '舰队稳妥绕过异象区域，安全继续航程。' },
           ];
       return {
         nodeIndex: nodeIdx,
@@ -597,18 +618,19 @@ function buildMaritimeEncounterStory({ node, nodeIdx, stepCost, char, memberIds,
         flagshipId: char.id,
         memberIds: [...memberIds],
         isStoryPackEvent: true,
-        sourcePackTitle: pickedPack.title || '外置奇遇剧情包',
-        title: `${pickedPack.title || '随机海遇'} · 节点 ${node.code}`,
+        sourcePackTitle: packTitle,
+        title: `${packTitle} · 节点 ${node.code}`,
         badge: '外置 JSON 海遇',
-        prompt: String(startNode.text || `舰队在节点 ${node.code}「${node.name}」遭遇奇遇事件：`).replaceAll('{{flagship}}', char.name),
+        prompt: formatEncounterText(rawPrompt),
         choices: rawChoices.map((ch, idx) => ({
           id: ch.id || `sp_ch_${idx}`,
-          label: String(ch.label || ch.text || `抉择 ${idx + 1}`),
+          label: formatEncounterText(ch.label || ch.text || `抉择 ${idx + 1}`),
           dcDelta: idx === 0 ? 0 : -2,
           lootMult: idx === 0 ? 1.25 : 0.95,
           crateBonus: idx === 0 ? 0.22 : 0.08,
           safeWeather: idx > 0,
-          customReplyText: ch.nextText || ch.reply || '',
+          customReplyText: formatEncounterText(ch.resultText || ch.nextText || ch.reply || ''),
+          customFailText: formatEncounterText(ch.failText || ''),
           tag: ch.check ? '检定抉择' : idx === 0 ? '深入探索' : '稳健应对',
         })),
         outcome: null,
@@ -616,7 +638,7 @@ function buildMaritimeEncounterStory({ node, nodeIdx, stepCost, char, memberIds,
     }
   }
 
-  // Fresh breezy romantic maritime encounters from StoryEngine
+  // Fresh breezy romantic maritime encounters from StoryEngine (merges imported maritimeEncounters + built-ins)
   if (storyEngine && typeof storyEngine.pickMaritimeEncounter === 'function') {
     const enc = storyEngine.pickMaritimeEncounter({ actor: char });
     if (enc) {
@@ -639,6 +661,7 @@ function buildMaritimeEncounterStory({ node, nodeIdx, stepCost, char, memberIds,
           safeWeather: true,
           refillCarried: ch.refillCarried || (idx === 0 ? { fuel: 18, ammo: 18 } : { fuel: 12, ammo: 12 }),
           customReplyText: ch.successText || '',
+          customFailText: ch.failText || '',
           tag: ch.tag || (idx === 0 ? '温馨互动' : '稳健应对'),
         })),
         outcome: null,
@@ -1090,7 +1113,10 @@ async function resolveActiveNodeStoryChoice(choiceIdx) {
     await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: char.id });
     const lootText = formatLootSummary(gained, resources);
 
-    const customLine = choice.customReplyText ? `${choice.customReplyText} ` : '';
+    const pickedCustomText = isSuccess
+      ? choice.customReplyText || ''
+      : choice.customFailText || choice.customReplyText || '';
+    const customLine = pickedCustomText ? `${pickedCustomText} ` : '';
     const rendered = await narrative.run({
       template: isSuccess
         ? `${customLine}【节点 {nodeCode} · {nodeName}】{actor.name}执行「{choiceTag}」顺利完成（{check.total} vs DC {check.dc}），收获：{lootText}。`

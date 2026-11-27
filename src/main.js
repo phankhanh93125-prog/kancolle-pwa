@@ -2357,6 +2357,12 @@ async function bootApplication() {
       includeDemoShips: false,
       includeItems: false,
     });
+    // Non-destructively sync bundled external story packs from custom-packs/stories/index.json
+    await contentManager.syncStoryPackManifest('./custom-packs/stories/index.json', {
+      storyPacks,
+      personalityPool,
+      statRules,
+    });
     if (entities.list({ kind: 'character' }).length > 0) {
       storyEngine.syncLegacyBreakthroughs();
       buildings.syncAllRetrofitModifiers?.();
