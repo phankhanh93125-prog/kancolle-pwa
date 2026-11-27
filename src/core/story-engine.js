@@ -19,10 +19,15 @@ import {
   BREAKTHROUGH_GATES,
   BREAKTHROUGH_THEATRES,
   DEFAULT_DIALOGUE_BANK,
+  FAVORITE_GIFT_REACTIONS,
   MARITIME_ENCOUNTER_STORIES,
+  MVP_RETURN_LINES,
   OATH_RITUAL_THEATRE,
   OUTFIT_FLAVOR_LINES,
   PORTRAIT_TOUCH_LINES,
+  RETROFIT_DIALOGUE_LINES,
+  composeLiveStatusSignature,
+  getFavoriteGiftIdsForShip,
   getTimeOfDayBucket,
   resolveAffinityStage6,
 } from '../data/default-dialogues.js';
@@ -62,7 +67,7 @@ function formatDialogueText(template, vars = {}) {
 
 function createEmptyStoryEngineState() {
   return {
-    version: 1,
+    version: 2,
     /** @type {Record<string, Array<object>>} */
     chatLogsByShip: {},
     /** @type {Record<string, { dateKey: string, count: number }>} */
@@ -71,6 +76,8 @@ function createEmptyStoryEngineState() {
     unlockedBreakthroughs: {},
     /** @type {Record<string, object | null>} */
     activePromptByShip: {},
+    /** @type {Record<string, { type: string, at: number, detail?: string }>} */
+    recentEventByShip: {},
   };
 }
 
@@ -152,6 +159,9 @@ export class StoryEngine {
       }
       if (snapshot.activePromptByShip && typeof snapshot.activePromptByShip === 'object') {
         clean.activePromptByShip = deepClone(snapshot.activePromptByShip);
+      }
+      if (snapshot.recentEventByShip && typeof snapshot.recentEventByShip === 'object') {
+        clean.recentEventByShip = deepClone(snapshot.recentEventByShip);
       }
     }
     this._state = clean;
@@ -642,16 +652,19 @@ export class StoryEngine {
 
     this.ensureGreeting(actor);
     const cid = actor.id;
+    const favIds = getFavoriteGiftIdsForShip(actor);
+    const isFavorite = favIds.includes(item.id) || favIds.some((fid) => item.id?.includes(fid));
     const affBonus = (item.bonuses || []).find((b) => b.stat === 'affinity');
     const moraleBonus = (item.bonuses || []).find((b) => b.stat === 'morale');
-    const rawAff = Math.max(2, Math.min(8, Math.round(Number(affBonus?.value) || 3)));
-    const moraleGain = Math.max(4, Math.round(Number(moraleBonus?.value) || 10));
+    const baseAff = Math.max(2, Math.min(8, Math.round(Number(affBonus?.value) || 3)));
+    const rawAff = baseAff + (isFavorite ? 2 : 0);
+    const moraleGain = Math.max(4, Math.round(Number(moraleBonus?.value) || 10)) + (isFavorite ? 6 : 0);
 
     // Decrement quantity cleanly via inventory
     await this._inventory.consumeItemQuantity(item.id, 1);
 
     const vars = this._buildVars(actor, { giftName: item.name });
-    const affResult = this.gainAffection(cid, rawAff, { source: 'gift' });
+    const affResult = this.gainAffection(cid, rawAff, { source: isFavorite ? 'favorite-gift' : 'gift' });
     this._entities.adjustStat(cid, 'morale', moraleGain, { min: 0, max: 100 });
 
     this._appendMessage(cid, {
@@ -659,33 +672,47 @@ export class StoryEngine {
       kind: 'gift',
       speaker: vars.cmdName,
       giftName: item.name,
-      text: `🎁 赠送了心意礼物「${item.name}」`,
-    });
-    this._appendMessage(cid, {
-      role: 'narration',
-      text: `${actor.name}双手接过「${item.name}」，眼底浮起柔和的惊喜。`,
+      text: `${isFavorite ? '💖' : '🎁'} 赠送了${isFavorite ? '偏爱礼物' : '心意礼物'}「${item.name}」`,
     });
 
     const postStatus = this.getAffectionStatus(cid);
     const stage = postStatus.stage;
-    const replyByStage = {
-      stranger: `「给我的吗？谢谢{cmd}，这份{gift}我会好好收起来的。」`,
-      familiar: `「哇，是{gift}！{cmd}眼光真好，刚好是我最近想找的呢。」`,
-      trusted: `「谢谢你总记着我的喜好，{cmd}。收到这份{gift}，感觉整个人都被治愈了。」`,
-      flutter: `「特意为我挑的{gift}吗……{cmd}这样用心，会让我越来越在意的呀。」`,
-      adoration: `「{gift}我很喜欢，不过……比起礼物，更开心的是送它的人是你，{cmd}。」`,
-      oath: `「每次收到你送的{gift}，都会觉得和你在一起的每一天都闪闪发光呢。」`,
-    };
-    this._appendMessage(cid, {
-      role: 'ship',
-      speaker: actor.name,
-      text: formatDialogueText(replyByStage[stage.id] || replyByStage.familiar, vars),
-    });
+    if (isFavorite) {
+      const favReact = pickRandom(FAVORITE_GIFT_REACTIONS) || FAVORITE_GIFT_REACTIONS[0];
+      this._appendMessage(cid, {
+        role: 'narration',
+        text: formatDialogueText(favReact.narration, vars),
+      });
+      this._appendMessage(cid, {
+        role: 'ship',
+        speaker: actor.name,
+        text: formatDialogueText(favReact.text, vars),
+      });
+    } else {
+      this._appendMessage(cid, {
+        role: 'narration',
+        text: `${actor.name}双手接过「${item.name}」，眼底浮起柔和的惊喜。`,
+      });
+      const replyByStage = {
+        stranger: `「给我的吗？谢谢{cmd}，这份{gift}我会好好收起来的。」`,
+        familiar: `「哇，是{gift}！{cmd}眼光真好，刚好是我最近想找的呢。」`,
+        trusted: `「谢谢你总记着我的喜好，{cmd}。收到这份{gift}，感觉整个人都被治愈了。」`,
+        flutter: `「特意为我挑的{gift}吗……{cmd}这样用心，会让我越来越在意的呀。」`,
+        adoration: `「{gift}我很喜欢，不过……比起礼物，更开心的是送它的人是你，{cmd}。」`,
+        oath: `「每次收到你送的{gift}，都会觉得和你在一起的每一天都闪闪发光呢。」`,
+      };
+      this._appendMessage(cid, {
+        role: 'ship',
+        speaker: actor.name,
+        text: formatDialogueText(replyByStage[stage.id] || replyByStage.familiar, vars),
+      });
+    }
+
     this._appendMessage(cid, {
       role: 'system',
       text: affResult.gained > 0
-        ? `好感 +${affResult.gained}（当前 ${affResult.after}/${postStatus.currentCap}） · 士气 +${moraleGain}${affResult.hitGate ? ` · ✨ 已达阶段上限 ${affResult.after}/${affResult.hitGate}，请点击触发阶段突破小剧场！` : ''}`
-        : `士气 +${moraleGain}${affResult.hitGate ? ` · 已达阶段上限 ${affResult.after}/${affResult.hitGate}，完成突破剧场后继续提升` : postStatus.canStartOath ? ' · 好感已达 100/100，点击「💍 发起誓约」解锁 150 上限！' : ''}`,
+        ? `${isFavorite ? '💖 偏爱礼物加成！' : ''}好感 +${affResult.gained}（当前 ${affResult.after}/${postStatus.currentCap}） · 士气 +${moraleGain}${affResult.hitGate ? ` · ✨ 已达阶段上限 ${affResult.after}/${affResult.hitGate}，请点击触发阶段突破小剧场！` : ''}`
+        : `${isFavorite ? '💖 偏爱礼物！' : ''}士气 +${moraleGain}${affResult.hitGate ? ` · 已达阶段上限 ${affResult.after}/${affResult.hitGate}，完成突破剧场后继续提升` : postStatus.canStartOath ? ' · 好感已达 100/100，点击「💍 发起誓约」解锁 150 上限！' : ''}`,
     });
 
     await this.persist();
@@ -694,20 +721,107 @@ export class StoryEngine {
         category: LOG_CATEGORIES.CHARACTER,
         actorId: cid,
         actorName: actor.name,
-        title: `[${actor.name}] 获赠礼物「${item.name}」`,
+        title: `[${actor.name}] 获赠${isFavorite ? '偏爱' : ''}礼物「${item.name}」`,
         detail: `好感 +${affResult.gained}（${affResult.after}/${postStatus.currentCap}）· 士气 +${moraleGain}`,
       });
     }
-    this._emit('story-engine:updated', { characterId: cid, action: 'gift' });
-    this._emit('interaction:gifted', { characterId: cid, giftName: item.name, affDelta: affResult.gained, afterAff: affResult.after });
+    this._emit('story-engine:updated', { characterId: cid, action: 'gift', isFavorite });
+    this._emit('interaction:gifted', { characterId: cid, giftName: item.name, isFavorite, affDelta: affResult.gained, afterAff: affResult.after });
     return {
       giftName: item.name,
+      isFavorite,
       affDelta: affResult.gained,
       moraleGain,
       afterAff: affResult.after,
       pendingGate: affResult.hitGate,
       cappedByGate: affResult.cappedByGate,
     };
+  }
+
+  /**
+   * Push a celebratory Battle MVP Return bubble into the MVP shipgirl's chat window
+   * and update her WeChat-style live status signature!
+   */
+  async recordBattleMvpReturn(actor, mvpInfo = {}) {
+    if (!actor || !actor.id) return null;
+    const cid = actor.id;
+    this.ensureGreeting(actor);
+    const vars = this._buildVars(actor);
+    const picked = pickRandom(MVP_RETURN_LINES) || MVP_RETURN_LINES[0];
+
+    const affRes = this.gainAffection(cid, 1, { source: 'battle-mvp' });
+    this._state.recentEventByShip[cid] = {
+      type: 'mvp',
+      at: Date.now(),
+      detail: mvpInfo.reasonLabel || '出征 MVP',
+    };
+
+    this._appendMessage(cid, {
+      role: 'system',
+      text: `🏆 出征凯旋 MVP 嘉奖 · ${mvpInfo.reasonLabel || '综合贡献第一'}${affRes.gained > 0 ? ` · 好感 +${affRes.gained}` : ''}`,
+    });
+    this._appendMessage(cid, {
+      role: 'narration',
+      text: formatDialogueText(picked.narration, vars),
+    });
+    this._appendMessage(cid, {
+      role: 'ship',
+      speaker: actor.name,
+      text: formatDialogueText(picked.text, vars),
+    });
+
+    await this.persist();
+    this._emit('story-engine:updated', { characterId: cid, action: 'mvp-return' });
+    return { affRes, text: formatDialogueText(picked.text, vars) };
+  }
+
+  recordDockRepairReturn(actor) {
+    if (!actor || !actor.id) return;
+    this._state.recentEventByShip[actor.id] = {
+      type: 'repaired',
+      at: Date.now(),
+      detail: '船坞满血出渠',
+    };
+    this.persist().catch(() => {});
+  }
+
+  async recordRetrofitEvent(actor, stage = 1) {
+    if (!actor || !actor.id) return;
+    const cid = actor.id;
+    this.ensureGreeting(actor);
+    const vars = this._buildVars(actor);
+    const line = RETROFIT_DIALOGUE_LINES[stage >= 2 ? 2 : 1] || RETROFIT_DIALOGUE_LINES[1];
+    this._state.recentEventByShip[cid] = {
+      type: 'retrofit',
+      at: Date.now(),
+      detail: stage >= 2 ? '改二完成' : '一改完成',
+    };
+    this._appendMessage(cid, {
+      role: 'system',
+      text: `⚙️ 完成${stage >= 2 ? '二阶段近代化改造（改二）' : '一阶段近代化改造（改）'}！解锁全新专属战术被动与语音！`,
+    });
+    this._appendMessage(cid, {
+      role: 'narration',
+      text: formatDialogueText(line.narration, vars),
+    });
+    this._appendMessage(cid, {
+      role: 'ship',
+      speaker: actor.name,
+      text: formatDialogueText(line.text, vars),
+    });
+    await this.persist();
+    this._emit('story-engine:updated', { characterId: cid, action: 'retrofit', stage });
+  }
+
+  getLiveStatusSignature(actor) {
+    if (!actor || !actor.id) return '⚓ 港区执勤待命中…';
+    const status = this.getAffectionStatus(actor.id);
+    const recentEvent = this._state.recentEventByShip?.[actor.id] || null;
+    return composeLiveStatusSignature({ actor, status, recentEvent });
+  }
+
+  getFavoriteGiftIds(actor) {
+    return getFavoriteGiftIdsForShip(actor);
   }
 
   /**
@@ -723,7 +837,7 @@ export class StoryEngine {
 
     this._appendMessage(cid, {
       role: 'system',
-      text: `${isReplay ? '↺ 重温小剧场' : '✨ 开启阶段突破小剧场'} · ${theatre.title}（${theatre.fromLabel} → ${theatre.toLabel}）`,
+      text: `${isReplay ? '↺ 回忆录重温' : '✨ 开启阶段突破小剧场'} · ${theatre.title}（${theatre.fromLabel} → ${theatre.toLabel}）`,
     });
     this._appendMessage(cid, {
       role: 'narration',
@@ -755,20 +869,24 @@ export class StoryEngine {
   }
 
   /**
-   * Launch the romantic Oath Ceremony Mini-Theatre directly inside the bubble chat window!
+   * Launch the romantic Oath Ceremony Mini-Theatre (or replay it from Memoirs!) right inside the bubble chat window!
    */
-  async startOathRitualTheatre(actor) {
+  async startOathRitualTheatre(actor, { isReplay = false } = {}) {
     if (!actor || !actor.id) throw new Error('舰娘不存在');
     const cid = actor.id;
     const status = this.getAffectionStatus(cid);
-    if (status.isOathed) {
-      throw new Error(`「${actor.name}」已经与您缔结誓约`);
-    }
-    if (status.affinity < BASE_AFFINITY_CAP) {
-      throw new Error(`好感度需达到 ${BASE_AFFINITY_CAP} 才可发起誓约（当前 ${status.affinity}/${BASE_AFFINITY_CAP}）`);
-    }
-    if (status.pendingGate) {
-      throw new Error(`请先完成 ${status.pendingGate} 阶段突破小剧场后再发起誓约`);
+    if (!isReplay) {
+      if (status.isOathed) {
+        throw new Error(`「${actor.name}」已经与您缔结誓约`);
+      }
+      if (status.affinity < BASE_AFFINITY_CAP) {
+        throw new Error(`好感度需达到 ${BASE_AFFINITY_CAP} 才可发起誓约（当前 ${status.affinity}/${BASE_AFFINITY_CAP}）`);
+      }
+      if (status.pendingGate) {
+        throw new Error(`请先完成 ${status.pendingGate} 阶段突破小剧场后再发起誓约`);
+      }
+    } else if (!status.isOathed) {
+      throw new Error('尚未与该舰娘缔结誓约，无法回放誓约仪式');
     }
 
     const vars = this._buildVars(actor);
@@ -776,7 +894,7 @@ export class StoryEngine {
 
     this._appendMessage(cid, {
       role: 'system',
-      text: `💍 开启誓约仪式小剧场 · ${ritual.title}`,
+      text: `${isReplay ? '↺ 回忆录重温誓约仪式' : '💍 开启誓约仪式小剧场'} · ${ritual.title}`,
     });
     this._appendMessage(cid, {
       role: 'narration',
@@ -790,6 +908,7 @@ export class StoryEngine {
 
     this._state.activePromptByShip[cid] = {
       kind: 'oath_ritual',
+      isReplay: Boolean(isReplay),
       title: ritual.title,
       choices: ritual.choices.map((c) => ({
         id: c.id,
@@ -802,7 +921,7 @@ export class StoryEngine {
     };
 
     await this.persist();
-    this._emit('story-engine:updated', { characterId: cid, action: 'oath-ritual-start' });
+    this._emit('story-engine:updated', { characterId: cid, action: 'oath-ritual-start', isReplay });
     return ritual;
   }
 
@@ -854,31 +973,31 @@ export class StoryEngine {
       if (choice.closingNarration) {
         this._appendMessage(cid, { role: 'narration', text: choice.closingNarration });
       }
-      // Guarantee all gates <= 100 are unlocked and perform the official Oath ceremony cleanly
-      this._state.unlockedBreakthroughs[cid] = [...BREAKTHROUGH_GATES];
-      if (this._interaction && typeof this._interaction.performOath === 'function') {
-        const res = await this._interaction.performOath(cid, {
-          oathTitle: choice.oathTitle || '永恒誓约',
-          customVow: choice.label,
+      if (!prompt.isReplay) {
+        this._state.unlockedBreakthroughs[cid] = [...BREAKTHROUGH_GATES];
+        if (this._interaction && typeof this._interaction.performOath === 'function') {
+          const res = await this._interaction.performOath(cid, {
+            oathTitle: choice.oathTitle || '永恒誓约',
+            customVow: choice.label,
+          });
+          oathRecord = this._interaction.getOathRecord(cid) || res;
+        } else {
+          const now = Date.now();
+          if (!actor.meta) actor.meta = {};
+          actor.meta.isOathed = true;
+          actor.meta.oathDate = now;
+          actor.isOathed = true;
+          actor.oathDate = now;
+          if (!actor.statBounds) actor.statBounds = {};
+          actor.statBounds.affinity = { min: 0, max: OATH_AFFINITY_CAP };
+          oathRecord = { oathedAt: now, oathTitle: choice.oathTitle || '永恒誓约' };
+        }
+        oathed = true;
+        this._appendMessage(cid, {
+          role: 'system',
+          text: `💍 誓约缔结完成！「${actor.name}」好感上限已突破至 ${OATH_AFFINITY_CAP}，永久获得基础六维各 +4、出征油弹消耗 -10%、宿舍心情加速恢复与专属誓约台词！`,
         });
-        oathRecord = this._interaction.getOathRecord(cid) || res;
-      } else {
-        // Ultra-safe fallback even if interaction service were absent
-        const now = Date.now();
-        if (!actor.meta) actor.meta = {};
-        actor.meta.isOathed = true;
-        actor.meta.oathDate = now;
-        actor.isOathed = true;
-        actor.oathDate = now;
-        if (!actor.statBounds) actor.statBounds = {};
-        actor.statBounds.affinity = { min: 0, max: OATH_AFFINITY_CAP };
-        oathRecord = { oathedAt: now, oathTitle: choice.oathTitle || '永恒誓约' };
       }
-      oathed = true;
-      this._appendMessage(cid, {
-        role: 'system',
-        text: `💍 誓约缔结完成！「${actor.name}」好感上限已突破至 ${OATH_AFFINITY_CAP}，永久获得基础六维各 +4、出征油弹消耗 -10%、宿舍心情加速恢复与专属誓约台词！`,
-      });
     }
 
     this._state.activePromptByShip[cid] = null;

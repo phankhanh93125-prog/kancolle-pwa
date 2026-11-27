@@ -2359,6 +2359,7 @@ async function bootApplication() {
     });
     if (entities.list({ kind: 'character' }).length > 0) {
       storyEngine.syncLegacyBreakthroughs();
+      buildings.syncAllRetrofitModifiers?.();
     }
 
     await formation.init();

@@ -21,6 +21,7 @@ import {
   WAREHOUSE_GROUPS,
   WAREHOUSE_GROUP_DEFS,
   classifyItemWarehouseGroup,
+  computeBatchEnhancePlan,
   computeDeterministicGearCost,
   computeEnhancedBonuses,
   getDeterministicGearCatalog,
@@ -28,10 +29,12 @@ import {
   getItemIconSvg,
 } from '../core/inventory-system.js';
 import {
+  ENGRAVING_CORE_COST,
   ITEM_RARITIES,
   ITEM_RARITY_DEFS,
   ITEM_RARITY_MAP,
   NAVAL_EIGHT_STAT_DEFS,
+  TACTICAL_ENGRAVING_DEFS,
   getEquipmentPromoteCost,
   getShipClassSvg,
   inferItemRarity,
@@ -1233,9 +1236,11 @@ export function openEquipmentDetailModal(itemId, context = workshopState.context
   }
 
   const openFn = typeof uiKit.openTacticalModal === 'function' ? uiKit.openTacticalModal : uiKit.openModal;
+  let selectedEngravingId = initialItem.engraving?.id || TACTICAL_ENGRAVING_DEFS[0].id;
+
   openFn({
-    title: '装备详情 · 强化与升阶',
-    subtitle: '消耗钢材/铝材/银条强化至 +10，并消耗拆解余料升阶品级（白→绿→蓝→紫→橙）',
+    title: '装备详情 · 强化与铭刻',
+    subtitle: '支持一键强化至 +10、白→橙品级升阶，及满级橙装「战术铭刻」',
     renderContent: (body, close) => {
       const renderInner = () => {
         const item = inventory.getItem(itemId);
@@ -1252,13 +1257,19 @@ export function openEquipmentDetailModal(itemId, context = workshopState.context
         const enhCost = isConsumable ? null : getEnhanceCost(item, { discount: maintDisc });
         const enhAfford = enhCost ? resources.canAfford(enhCost) : { ok: false };
         const nextBonuses = isMaxLv ? [] : computeEnhancedBonuses(item.baseBonuses || item.bonuses, lv + 1);
+        const batchPlan = !isMaxLv
+          ? computeBatchEnhancePlan(item, { resources, discount: maintDisc, targetLevel: MAX_ENHANCE_LEVEL })
+          : null;
 
         const promotePlan = !isConsumable ? getEquipmentPromoteCost(item, { discount: maintDisc }) : null;
         const nextRarityDef = promotePlan ? ITEM_RARITY_MAP[promotePlan.toRarity] : null;
         const salvageOwned = inventory.getSalvageParts();
+        const coresOwned = typeof inventory.getRetrofitCores === 'function' ? inventory.getRetrofitCores() : 0;
         const promoteResAfford = promotePlan ? resources.canAfford(promotePlan.resources) : { ok: false };
         const promotePartsOk = promotePlan ? salvageOwned >= promotePlan.salvageParts : false;
         const canPromote = Boolean(promotePlan && lv >= MAX_ENHANCE_LEVEL && promoteResAfford.ok && promotePartsOk);
+        const canEngrave = !isConsumable && rarityId === ITEM_RARITIES.LEGENDARY && lv >= MAX_ENHANCE_LEVEL;
+        const engraveCoresOk = coresOwned >= ENGRAVING_CORE_COST;
 
         const wearers = inventory.getWearersOfItem(item.id);
         const targetChar = getTargetCharacter();
@@ -1278,6 +1289,7 @@ export function openEquipmentDetailModal(itemId, context = workshopState.context
                     <span class="rarity-pill is-rarity-${rarityId}">${escapeHtml(rDef.label)}</span>
                     <strong style="font-size:15px;">${escapeHtml(item.name)}</strong>
                     ${lv > 0 ? `<span class="wh-lv-pill">+${lv}</span>` : ''}
+                    ${item.engraving ? `<span class="status-badge badge-warn" id="tm-item-engraving-badge">✦ ${escapeHtml(item.engraving.shortLabel || item.engraving.name)}</span>` : ''}
                     ${item.locked ? '<span class="status-badge badge-warn item-lock-badge">🔒 已锁定</span>' : ''}
                     ${isConsumable ? `<span class="wh-qty-pill">×${item.quantity}</span>` : ''}
                   </div>
@@ -1290,6 +1302,11 @@ export function openEquipmentDetailModal(itemId, context = workshopState.context
               </div>
               ${item.description ? `<p class="muted-text" style="font-size:12px; margin:0;">${escapeHtml(item.description)}</p>` : ''}
               <div class="cc-stat-sub"><strong>当前属性词条：</strong>${escapeHtml(formatBonusSummary(item.bonuses) || '无')}</div>
+              ${
+                item.engraving
+                  ? `<div class="cc-stat-sub" style="color:#fbbf24;"><strong>战术铭刻：</strong>✦ ${escapeHtml(item.engraving.label || item.engraving.name)}</div>`
+                  : ''
+              }
             </div>
 
             ${
@@ -1303,19 +1320,80 @@ export function openEquipmentDetailModal(itemId, context = workshopState.context
                 ${
                   !isMaxLv && enhCost
                     ? `
-                  <div class="cc-stat-sub" style="color:var(--accent);">强化至 +${lv + 1} 预览：${escapeHtml(formatBonusSummary(nextBonuses))}</div>
+                  <div class="cc-stat-sub" style="color:var(--accent);">+1 预览（+${lv + 1}）：${escapeHtml(formatBonusSummary(nextBonuses))}</div>
                   <div class="port-gear-summary">
-                    <span class="ns-chip ${stockSteel < enhCost.steel ? 'is-cost-short' : ''}">钢材 ${enhCost.steel}/${stockSteel}</span>
-                    <span class="ns-chip ${stockBauxite < enhCost.bauxite ? 'is-cost-short' : ''}">铝材 ${enhCost.bauxite}/${stockBauxite}</span>
-                    <span class="ns-chip ${stockSilver < enhCost.silver ? 'is-cost-short' : ''}">银条 ${enhCost.silver}/${stockSilver}</span>
+                    <span class="ns-chip ${stockSteel < enhCost.steel ? 'is-cost-short' : ''}">单次钢 ${enhCost.steel}/${stockSteel}</span>
+                    <span class="ns-chip ${stockBauxite < enhCost.bauxite ? 'is-cost-short' : ''}">单次铝 ${enhCost.bauxite}/${stockBauxite}</span>
+                    <span class="ns-chip ${stockSilver < enhCost.silver ? 'is-cost-short' : ''}">单次银 ${enhCost.silver}/${stockSilver}</span>
                   </div>
-                  <button type="button" id="btn-tm-do-enhance" class="btn-primary uikit-touch-target" ${enhAfford.ok ? '' : 'disabled'}>
-                    ${enhAfford.ok ? `立即强化至 +${lv + 1}` : '强化材料不足'}
-                  </button>
+                  ${
+                    batchPlan && batchPlan.canEnhanceAny
+                      ? `
+                    <div class="cc-stat-sub" style="opacity:0.9;">
+                      ⚡ 一键累计（+${lv} ➔ +${batchPlan.maxAffordableLevel}，连升 ${batchPlan.levelsToGain} 级）：钢 ${batchPlan.affordableCost.steel} · 铝 ${batchPlan.affordableCost.bauxite} · 银 ${batchPlan.affordableCost.silver}
+                    </div>
+                  `
+                      : ''
+                  }
+                  <div class="lab-btn-grid">
+                    <button type="button" id="btn-tm-do-enhance" class="btn-secondary uikit-touch-target" ${enhAfford.ok ? '' : 'disabled'}>
+                      ${enhAfford.ok ? `强化 +1（+${lv + 1}）` : '单次材料不足'}
+                    </button>
+                    <button type="button" id="btn-tm-do-enhance-batch" class="btn-primary uikit-touch-target" ${batchPlan && batchPlan.canEnhanceAny ? '' : 'disabled'}>
+                      ${
+                        batchPlan && batchPlan.canEnhanceAny
+                          ? `⚡ 一键强化至 +${batchPlan.maxAffordableLevel}`
+                          : '一键强化材料不足'
+                      }
+                    </button>
+                  </div>
                 `
-                    : `<p class="muted-text" style="font-size:12px; margin:0;">已强化至 +${MAX_ENHANCE_LEVEL} 满级！${promotePlan ? '可在下方升阶至更高品级并解锁新一轮 +1~+10 成长。' : '已达最高传说品级满级。'}</p>`
+                    : `<p class="muted-text" style="font-size:12px; margin:0;">已强化至 +${MAX_ENHANCE_LEVEL} 满级！${promotePlan ? '可在下方升阶至更高品级并解锁新一轮 +1~+10 成长。' : '已达传说品级满级，可在下方进行「战术铭刻」！'}</p>`
                 }
               </div>
+
+              ${
+                canEngrave
+                  ? `
+                <div class="surface-card lab-stack-sm" id="tm-engraving-panel" style="border-color:rgba(245,158,11,0.55); background:rgba(245,158,11,0.06);">
+                  <div class="section-header-row" style="margin-bottom:0;">
+                    <strong style="font-size:13.5px; color:#fbbf24;">✦ 满级橙装 · 战术铭刻（5选1）</strong>
+                    <span class="status-badge ${engraveCoresOk ? 'badge-ok' : 'badge-danger'}">改造核心 ${coresOwned} / 需 ${ENGRAVING_CORE_COST}</span>
+                  </div>
+                  <p class="muted-text" style="font-size:11.5px; margin:0;">
+                    消耗 ${ENGRAVING_CORE_COST} 枚「改造核心」为满级传说装备铭刻 1 条专属战术词条（再次铭刻将替换为新词条）。
+                  </p>
+                  <div class="lab-stack-sm" style="gap:6px;">
+                    ${TACTICAL_ENGRAVING_DEFS.map(
+                      (eg) => `
+                      <button
+                        type="button"
+                        class="lab-slot-card ${selectedEngravingId === eg.id ? 'is-selected' : ''}"
+                        data-engrave-pick="${escapeHtml(eg.id)}"
+                        style="text-align:left; padding:7px 10px; ${selectedEngravingId === eg.id ? 'border-color:#f59e0b; box-shadow:0 0 0 1px #f59e0b;' : ''}"
+                      >
+                        <div class="lab-slot-head">
+                          <strong>✦ ${escapeHtml(eg.name)}</strong>
+                          <span class="status-badge ${item.engraving?.id === eg.id ? 'badge-ok' : 'badge-warn'}">
+                            ${item.engraving?.id === eg.id ? '当前已铭刻' : escapeHtml(eg.shortLabel || eg.label || '')}
+                          </span>
+                        </div>
+                        <div class="cc-stat-sub">${escapeHtml(eg.desc || eg.label || '')}</div>
+                      </button>
+                    `
+                    ).join('')}
+                  </div>
+                  <button type="button" id="btn-tm-do-engrave" class="btn-primary uikit-touch-target" ${engraveCoresOk ? '' : 'disabled'}>
+                    ${
+                      engraveCoresOk
+                        ? `${item.engraving ? '重新铭刻' : '确认战术铭刻'}（消耗 改造核心 ×${ENGRAVING_CORE_COST}）`
+                        : `改造核心不足（当前 ${coresOwned}/${ENGRAVING_CORE_COST}，完成每日港务悬赏或高难BOSS可得）`
+                    }
+                  </button>
+                </div>
+              `
+                  : ''
+              }
 
               <div class="surface-card lab-stack-sm">
                 <div class="section-header-row" style="margin-bottom:0;">
@@ -1398,6 +1476,52 @@ export function openEquipmentDetailModal(itemId, context = workshopState.context
           uiKit.showToast(`强化成功：「${res.item.name}」升至 +${res.nextLevel}`, 'ok');
           renderInner();
           if (typeof onUpdated === 'function') onUpdated();
+        });
+
+        body.querySelector('#btn-tm-do-enhance-batch')?.addEventListener('click', async () => {
+          try {
+            const res = await inventory.enhanceItemBatch(item.id, {
+              resources,
+              discount: maintDisc,
+              targetLevel: MAX_ENHANCE_LEVEL,
+            });
+            await persistCharacterRoster({ storage: rootStorage, entities });
+            const spent = res.costSpent || {};
+            logs?.add({
+              category: LOG_CATEGORIES.EQUIPMENT,
+              title: `一键强化：「${res.item.name}」+${res.prevLevel} ➔ +${res.nextLevel}`,
+              detail: `消耗 钢${spent.steel || 0} / 铝${spent.bauxite || 0} / 银${spent.silver || 0}`,
+            });
+            uiKit.showToast(`⚡ 一键强化完成！「${res.item.name}」连升 ${res.levelsGained} 级至 +${res.nextLevel}！`, 'ok');
+            renderInner();
+            if (typeof onUpdated === 'function') onUpdated();
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '一键强化失败', 'warn');
+          }
+        });
+
+        body.querySelectorAll('[data-engrave-pick]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            selectedEngravingId = btn.getAttribute('data-engrave-pick') || selectedEngravingId;
+            renderInner();
+          });
+        });
+
+        body.querySelector('#btn-tm-do-engrave')?.addEventListener('click', async () => {
+          try {
+            const res = await inventory.engraveOrangeItem(item.id, selectedEngravingId);
+            await persistCharacterRoster({ storage: rootStorage, entities });
+            logs?.add({
+              category: LOG_CATEGORIES.EQUIPMENT,
+              title: `满级橙装战术铭刻：「${res.item.name}」✦ ${res.engraving.name}`,
+              detail: `${res.engraving.label || ''} · 剩余改造核心 ${res.coresRemaining ?? inventory.getRetrofitCores()}`,
+            });
+            uiKit.showToast(`✦ 铭刻成功！「${res.item.name}」获得【${res.engraving.label || res.engraving.name}】`, 'ok');
+            renderInner();
+            if (typeof onUpdated === 'function') onUpdated();
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '战术铭刻失败', 'warn');
+          }
         });
 
         body.querySelector('#btn-tm-do-promote')?.addEventListener('click', async () => {
@@ -1652,6 +1776,7 @@ function renderWarehouseEnhanceTab(host) {
               ${item.locked ? '<span class="item-lock-ico" title="已锁定防误拆">🔒</span>' : ''}
               <strong class="wh-item-name">${escapeHtml(item.name)}</strong>
               ${lv > 0 ? `<span class="wh-lv-pill">+${lv}</span>` : ''}
+              ${item.engraving ? `<span class="status-badge badge-warn" style="font-size:10px; padding:1px 6px;">✦ ${escapeHtml(item.engraving.shortLabel || item.engraving.name)}</span>` : ''}
               ${canPromoteHint ? '<span class="status-badge badge-ok" style="font-size:10px; padding:1px 6px;">可升阶</span>' : ''}
               ${isConsumable ? `<span class="wh-qty-pill">×${item.quantity}</span>` : ''}
             </div>
@@ -2199,6 +2324,7 @@ export default {
       context.bus.on('resource:changed', () => renderWorkshop()),
       context.bus.on('buildings:updated', () => renderWorkshop()),
       context.bus.on('inventory:enhanced', () => renderWorkshop()),
+      context.bus.on('inventory:engraved', () => renderWorkshop()),
       context.bus.on('inventory:promoted', () => renderWorkshop()),
       context.bus.on('inventory:salvage-changed', () => renderWorkshop()),
       context.bus.on('inventory:retrofit-cores-changed', () => renderWorkshop()),

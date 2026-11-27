@@ -23,6 +23,7 @@ import {
   computeDerivedEvasion,
   getShipClassProfile,
   getShipClassSvg,
+  getShipRetrofitPlan,
   inferEquipmentTypeId,
   inferItemRarity,
   resolveShipClass,
@@ -649,6 +650,20 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
           const derivedEva = computeDerivedEvasion(mobilityStatTotal, ch.meta?.shipType);
           const isOathed = Boolean(interaction?.isOathed?.(ch.id) || ch.meta?.isOathed || ch.isOathed);
           const affMax = isOathed ? 150 : 100;
+          const retrofitPlan = getShipRetrofitPlan(ch);
+          const coresOwned = typeof inventory.getRetrofitCores === 'function' ? inventory.getRetrofitCores() : 0;
+          const stockSteel = Math.floor(resources?.getBalance?.('steel') ?? 0);
+          const stockFuel = Math.floor(resources?.getBalance?.('fuel') ?? 0);
+          const stockSilver = Math.floor(resources?.getBalance?.('silver') ?? 0);
+          const retroCost = retrofitPlan.cost || null;
+          const canDoRetrofit = Boolean(
+            retrofitPlan.canRetrofit &&
+              retroCost &&
+              coresOwned >= retroCost.retrofitCores &&
+              stockSteel >= retroCost.steel &&
+              stockFuel >= retroCost.fuel &&
+              stockSilver >= retroCost.silver
+          );
 
           body.innerHTML = `
             <div class="module-stack" id="tactical-ship-detail-body">
@@ -658,6 +673,7 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
                   <div class="cc-hero-name-row">
                     <span class="ship-class-ico">${getShipClassSvg(shipClass, { size: 20 })}</span>
                     <h3 class="cc-hero-name">${escapeHtml(ch.name)}</h3>
+                    ${retrofitPlan.titleSuffix ? `<span class="status-badge badge-ok" id="tm-retrofit-badge">★ ${escapeHtml(retrofitPlan.titleSuffix)}</span>` : ''}
                     <span class="status-badge ship-lv-badge">Lv.${prog.level}</span>
                     ${isOathed ? '<span class="status-badge badge-warn" id="tm-oath-badge">💍 誓约</span>' : ''}
                     ${isLocked ? '<span class="status-badge badge-warn ship-lock-badge">🔒 已锁定</span>' : ''}
@@ -688,6 +704,47 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
                 <span class="status-badge badge-ok">衍生闪避 ${derivedEva.dodgeValue}（${escapeHtml(derivedEva.agilityTag)}）</span>
                 ${isOathed ? '<span class="status-badge badge-warn" id="tm-oath-buff-badge">💍 誓约羁绊：六维 +4 · 油弹 -10% · 宿舍心情加速</span>' : ''}
                 ${shipClass === 'SS' ? '<span class="status-badge badge-warn">水下潜航隐蔽（需反潜火力命中）</span>' : ''}
+              </div>
+
+              <div class="surface-card lab-stack-sm" id="tm-retrofit-panel" style="border-color:rgba(56,189,248,0.4); background:rgba(56,189,248,0.05);">
+                <div class="section-header-row" style="margin-bottom:0;">
+                  <strong style="font-size:13px;">⚓ 舰娘近代化改造（阶段 ${retrofitPlan.currentStage}/2）</strong>
+                  <span class="status-badge ${retrofitPlan.currentStage >= 2 ? 'badge-ok' : 'badge-warn'}">
+                    ${retrofitPlan.currentStage >= 2 ? '★ 改二完成' : retrofitPlan.currentStage === 1 ? '★ 一改 · 可进阶改二' : '未改造 · 可一改'}
+                  </span>
+                </div>
+                <div class="cc-stat-sub">
+                  <strong>舰种专属被动【${escapeHtml(retrofitPlan.passive?.name || '战术专精')}】：</strong>
+                  ${
+                    retrofitPlan.activePassiveDesc
+                      ? `<span style="color:var(--accent);">${escapeHtml(retrofitPlan.activePassiveDesc)}</span>`
+                      : `<span class="muted-text">一改解锁：${escapeHtml(retrofitPlan.nextPassiveDesc || '')}</span>`
+                  }
+                </div>
+                ${
+                  retrofitPlan.canRetrofit && retroCost
+                    ? `
+                  <div class="cc-stat-sub">
+                    <strong>升至【${escapeHtml(retrofitPlan.nextTitleSuffix)}】收益：</strong>耐久 +${retrofitPlan.statDelta.maxHp} · 全战斗属性 +${retrofitPlan.statDelta.firepower} · 被动：${escapeHtml(retrofitPlan.nextPassiveDesc || '')}
+                  </div>
+                  <div class="port-gear-summary">
+                    <span class="ns-chip ${coresOwned < retroCost.retrofitCores ? 'is-cost-short' : ''}">改造核心 ${retroCost.retrofitCores}/${coresOwned}</span>
+                    <span class="ns-chip ${stockSteel < retroCost.steel ? 'is-cost-short' : ''}">钢材 ${retroCost.steel}/${stockSteel}</span>
+                    <span class="ns-chip ${stockFuel < retroCost.fuel ? 'is-cost-short' : ''}">燃油 ${retroCost.fuel}/${stockFuel}</span>
+                    <span class="ns-chip ${stockSilver < retroCost.silver ? 'is-cost-short' : ''}">银条 ${retroCost.silver}/${stockSilver}</span>
+                  </div>
+                  <button type="button" id="btn-tm-do-retrofit" class="btn-primary uikit-touch-target" ${canDoRetrofit ? '' : 'disabled'}>
+                    ${
+                      canDoRetrofit
+                        ? `执行近代化改造 ➔ 【${escapeHtml(ch.name)}·${escapeHtml(retrofitPlan.nextTitleSuffix)}】`
+                        : coresOwned < retroCost.retrofitCores
+                        ? `改造核心不足（需 ${retroCost.retrofitCores} 颗，每日港务悬赏可得）`
+                        : '改造所需钢材/燃油/银条不足'
+                    }
+                  </button>
+                `
+                    : '<p class="muted-text" style="font-size:11.5px; margin:0;">已完成二阶段终极近代化改造（改二），八维与舰种专属战术被动已达巅峰状态。</p>'
+                }
               </div>
 
               <div class="lab-btn-grid">
@@ -760,6 +817,22 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
               </div>
             </div>
           `;
+
+          body.querySelector('#btn-tm-do-retrofit')?.addEventListener('click', async () => {
+            if (!buildings || typeof buildings.performShipRetrofit !== 'function') return;
+            try {
+              const res = await buildings.performShipRetrofit(ch.id);
+              if (rootStorage) await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: ch.id });
+              uiKit.showToast(
+                `★ 改造完成！「${ch.name}」晋升【${res.titleSuffix}】，解锁【${res.passive?.name || '专属被动'}】！`,
+                'ok'
+              );
+              await renderDetailBody();
+              if (consoleState.container && consoleState.context) renderConsole();
+            } catch (err) {
+              uiKit.showToast(err instanceof Error ? err.message : '近代化改造失败', 'warn');
+            }
+          });
 
           body.querySelector('#btn-tm-auto-equip')?.addEventListener('click', async () => {
             const res = await inventory.autoEquipCharacter(ch.id, { includeOutfit: true });
@@ -3399,6 +3472,74 @@ async function renderArchiveConsole() {
   });
   root.appendChild(cmdCard);
 
+  // 1.5 Lightweight Daily Port Bounties Card (3 daily quests refreshed by local date, Gold + Retrofit Core)
+  if (buildings && typeof buildings.getDailyBountiesState === 'function') {
+    const bState = buildings.getDailyBountiesState();
+    const bountyCard = document.createElement('section');
+    bountyCard.className = 'surface-card lab-stack-sm';
+    bountyCard.id = 'archive-daily-bounties-card';
+    bountyCard.innerHTML = `
+      <div class="section-header-row" style="margin-bottom:0; gap:6px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+          <h2 class="section-title" style="font-size:14px;">📋 每日港务悬赏（${escapeHtml(bState.dateKey)}）</h2>
+          <span class="status-badge ${bState.claimableCount > 0 ? 'badge-ok' : 'badge-muted'}">
+            ${bState.claimableCount > 0 ? `可领 ${bState.claimableCount} 项` : `进度 ${bState.completedCount}/${bState.bounties.length}`}
+          </span>
+        </div>
+        <span class="muted-text" style="font-size:11px;">每日 0 点刷新 · 稳定产出金条与改造核心</span>
+      </div>
+      <div class="lab-stack-sm" style="gap:6px;">
+        ${bState.bounties
+          .map((q) => {
+            const rewardParts = [];
+            if (q.rewards?.gold) rewardParts.push(`金条 +${q.rewards.gold}`);
+            if (q.rewards?.retrofitCores) rewardParts.push(`改造核心 +${q.rewards.retrofitCores}`);
+            if (q.rewards?.silver) rewardParts.push(`银条 +${q.rewards.silver}`);
+            return `
+            <div class="lab-slot-card interact-drawer-item" data-bounty-row="${escapeHtml(q.id)}" style="padding:8px 10px;">
+              <div class="interact-drawer-info">
+                <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                  <strong style="font-size:13px;">${escapeHtml(q.title)}</strong>
+                  <span class="status-badge ${q.claimed ? 'badge-muted' : q.completed ? 'badge-ok' : 'badge-warn'}">
+                    ${q.claimed ? '已领取' : `${q.progress}/${q.target}`}
+                  </span>
+                </div>
+                <div class="cc-stat-sub">${escapeHtml(q.desc)}</div>
+                <div class="cc-stat-sub" style="color:#fbbf24;">奖励：${escapeHtml(rewardParts.join(' · '))}</div>
+              </div>
+              <button
+                type="button"
+                class="${q.canClaim ? 'btn-primary' : 'btn-secondary'} fac-mini-btn"
+                data-claim-bounty="${escapeHtml(q.id)}"
+                ${q.canClaim ? '' : 'disabled'}
+              >${q.claimed ? '已领' : q.canClaim ? '领取奖励' : '进行中'}</button>
+            </div>
+          `;
+          })
+          .join('')}
+      </div>
+    `;
+
+    bountyCard.querySelectorAll('[data-claim-bounty]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const bid = btn.getAttribute('data-claim-bounty');
+        try {
+          const res = await buildings.claimDailyBounty(bid);
+          const r = res.rewards || {};
+          uiKit.showToast(
+            `已领取悬赏「${res.title}」：金条 +${r.gold || 0}、改造核心 +${r.retrofitCores || 0}、银条 +${r.silver || 0}！`,
+            'ok'
+          );
+          renderConsole();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '领取失败', 'warn');
+        }
+      });
+    });
+
+    root.appendChild(bountyCard);
+  }
+
   // 2. Lower Section: Full Shipgirl Roster (Tap any card -> Centered Frosted Detail Modal)
   const rosterSection = document.createElement('section');
   rosterSection.className = 'surface-card lab-stack-sm archive-roster-section';
@@ -3440,6 +3581,8 @@ async function renderArchiveConsole() {
                 const inExpedition = Boolean(expeditions?.isCharacterDispatched?.(c.id));
                 const canQuickRetire = !isLocked && !inFormation && !inDockyard && !inExpedition;
                 const slotsCap = inventory.getCharacterSlotCapInfo(c.id);
+                const retroStage = Number(c.meta?.retrofitStage || 0);
+                const retroTag = retroStage >= 2 ? '改二' : retroStage === 1 ? '改' : '';
 
                 return `
                   <div class="archive-ship-card" data-arc-ship="${escapeHtml(c.id)}">
@@ -3449,6 +3592,7 @@ async function renderArchiveConsole() {
                         <div class="archive-ship-title">
                           <span class="ship-class-ico">${getShipClassSvg(c.meta?.shipType, { size: 15 })}</span>
                           <strong>${escapeHtml(c.name)}</strong>
+                          ${retroTag ? `<span class="status-badge badge-ok" style="font-size:10px; padding:1px 5px;">★${retroTag}</span>` : ''}
                           ${affSt.isOathed ? '<span class="status-badge badge-warn">💍 誓约</span>' : ''}
                           <span class="status-badge ship-lv-badge">Lv.${prog.level}</span>
                         </div>
@@ -3923,6 +4067,8 @@ export default {
       context.bus.on('content:mod-imported', () => renderConsole()),
       context.bus.on('commander:updated', () => renderConsole()),
       context.bus.on('buildings:updated', () => renderConsole()),
+      context.bus.on('buildings:bounty-updated', () => renderConsole()),
+      context.bus.on('buildings:ship-retrofitted', () => renderConsole()),
       context.bus.on('formation:changed', () => renderConsole()),
       context.bus.on('interaction:secretary-changed', () => renderConsole()),
       context.bus.on('story-engine:updated', () => renderConsole()),

@@ -201,22 +201,30 @@ function openGiftBackpackDrawer(sec) {
           return;
         }
 
+        const favIds = typeof storyEngine.getFavoriteGiftIds === 'function' ? storyEngine.getFavoriteGiftIds(sec) : [];
+        const isFavGift = (g) => favIds.includes(g.id) || favIds.some((fid) => g.id && String(g.id).includes(fid));
+        const sortedGifts = [...gifts].sort((a, b) => Number(isFavGift(b)) - Number(isFavGift(a)));
+
         body.innerHTML = `
           <div class="lab-stack-sm" id="interact-gift-list">
-            ${gifts
+            ${sortedGifts
               .map((g) => {
                 const rDef = ITEM_RARITY_MAP[g.rarity] || ITEM_RARITY_MAP.common;
                 const affB = (g.bonuses || []).find((b) => b.stat === 'affinity')?.value ?? 3;
                 const morB = (g.bonuses || []).find((b) => b.stat === 'morale')?.value ?? 10;
+                const fav = isFavGift(g);
                 return `
-                <div class="lab-slot-card interact-drawer-item" data-gift-item="${escapeHtml(g.id)}">
+                <div class="lab-slot-card interact-drawer-item ${fav ? 'is-active' : ''}" data-gift-item="${escapeHtml(g.id)}" data-is-favorite="${fav ? 'true' : 'false'}" style="${fav ? 'border-color:rgba(244,114,182,0.55); background:rgba(244,114,182,0.08);' : ''}">
                   <div class="interact-drawer-info">
                     <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                       <strong>${escapeHtml(g.name)}</strong>
+                      ${fav ? '<span class="status-badge badge-warn" data-fav-badge="true">💖 偏爱</span>' : ''}
                       <span class="status-badge rarity-badge-${escapeHtml(g.rarity || 'common')}">${escapeHtml(rDef.label)}</span>
                       <span class="status-badge badge-muted">库存 ×${Number(g.quantity || 0)}</span>
                     </div>
-                    <div class="cc-stat-sub">好感 +${affB} · 士气 +${morB}</div>
+                    <div class="cc-stat-sub">
+                      好感 +${fav ? `${affB}+2(偏爱)` : affB} · 士气 +${fav ? morB + 6 : morB}
+                    </div>
                   </div>
                   <button type="button" class="btn-primary fac-mini-btn" data-send-gift="${escapeHtml(g.id)}">赠送</button>
                 </div>
@@ -241,8 +249,8 @@ function openGiftBackpackDrawer(sec) {
               fxStage?.playSfx?.('success');
               uiKit.showToast(
                 res.affDelta > 0
-                  ? `已赠送「${res.giftName}」· 好感 +${res.affDelta} · 士气 +${res.moraleGain}`
-                  : `已赠送「${res.giftName}」· 请先观看阶段突破小剧场继续升温`,
+                  ? `${res.isFavorite ? '💖 偏爱礼物惊喜反应！' : ''}已赠送「${res.giftName}」· 好感 +${res.affDelta} · 士气 +${res.moraleGain}`
+                  : `${res.isFavorite ? '💖 偏爱礼物！' : ''}已赠送「${res.giftName}」· 请先观看阶段突破小剧场继续升温`,
                 'ok'
               );
               close();
@@ -347,40 +355,144 @@ function openOutfitWardrobeDrawer(sec) {
 }
 
 // ============================================================
-// Drawer 4: Replay Unlocked Breakthrough Theatres
+// Drawer 4: Memoirs Drawer (回忆录：突破小剧场回放 + 誓约仪式回放 + 特殊衣装展示)
 // ============================================================
-function openBreakthroughReplayDrawer(sec, status) {
-  const { storyEngine, uiKit } = portState.context;
+function openMemoirsDrawer(sec, status = null) {
+  const { storyEngine, inventory, entities, rootStorage, uiKit, fxStage } = portState.context;
+  const liveStatus = storyEngine?.getAffectionStatus ? storyEngine.getAffectionStatus(sec.id) : status || { unlockedGates: [], isOathed: false };
   uiKit.openBottomSheet({
-    title: `阶段突破小剧场回顾 · ${sec.name}`,
-    subtitle: '历史存档已跨过的好感阶段也会自动解锁，随时可在聊天窗重温',
+    title: `📖 专属回忆录 · ${sec.name}`,
+    subtitle: '汇集已解锁的六阶段突破小剧场、誓约仪式专属演出与特殊衣装展示',
     renderContent: (body, close) => {
-      const gates = status.unlockedGates || [];
+      const gates = liveStatus.unlockedGates || [];
+      const isOathed = Boolean(liveStatus.isOathed);
+      const outfits = inventory?.listOwnedOutfits ? inventory.listOwnedOutfits() : [];
+      const eq = inventory?.getCharacterEquipment ? inventory.getCharacterEquipment(sec.id) : {};
+      const curOutfitId = eq?.outfit?.id || null;
+
       body.innerHTML = `
-        <div class="lab-stack-sm">
-          ${gates
-            .map((gate) => {
-              const t = BREAKTHROUGH_THEATRES[gate];
-              if (!t) return '';
-              return `
-              <div class="lab-slot-card interact-drawer-item">
-                <div class="interact-drawer-info">
-                  <strong>${escapeHtml(t.title)}</strong>
-                  <div class="cc-stat-sub">好感 ${gate} 节点 · ${escapeHtml(t.fromLabel)} → ${escapeHtml(t.toLabel)}</div>
-                </div>
-                <button type="button" class="btn-secondary fac-mini-btn" data-replay-gate="${gate}">重温</button>
-              </div>
-            `;
-            })
-            .join('')}
+        <div class="module-stack" id="memoirs-drawer-body">
+          <!-- Section 1: 6-Stage Breakthrough Mini-Theatres -->
+          <div class="surface-card lab-stack-sm" style="padding:10px 12px;">
+            <div class="section-header-row" style="margin-bottom:0;">
+              <strong style="font-size:13px;">✨ 六阶段突破小剧场（${gates.length}/5）</strong>
+              <span class="status-badge badge-muted">随时重温</span>
+            </div>
+            ${
+              gates.length === 0
+                ? '<p class="muted-text" style="font-size:12px; margin:0;">尚未解锁阶段突破小剧场，与她日常交谈、赠礼或出征升温至 20 好感即可开启首段专属剧情。</p>'
+                : `<div class="lab-stack-sm" style="gap:6px;">
+                    ${gates
+                      .map((gate) => {
+                        const t = BREAKTHROUGH_THEATRES[gate];
+                        if (!t) return '';
+                        return `
+                        <div class="lab-slot-card interact-drawer-item" style="padding:8px 10px;">
+                          <div class="interact-drawer-info">
+                            <strong>${escapeHtml(t.title)}</strong>
+                            <div class="cc-stat-sub">好感 ${gate} 节点 · ${escapeHtml(t.fromLabel)} → ${escapeHtml(t.toLabel)}</div>
+                          </div>
+                          <button type="button" class="btn-secondary fac-mini-btn" data-replay-gate="${gate}">重温</button>
+                        </div>
+                      `;
+                      })
+                      .join('')}
+                  </div>`
+            }
+          </div>
+
+          <!-- Section 2: Oath Ceremony Replay -->
+          <div class="surface-card lab-stack-sm" style="padding:10px 12px; border-color:${isOathed ? 'rgba(245,158,11,0.5)' : 'var(--border)'};">
+            <div class="section-header-row" style="margin-bottom:0;">
+              <strong style="font-size:13px;">💍 誓约仪式专属演出</strong>
+              <span class="status-badge ${isOathed ? 'badge-warn' : 'badge-muted'}">${isOathed ? '已缔结誓约' : '未誓约'}</span>
+            </div>
+            ${
+              isOathed
+                ? `
+                  <p class="muted-text" style="font-size:12px; margin:0;">
+                    你们已在港区夕阳下立下永恒誓言（誓约好感上限 150）。点击下方可在聊天窗再次完整重温誓约仪式演出。
+                  </p>
+                  <button type="button" id="btn-memoirs-replay-oath" class="btn-primary uikit-touch-target">
+                    💍 重温誓约仪式演出
+                  </button>
+                `
+                : '<p class="muted-text" style="font-size:12px; margin:0;">好感达到 100 并完成恋慕突破后，持有誓约之戒发起誓约仪式即可解锁此专属回忆。</p>'
+            }
+          </div>
+
+          <!-- Section 3: Unlocked Special Outfits Gallery -->
+          <div class="surface-card lab-stack-sm" style="padding:10px 12px;">
+            <div class="section-header-row" style="margin-bottom:0;">
+              <strong style="font-size:13px;">👗 已解锁特殊衣装展示（${outfits.length} 套）</strong>
+              <span class="status-badge badge-muted">衣柜珍藏</span>
+            </div>
+            ${
+              outfits.length === 0
+                ? '<p class="muted-text" style="font-size:12px; margin:0;">暂未收藏特殊衣装，可前往「设施 → 衣装定制馆」购置。</p>'
+                : `<div class="lab-stack-sm" style="gap:6px;">
+                    ${outfits
+                      .map((it) => {
+                        const isWearing = curOutfitId === it.id;
+                        const rDef = ITEM_RARITY_MAP[it.rarity] || ITEM_RARITY_MAP.common;
+                        return `
+                        <div class="lab-slot-card interact-drawer-item ${isWearing ? 'is-active' : ''}" style="padding:8px 10px;">
+                          <div class="interact-drawer-info">
+                            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                              <span>${getItemIconSvg(it, { size: 16 })}</span>
+                              <strong>${escapeHtml(it.name)}</strong>
+                              <span class="status-badge rarity-badge-${escapeHtml(it.rarity || 'common')}">${escapeHtml(rDef.label)}</span>
+                            </div>
+                            <div class="cc-stat-sub">${escapeHtml(it.outfitStyle || '港区特制装束')}${it.description ? ` · ${escapeHtml(it.description.slice(0, 26))}` : ''}</div>
+                          </div>
+                          ${
+                            isWearing
+                              ? '<span class="status-badge badge-ok">穿戴中</span>'
+                              : `<button type="button" class="btn-secondary fac-mini-btn" data-memoirs-equip-outfit="${escapeHtml(it.id)}">试穿</button>`
+                          }
+                        </div>
+                      `;
+                      })
+                      .join('')}
+                  </div>`
+            }
+          </div>
         </div>
       `;
+
       body.querySelectorAll('[data-replay-gate]').forEach((btn) => {
         btn.addEventListener('click', async () => {
           const gate = Number(btn.getAttribute('data-replay-gate'));
           await storyEngine.startBreakthroughTheatre(sec, gate, { isReplay: true });
           close();
           await renderPortHub();
+        });
+      });
+
+      body.querySelector('#btn-memoirs-replay-oath')?.addEventListener('click', async () => {
+        try {
+          await storyEngine.startOathRitualTheatre(sec, { isReplay: true });
+          close();
+          await renderPortHub();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '无法重温誓约仪式', 'warn');
+        }
+      });
+
+      body.querySelectorAll('[data-memoirs-equip-outfit]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const oid = btn.getAttribute('data-memoirs-equip-outfit');
+          try {
+            await inventory.equipItem(sec.id, 'outfit', oid);
+            await persistCharacterRoster({ storage: rootStorage, entities, activeCharacterId: sec.id });
+            const item = inventory.getItem(oid);
+            fxStage?.playSfx?.('success');
+            uiKit.showToast(`「${sec.name}」已换上「${item?.name || '特殊衣装'}」`, 'ok');
+            close();
+            await renderPortHub();
+          } catch (err) {
+            uiKit.showToast(err instanceof Error ? err.message : '换装失败', 'warn');
+          }
         });
       });
     },
@@ -446,6 +558,9 @@ function bindQuickReplyChoices(containerEl, sec) {
         if (res?.oathed) {
           fxStage?.playSfx?.('success');
           uiKit.showToast(`💍 已与「${sec.name}」正式缔结誓约！好感上限解放至 150，基础六维永久 +4！`, 'ok');
+        } else if (res?.oathReplayed) {
+          fxStage?.playSfx?.('success');
+          uiKit.showToast(`💍 已重温与「${sec.name}」的誓约仪式！`, 'ok');
         } else if (res?.unlockedGate) {
           fxStage?.playSfx?.('success');
           uiKit.showToast(
@@ -479,17 +594,14 @@ function buildAffectionCapHintText(status) {
 }
 
 function renderHeroStageActionsMarkup(status) {
+  const memCount = (status.unlockedGates?.length || 0) + (status.isOathed ? 1 : 0);
   return `
     ${
       status.pendingGate
         ? `<button type="button" id="btn-sec-breakthrough" class="btn-primary interact-breakthrough-btn">✨ 触发阶段突破小剧场 (${status.affinity}/${status.pendingGate})</button>`
         : ''
     }
-    ${
-      status.unlockedGates.length > 0
-        ? `<button type="button" id="btn-sec-replay" class="btn-secondary interact-mini-chip">↺ 剧场回顾 (${status.unlockedGates.length})</button>`
-        : ''
-    }
+    <button type="button" id="btn-sec-memoirs" class="btn-secondary interact-mini-chip">📖 回忆录${memCount > 0 ? ` (${memCount})` : ''}</button>
     ${
       status.canStartOath
         ? `<button type="button" id="btn-sec-oath" class="btn-primary interact-breakthrough-btn">💍 发起誓约</button>`
@@ -512,8 +624,8 @@ function bindHeroStageActions(rootEl, sec, status) {
       portState.busy = false;
     }
   });
-  rootEl.querySelector('#btn-sec-replay')?.addEventListener('click', () => {
-    openBreakthroughReplayDrawer(sec, status);
+  rootEl.querySelector('#btn-sec-memoirs')?.addEventListener('click', () => {
+    openMemoirsDrawer(sec, status);
   });
   rootEl.querySelector('#btn-sec-oath')?.addEventListener('click', async () => {
     if (portState.busy) return;
@@ -598,6 +710,12 @@ async function renderPortHub({ forceFull = false } = {}) {
   const displayCap = status.isOathed ? status.maxAffinity : status.currentCap;
   const affPct = Math.min(100, Math.round((status.affinity / Math.max(1, displayCap)) * 100));
   const capHintText = buildAffectionCapHintText(status);
+  const liveSignature =
+    typeof storyEngine.getLiveStatusSignature === 'function'
+      ? storyEngine.getLiveStatusSignature(sec)
+      : '港湾风平浪静，随时听候指挥官差遣。';
+  const retroStage = Number(sec.meta?.retrofitStage || 0);
+  const retroTag = retroStage >= 2 ? '★ 改二' : retroStage === 1 ? '★ 改' : '';
   const activeExtSess = storyPacks?.getActiveTheatreSession?.();
   const hasExtSession = Boolean(activeExtSess && activeExtSess.pack && !activeExtSess.pack.builtIn);
 
@@ -611,10 +729,19 @@ async function renderPortHub({ forceFull = false } = {}) {
     !hasExtSession &&
     !existingExtCard
   ) {
-    // 1. Update hero badges, oath badge, cap hint & affection bar in-place
+    // 1. Update hero badges, oath badge, retrofit badge, live signature, cap hint & affection bar in-place
     const oathBadge = portState.container.querySelector('#sec-oath-badge');
     if (oathBadge) {
       oathBadge.hidden = !status.isOathed;
+    }
+    const retroBadge = portState.container.querySelector('#sec-retrofit-badge');
+    if (retroBadge) {
+      retroBadge.hidden = !retroTag;
+      if (retroTag) retroBadge.textContent = retroTag;
+    }
+    const sigEl = portState.container.querySelector('#sec-live-signature');
+    if (sigEl) {
+      sigEl.textContent = liveSignature;
     }
     const stageBadge = portState.container.querySelector('#sec-aff-stage-badge');
     if (stageBadge) stageBadge.textContent = `${status.stage.label}${status.isOathed ? ' 💍' : ''}`;
@@ -692,6 +819,7 @@ async function renderPortHub({ forceFull = false } = {}) {
           <div style="display:flex; align-items:center; gap:6px; min-width:0; flex-wrap:wrap;">
             <span class="ship-class-ico">${getShipClassSvg(sec.meta?.shipType, { size: 17 })}</span>
             <strong class="interact-ship-name" id="sec-name-label">${escapeHtml(sec.name)}</strong>
+            <span class="status-badge badge-ok" id="sec-retrofit-badge" ${retroTag ? '' : 'hidden'}>${escapeHtml(retroTag)}</span>
             <span class="status-badge badge-warn" id="sec-oath-badge" ${status.isOathed ? '' : 'hidden'}>💍 誓约</span>
             <span class="status-badge badge-muted">Lv.${sec.stats?.level || 1}</span>
           </div>
@@ -699,6 +827,10 @@ async function renderPortHub({ forceFull = false } = {}) {
             <button type="button" id="btn-sec-profile" class="interact-icon-btn" title="查看舰娘档案">档案</button>
             <button type="button" id="btn-sec-switch" class="interact-icon-btn" title="更换秘书舰">切换</button>
           </div>
+        </div>
+
+        <div id="sec-live-signature" class="cc-stat-sub" style="font-size:11.5px; color:var(--accent); opacity:0.95; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(liveSignature)}">
+          ${escapeHtml(liveSignature)}
         </div>
 
         <div class="interact-outfit-line">
@@ -845,6 +977,8 @@ export default {
       context.bus.on('inventory:equipped', () => renderPortHub()),
       context.bus.on('inventory:unequipped', () => renderPortHub()),
       context.bus.on('interaction:oathed', () => renderPortHub()),
+      context.bus.on('buildings:ship-retrofitted', () => renderPortHub()),
+      context.bus.on('story-engine:updated', () => renderPortHub()),
       context.bus.on('story:packs-changed', () => renderPortHub({ forceFull: true })),
       context.bus.on('character:deleted', () => renderPortHub({ forceFull: true })),
       context.bus.on('character:saved', () => renderPortHub({ forceFull: true })),

@@ -18,7 +18,12 @@
 
 import { clamp } from './calc-engine.js';
 import { formatDurationZh } from './entity-system.js';
-import { OATH_DORM_MORALE_MULT, SHIP_TYPE_PRESETS } from './stat-rules.js';
+import {
+  OATH_DORM_MORALE_MULT,
+  SHIP_TYPE_PRESETS,
+  getShipRetrofitModifiers,
+  getShipRetrofitPlan,
+} from './stat-rules.js';
 import { LOG_CATEGORIES } from './log-system.js';
 
 const STORAGE_NS = 'core-port-buildings';
@@ -251,6 +256,47 @@ export const PORT_MEDAL_DEFS = Object.freeze([
   },
 ]);
 
+export const DAILY_PORT_BOUNTIES_DEFS = Object.freeze([
+  {
+    id: 'bounty_sortie',
+    title: '海域巡航出征',
+    desc: '完成 1 次真实海域出征节点结算',
+    target: 1,
+    reward: { gold: 4, retrofitCores: 1, silver: 150 },
+  },
+  {
+    id: 'bounty_interact',
+    title: '港区温馨互动',
+    desc: '在「互动」页与舰娘交谈或赠礼 1 次',
+    target: 1,
+    reward: { gold: 3, retrofitCores: 1, silver: 120 },
+  },
+  {
+    id: 'bounty_logistics',
+    title: '船坞整备与工坊建设',
+    desc: '完成 1 次船坞维修、定向造船或装备制造/强化',
+    target: 1,
+    reward: { gold: 4, retrofitCores: 1, silver: 150 },
+  },
+]);
+
+function getLocalDateKeyBuildings(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function createDefaultDailyBounties(dateKey = getLocalDateKeyBuildings()) {
+  const progress = {};
+  const claimed = {};
+  for (const b of DAILY_PORT_BOUNTIES_DEFS) {
+    progress[b.id] = 0;
+    claimed[b.id] = false;
+  }
+  return { dateKey, progress, claimed };
+}
+
 function createDefaultBuildingsState() {
   return {
     dormitory: {
@@ -279,6 +325,7 @@ function createDefaultBuildingsState() {
       unlockedIds: [],
       unlockedAt: {},
     },
+    dailyBounties: createDefaultDailyBounties(),
     updatedAt: Date.now(),
   };
 }
@@ -324,10 +371,37 @@ export class PortBuildingsSystem {
         if ((Number(ev?.nextLevel) || 0) >= 10) {
           this.unlockMedal('max_enhance_10');
         }
+        this.incrementDailyBounty('bounty_logistics', 1);
       });
       this._bus.on('inventory:promoted', () => {
         if (this._autoMedalPaused) return;
         this.unlockMedal('first_promote_rarity');
+      });
+      this._bus.on('sortie:node-resolved', (ev) => {
+        if (this._autoMedalPaused || ev?.isPractice) return;
+        this.incrementDailyBounty('bounty_sortie', 1);
+      });
+      this._bus.on('interaction:talked', () => {
+        if (this._autoMedalPaused) return;
+        this.incrementDailyBounty('bounty_interact', 1);
+      });
+      this._bus.on('interaction:gifted', () => {
+        if (this._autoMedalPaused) return;
+        this.incrementDailyBounty('bounty_interact', 1);
+      });
+      this._bus.on('buildings:dock-completed', () => {
+        if (this._autoMedalPaused) return;
+        this.incrementDailyBounty('bounty_logistics', 1);
+      });
+      this._bus.on('buildings:ship-constructed', () => {
+        if (this._autoMedalPaused) return;
+        this.incrementDailyBounty('bounty_logistics', 1);
+      });
+      this._bus.on('buildings:updated', (ev) => {
+        if (this._autoMedalPaused) return;
+        if (ev?.reason === 'dock-batch-quick-repair') {
+          this.incrementDailyBounty('bounty_logistics', 1);
+        }
       });
       this._bus.on('sortie:boss-defeated', (ev) => {
         if (this._autoMedalPaused) return;
@@ -1044,6 +1118,9 @@ export class PortBuildingsSystem {
         const maxAff = Math.max(100, Number(actor.statBounds?.affinity?.max ?? 100));
         this._entities.adjustStat(cid, 'affinity', 2, { min: 0, max: Math.min(maxAff, curAff + 2) });
       }
+      if (this._storyEngine && typeof this._storyEngine.recordDockRepairReturn === 'function') {
+        this._storyEngine.recordDockRepairReturn(actor);
+      }
     }
 
     dock.queue.splice(idx, 1);
@@ -1705,9 +1782,180 @@ export class PortBuildingsSystem {
     return payload;
   }
 
+  // ------------------------------------------------------------
+  // v32: Daily Port Bounties (每日港务悬赏)
+  // ------------------------------------------------------------
+
+  _ensureTodayBounties() {
+    const today = getLocalDateKeyBuildings();
+    if (!this._state.dailyBounties || this._state.dailyBounties.dateKey !== today) {
+      this._state.dailyBounties = createDefaultDailyBounties(today);
+      return true;
+    }
+    return false;
+  }
+
+  getDailyBountiesState() {
+    this._ensureTodayBounties();
+    const db = this._state.dailyBounties;
+    const list = DAILY_PORT_BOUNTIES_DEFS.map((def) => {
+      const progress = Math.min(def.target, Math.max(0, Math.floor(Number(db.progress?.[def.id] || 0))));
+      const claimed = Boolean(db.claimed?.[def.id]);
+      const completed = progress >= def.target;
+      return {
+        ...def,
+        progress,
+        completed,
+        claimed,
+        canClaim: completed && !claimed,
+      };
+    });
+    return {
+      dateKey: db.dateKey,
+      bounties: list,
+      claimableCount: list.filter((b) => b.canClaim).length,
+      completedCount: list.filter((b) => b.completed).length,
+    };
+  }
+
+  incrementDailyBounty(bountyId, delta = 1) {
+    this._ensureTodayBounties();
+    const def = DAILY_PORT_BOUNTIES_DEFS.find((b) => b.id === String(bountyId));
+    if (!def) return false;
+    const db = this._state.dailyBounties;
+    const prev = Math.floor(Number(db.progress?.[def.id] || 0));
+    if (prev >= def.target) return false;
+    db.progress[def.id] = Math.min(def.target, prev + Math.max(1, Math.floor(Number(delta) || 1)));
+    this.persist().catch(() => {});
+    this._emit('buildings:bounty-updated', { bountyId: def.id, progress: db.progress[def.id] });
+    return true;
+  }
+
+  async claimDailyBounty(bountyId) {
+    this._ensureTodayBounties();
+    const def = DAILY_PORT_BOUNTIES_DEFS.find((b) => b.id === String(bountyId));
+    if (!def) throw new Error('悬赏目标不存在');
+    const db = this._state.dailyBounties;
+    const progress = Math.floor(Number(db.progress?.[def.id] || 0));
+    if (progress < def.target) throw new Error(`尚未完成「${def.title}」（进度 ${progress}/${def.target}）`);
+    if (db.claimed?.[def.id]) throw new Error(`今日「${def.title}」奖励已领取`);
+
+    db.claimed[def.id] = true;
+    const reward = def.reward || {};
+    if (reward.gold > 0 && this._resources) {
+      await this._resources.add('gold', reward.gold, { reason: `每日港务悬赏：${def.title}` });
+    }
+    if (reward.silver > 0 && this._resources) {
+      await this._resources.add('silver', reward.silver, { reason: `每日港务悬赏：${def.title}` });
+    }
+    if (reward.retrofitCores > 0 && this._inventory?.addRetrofitCores) {
+      await this._inventory.addRetrofitCores(reward.retrofitCores);
+    }
+    await this.persist();
+    if (this._logs) {
+      this._logs.add({
+        category: LOG_CATEGORIES.RESOURCE,
+        title: `领取每日港务悬赏「${def.title}」`,
+        detail: `获得 金条 +${reward.gold || 0} · 改造核心 +${reward.retrofitCores || 0} · 银条 +${reward.silver || 0}`,
+      });
+    }
+    this._emit('buildings:updated', { reason: 'bounty-claimed', bountyId: def.id });
+    return { bounty: def, reward };
+  }
+
+  // ------------------------------------------------------------
+  // v32: 2-Stage Shipgirl Modernization Retrofit (一改 / 二改)
+  // ------------------------------------------------------------
+
+  syncAllRetrofitModifiers() {
+    if (!this._entities) return;
+    const chars = this._entities.list({ kind: 'character' }) || [];
+    for (const c of chars) {
+      if (!c || !c.id) continue;
+      if (!c.meta || typeof c.meta !== 'object') c.meta = {};
+      const stage = Math.max(0, Math.min(2, Math.floor(Number(c.meta.retrofitStage || 0))));
+      c.meta.retrofitStage = stage;
+      for (let i = 0; i < 10; i++) {
+        this._entities.removeModifier?.(c.id, `retrofit_mod_${c.id}_${i}`);
+      }
+      if (stage > 0) {
+        const mods = getShipRetrofitModifiers(c.id, stage);
+        for (const m of mods) {
+          this._entities.addModifier(c.id, m);
+        }
+      }
+    }
+  }
+
+  async performShipRetrofit(characterId) {
+    const cid = String(characterId || '');
+    const actor = this._entities?.get(cid);
+    if (!actor || actor.kind !== 'character') throw new Error('目标舰娘不存在');
+    const plan = getShipRetrofitPlan(actor);
+    if (!plan.canRetrofit || !plan.cost) {
+      throw new Error(`「${actor.name}」已完成二阶段近代化改造（改二）`);
+    }
+
+    const coresOwned = this._inventory?.getRetrofitCores ? this._inventory.getRetrofitCores() : 0;
+    if (coresOwned < plan.cost.retrofitCores) {
+      throw new Error(`改造核心不足：需要 ${plan.cost.retrofitCores} 颗，当前拥有 ${coresOwned} 颗（可通过每日港务悬赏获取）`);
+    }
+
+    const resCost = {
+      steel: plan.cost.steel,
+      fuel: plan.cost.fuel,
+      silver: plan.cost.silver,
+    };
+    const spend = await this._resources.spendBatch(resCost, {
+      reason: `舰娘近代化改造「${actor.name} · ${plan.nextTitleSuffix}」`,
+    });
+    if (!spend.ok) throw new Error(spend.reason || '改造所需钢材/燃油/银条不足');
+
+    await this._inventory.spendRetrofitCores(plan.cost.retrofitCores);
+
+    if (!actor.meta || typeof actor.meta !== 'object') actor.meta = {};
+    actor.meta.retrofitStage = plan.nextStage;
+    actor.meta.retrofitTitle = plan.nextTitleSuffix;
+    actor.meta.retrofitPassiveId = plan.passive.id;
+    actor.meta.retrofitPassiveName = plan.passive.name;
+    actor.meta.retrofitAt = Date.now();
+
+    this.syncAllRetrofitModifiers();
+
+    const effMaxHp = Math.max(1, Math.round(this._entities.getEffectiveStat(cid, 'maxHp', { round: 'round' }).final));
+    this._entities.setStat(cid, 'hp', effMaxHp, { min: 0, max: effMaxHp });
+
+    if (this._storyEngine && typeof this._storyEngine.recordRetrofitEvent === 'function') {
+      await this._storyEngine.recordRetrofitEvent(actor, plan.nextStage);
+    }
+    this.incrementDailyBounty('bounty_logistics', 1);
+    await this.persist();
+
+    if (this._logs) {
+      this._logs.add({
+        category: LOG_CATEGORIES.CHARACTER,
+        actorId: cid,
+        actorName: actor.name,
+        title: `★ 近代化改造完成：「${actor.name} · ${plan.nextTitleSuffix}」`,
+        detail: `解锁舰种被动「${plan.passive.name}」：${plan.nextPassiveDesc}`,
+      });
+    }
+    const res = {
+      characterId: cid,
+      characterName: actor.name,
+      retrofitStage: plan.nextStage,
+      titleSuffix: plan.nextTitleSuffix,
+      passive: plan.passive,
+      passiveDesc: plan.nextPassiveDesc,
+    };
+    this._emit('character:retrofitted', res);
+    this._emit('buildings:updated', { reason: 'ship-retrofit', characterId: cid });
+    return res;
+  }
+
   serialize() {
     return {
-      version: 2,
+      version: 3,
       ...deepClone(this._state),
     };
   }
@@ -1715,6 +1963,8 @@ export class PortBuildingsSystem {
   deserialize(snapshot, { persist = true } = {}) {
     if (!snapshot || typeof snapshot !== 'object') return;
     const def = createDefaultBuildingsState();
+    const rawB = snapshot.dailyBounties && typeof snapshot.dailyBounties === 'object' ? snapshot.dailyBounties : null;
+    const today = getLocalDateKeyBuildings();
     this._state = {
       dormitory: {
         ...def.dormitory,
@@ -1736,10 +1986,12 @@ export class PortBuildingsSystem {
             ? deepClone(snapshot.medals.unlockedAt)
             : {},
       },
+      dailyBounties: rawB && rawB.dateKey === today ? deepClone(rawB) : createDefaultDailyBounties(today),
       updatedAt: Number(snapshot.updatedAt) || Date.now(),
     };
     this._syncDockTasksToEntitySystem();
     this.syncCustomBuildingModifiers();
+    this.syncAllRetrofitModifiers();
     if (persist) this.persist();
   }
 

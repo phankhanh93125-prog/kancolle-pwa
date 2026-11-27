@@ -50,6 +50,7 @@ import {
   playOpeningChoreography,
   renderFullScreenBattleView,
 } from './battle-screen.js';
+import { PRACTICE_TARGET_PRESETS } from '../core/tactical-combat.js';
 import { clamp } from '../core/calc-engine.js';
 
 const SORTIE_STORAGE_NS = 'core-sortie';
@@ -1154,14 +1155,167 @@ async function resolveActiveNodeStoryChoice(choiceIdx) {
 }
 
 // ============================================================
+// Zero-Cost Tactical Practice Range (零油耗演习靶场)
+// ============================================================
+
+async function startPracticeRangeEncounter(presetId) {
+  const { entities, formation, combat, statRules, inventory, uiKit } = sortieState.context;
+  const preset = PRACTICE_TARGET_PRESETS.find((p) => p.id === presetId) || PRACTICE_TARGET_PRESETS[0];
+  if (!preset) return;
+
+  const fVal = formation
+    ? formation.validateFleetForSortie({ statRules, inventory })
+    : { ok: true, errors: [] };
+  if (!fVal.ok) {
+    uiKit.showToast(fVal.errors[0] || '编队未满足适航条件，无法进入演习靶场', 'warn');
+    return;
+  }
+
+  const fState = formation ? formation.getState() : null;
+  const memberIds =
+    fState && Array.isArray(fState.memberIds) && fState.memberIds.length > 0
+      ? fState.memberIds.slice()
+      : [getFlagship()?.id].filter(Boolean);
+  if (memberIds.length === 0) {
+    uiKit.showToast('请先在 3×4 阵型盘部署至少 1 名适航舰娘', 'warn');
+    return;
+  }
+
+  const simNode = preset.buildNode();
+  const activeFormId = fState?.formationId || 'line_ahead';
+  const simSupplies = { fuel: 999, ammo: 999, maxFuel: 999, maxAmmo: 999 };
+
+  combat.clearSession();
+  sortieState.postBattleSettlement = null;
+  sortieState.activeNodeStory = null;
+  sortieState.autoRunning = false;
+  sortieState.activeRun = {
+    routeId: `practice_${preset.id}`,
+    routeName: `零油耗演习靶场 · ${preset.name}`,
+    isPractice: true,
+    practicePresetId: preset.id,
+    difficulty: preset.difficulty || 'star_2',
+    star: 2,
+    characterId: memberIds[0],
+    fleetMemberIds: memberIds,
+    formationId: activeFormId,
+    nodes: [simNode],
+    nextNodeIndex: 0,
+    clearedIndices: [],
+    loot: {},
+    reports: [],
+    stepCost: { fuel: 0, ammo: 0 },
+    carriedSupplies: simSupplies,
+    resupplyUsesRemaining: 2,
+    completed: false,
+    startedAt: Date.now(),
+  };
+
+  const startedSession = combat.startEncounter({
+    characterId: memberIds[0],
+    fleetMemberIds: memberIds,
+    formationId: activeFormId,
+    node: simNode,
+    difficulty: preset.difficulty || 'star_2',
+    carriedSupplies: simSupplies,
+    resupplyUsesRemaining: 2,
+    isPractice: true,
+  });
+
+  uiKit.showToast(`🎯 已进入【${preset.name}】零油耗演习靶场（0消耗 · 战后100%还原耐久与士气）`, 'info');
+  await renderSortieConsole();
+
+  if (startedSession && startedSession.status !== 'active' && startedSession.status !== 'night_prompt') {
+    await finalizeBattleOutcome(startedSession);
+    await renderSortieConsole();
+  } else if (combat.isActive() && combat.isEnemyTurnPending()) {
+    await drainPendingEnemyTurnsWithChoreography();
+  }
+}
+
+function openPracticeRangeModal() {
+  const { uiKit } = sortieState.context;
+  const openFn = typeof uiKit.openTacticalModal === 'function' ? uiKit.openTacticalModal : uiKit.openModal;
+  openFn({
+    title: '🎯 零油耗战术演习靶场',
+    subtitle: '选择模拟靶舰检验配装与 d20 命中/反潜/制空 · 0油弹消耗 · 战后100%无损还原耐久与士气',
+    renderContent: (body, close) => {
+      body.innerHTML = `
+        <div class="module-stack" id="practice-range-modal">
+          <div class="surface-card" style="padding:9px 11px; border-color:rgba(16,185,129,0.45); background:rgba(16,185,129,0.08);">
+            <strong style="font-size:12.5px; color:#34d399;">✓ 演习无损保障</strong>
+            <p class="muted-text" style="font-size:11.5px; margin:3px 0 0;">
+              进入靶场与释放任意战术技能均 <strong>不消耗港区油弹</strong>；无论胜负或随时撤退，全队舰娘的真实耐久与士气都将 <strong>100% 原样还原</strong>。
+            </p>
+          </div>
+          <div class="lab-stack-sm" style="gap:8px;">
+            ${PRACTICE_TARGET_PRESETS.map(
+              (p) => `
+              <div class="surface-card lab-stack-sm" style="padding:10px 12px;">
+                <div class="lab-slot-head">
+                  <strong style="font-size:13.5px;">${escapeHtml(p.name)}</strong>
+                  <span class="status-badge badge-ok">${escapeHtml(p.tag)}</span>
+                </div>
+                <p class="muted-text" style="font-size:12px; margin:0;">${escapeHtml(p.desc)}</p>
+                <button type="button" class="btn-primary uikit-touch-target" data-practice-start="${escapeHtml(p.id)}">
+                  🎯 以当前 3×4 编队开始零油耗演习
+                </button>
+              </div>
+            `
+            ).join('')}
+          </div>
+        </div>
+      `;
+      body.querySelectorAll('[data-practice-start]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const pid = btn.getAttribute('data-practice-start');
+          close();
+          await startPracticeRangeEncounter(pid);
+        });
+      });
+    },
+  });
+}
+
+// ============================================================
 // Tactical Combat Outcome & 100% Safe Retreat
 // ============================================================
 
 async function finalizeBattleOutcome(session) {
   const run = sortieState.activeRun;
   if (!run || !session) return;
-  syncSuppliesFromCombatSession(run, session);
   const { combat, entities, resources, statRules, commander, rootStorage, logs, bus, uiKit } = sortieState.context;
+
+  // Practice Range: 0 oil/ammo cost, 0 real HP/morale loss, 100% lossless restore!
+  if (run.isPractice || session.isPractice) {
+    combat.restorePracticeState(session);
+    const mvp = typeof combat.computeBattleMvp === 'function' ? combat.computeBattleMvp(session) : null;
+    const statusLabel =
+      session.status === 'victory'
+        ? '演习大捷'
+        : session.status === 'retreated'
+        ? '演习脱离'
+        : session.status === 'defeated'
+        ? '演习惜败'
+        : '演习结束';
+    sortieState.postBattleSettlement = {
+      sessionSnapshot: deepClone(session),
+      isPractice: true,
+      headline: `🎯 零油耗战术演习 · ${statusLabel}`,
+      badge: '0消耗 · 无损还原',
+      tone: 'ok',
+      summary: `本次【${run.routeName || '战术演习'}】消耗油弹 0 / 0，全队舰娘真实耐久与士气已 100% 无损还原！${
+        mvp ? `演习表现最佳：🏆 ${mvp.shipName}（${mvp.reasonLabel}）。` : ''
+      }`,
+      continueLabel: '返回 3×4 备战编队界面',
+    };
+    sortieState.activeRun = null;
+    combat.clearSession();
+    uiKit.showToast('🎯 零油耗演习结束！全队耐久、士气与港区油弹均 100% 无损保留', 'ok');
+    return;
+  }
+
+  syncSuppliesFromCombatSession(run, session);
   const nodeIdx = run.nextNodeIndex;
   const node = run.nodes[nodeIdx];
   const memberIds =
@@ -1202,6 +1356,7 @@ async function finalizeBattleOutcome(session) {
     const dropMult = typeof resources.getDropMultiplier === 'function' ? resources.getDropMultiplier() : 1.0;
     const droppedItems = [];
     let seaControlNote = '';
+    let mvpNote = '';
 
     if (rewardFactor > 0) {
       for (const [rk, rawVal] of Object.entries(node.loot || {})) {
@@ -1274,6 +1429,18 @@ async function finalizeBattleOutcome(session) {
           });
         }
       }
+
+      // Battle MVP Evaluation & Triumph Bubble Push into Tab 1 Interaction Chat!
+      if (session.status === 'victory' && typeof combat.computeBattleMvp === 'function') {
+        const mvp = combat.computeBattleMvp(session);
+        if (mvp && mvp.characterId) {
+          const mvpShip = entities.get(mvp.characterId);
+          if (mvpShip && se && typeof se.recordBattleMvpReturn === 'function') {
+            await se.recordBattleMvpReturn(mvpShip, mvp);
+          }
+          mvpNote = ` · 🏆 本场 MVP：${mvp.shipName}（${mvp.reasonLabel}，返港好感+1）`;
+        }
+      }
     }
 
     if (commander) {
@@ -1293,13 +1460,14 @@ async function finalizeBattleOutcome(session) {
       title: `[${char?.name || ''}等] 节点 ${node.code}·${node.name} ${
         session.status === 'victory' ? '交战胜利' : session.status === 'day_ended' ? '昼战收兵' : '迂回通过'
       }`,
-      detail: rewardFactor > 0 ? `战利品：${lootText}${dropCrateText}${seaControlNote}` : '全队无伤绕过敌方封锁',
+      detail: rewardFactor > 0 ? `战利品：${lootText}${dropCrateText}${seaControlNote}${mvpNote}` : '全队无伤绕过敌方封锁',
     });
     bus.emit('sortie:node-resolved', {
       routeId: run.routeId,
       nodeCode: node.code,
       status: session.status,
       completed: run.completed,
+      isPractice: false,
     });
 
     sortieState.postBattleSettlement = {
@@ -1314,13 +1482,13 @@ async function finalizeBattleOutcome(session) {
       tone: session.status === 'victory' ? 'ok' : 'warn',
       summary:
         rewardFactor > 0
-          ? `获得战利品：${lootText}${dropCrateText}${seaControlNote}。${run.completed ? '已击破本海域全部目标，可凯旋返航！' : '可返回分岔海图继续推进或直达船坞整备。'}`
+          ? `获得战利品：${lootText}${dropCrateText}${seaControlNote}${mvpNote}。${run.completed ? '已击破本海域全部目标，可凯旋返航！' : '可返回分岔海图继续推进或直达船坞整备。'}`
           : '全队保持完整耐久绕过封锁，可继续推进海图。',
       continueLabel: run.completed ? '返回海图并凯旋返航' : '继续雷达海图航行',
     };
 
     uiKit.showToast(
-      session.status === 'victory' ? `战斗胜利！${lootText}${dropCrateText}${seaControlNote}` : `节点 ${node.code} 战斗已结算`,
+      session.status === 'victory' ? `战斗胜利！${lootText}${dropCrateText}${mvpNote}` : `节点 ${node.code} 战斗已结算`,
       'ok'
     );
   } else if (session.status === 'defeated') {
@@ -1345,10 +1513,13 @@ async function finalizeBattleOutcome(session) {
 async function handleBattleSafeRetreat() {
   const { combat, uiKit } = sortieState.context || {};
   if (!combat || !combat.isActive()) return;
+  const isPractice = Boolean(sortieState.activeRun?.isPractice || combat.getSession()?.isPractice);
   const ok = await uiKit.confirmDialog({
-    title: '确认 100% 安全撤退（逃跑）？',
-    message: '撤退 100% 成功，保留当前舰队耐久与剩余携带油弹，仅放弃本场未完成战斗的战利品。',
-    confirmLabel: '确认安全撤退',
+    title: isPractice ? '结束零油耗演习靶场？' : '确认 100% 安全撤退（逃跑）？',
+    message: isPractice
+      ? '演习随时可无损退出，全队真实耐久、士气与港区油弹将 100% 原样还原。'
+      : '撤退 100% 成功，保留当前舰队耐久与剩余携带油弹，仅放弃本场未完成战斗的战利品。',
+    confirmLabel: isPractice ? '结束演习并还原状态' : '确认安全撤退',
     cancelLabel: '继续战斗',
     tone: 'warn',
   });
@@ -1955,9 +2126,15 @@ async function renderSortieConsole() {
       onEnterNight: () => handleBattleEnterNight(),
       onFinishEarly: () => handleBattleFinishEarly(),
       onPostBattleContinue: () => {
+        const wasPractice = Boolean(sortieState.postBattleSettlement?.isPractice || sortieState.activeRun?.isPractice);
         sortieState.postBattleSettlement = null;
         sortieState.inspectedEnemyId = null;
         sortieState.highlightedAllyId = null;
+        if (wasPractice) {
+          sortieState.activeRun = null;
+          combat.clearSession();
+          sortieState.prepStage = 'prep';
+        }
         ui.setImmersiveBattle(false);
         ui.setStageMode?.('chart');
         renderSortieConsole();
@@ -2420,6 +2597,9 @@ async function renderSortieConsole() {
         : `已选中 ${selectedCell.rowLabel}空位：点下方待命舰娘可直接部署到此格`
       : '点空位部署 · 点两格互换站位 · 满编时点待命舰娘可智能替换';
 
+    const quickPresets =
+      formation && typeof formation.listQuickPresets === 'function' ? formation.listQuickPresets() : [];
+
     const prepCard = document.createElement('section');
     prepCard.className = 'surface-card lab-stack-sm';
     prepCard.id = 'sortie-stage1-prep';
@@ -2440,6 +2620,40 @@ async function renderSortieConsole() {
       </div>
 
       ${!fVal.ok ? `<div class="seaworthy-alert">${escapeHtml(fVal.errors[0] || '编队未满足适航条件')}</div>` : ''}
+
+      ${
+        quickPresets.length > 0
+          ? `
+        <!-- 3x4 Quick Formation Presets (3 persistent slots) -->
+        <div class="lab-stack-sm" id="s1-quick-presets-bar" data-no-swipe="true" style="gap:5px;">
+          <div style="display:flex; align-items:center; justify-content:space-between;">
+            <strong style="font-size:12px;">⚡ 3×4 快捷阵型预设（一键存/载编队站位）</strong>
+            <span class="muted-text" style="font-size:11px;">持久化存档</span>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:6px;">
+            ${quickPresets
+              .map(
+                (qp) => `
+              <div class="surface-card" data-s1-qpreset-slot="${qp.index}" style="padding:6px 7px; display:flex; flex-direction:column; gap:4px; background:var(--surface-alt);">
+                <div style="font-size:11px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(qp.name)}">
+                  ${escapeHtml(qp.name)}
+                </div>
+                <div class="muted-text" style="font-size:10px;">
+                  ${qp.hasSaved ? `已存 ${qp.memberCount} 舰` : '空预设'}
+                </div>
+                <div style="display:flex; gap:4px;">
+                  <button type="button" class="btn-secondary" data-s1-qpreset-save="${qp.index}" style="flex:1; min-height:28px; padding:0 4px; font-size:11px;" ${fState.count === 0 ? 'disabled' : ''}>存</button>
+                  <button type="button" class="${qp.hasSaved ? 'btn-primary' : 'btn-secondary'}" data-s1-qpreset-load="${qp.index}" style="flex:1; min-height:28px; padding:0 4px; font-size:11px;" ${qp.hasSaved ? '' : 'disabled'}>载入</button>
+                </div>
+              </div>
+            `
+              )
+              .join('')}
+          </div>
+        </div>
+      `
+          : ''
+      }
 
       <!-- Formation Preset Bar -->
       <div class="tac-preset-bar" data-no-swipe="true" id="s1-preset-bar">
@@ -2584,10 +2798,47 @@ async function renderSortieConsole() {
         </p>
       </div>
 
-      <button type="button" id="btn-prep-next-workshop" class="btn-primary port-cta-btn" ${!fVal.ok ? 'disabled' : ''}>
-        下一步：进入自定义海图工坊 →
-      </button>
+      <div class="lab-btn-grid" style="grid-template-columns: 1fr;">
+        <button type="button" id="btn-s1-practice-range" class="btn-secondary uikit-touch-target" ${!fVal.ok ? 'disabled' : ''}>
+          🎯 零油耗战术演习靶场（0耗 · 无损实测配装与阵型）
+        </button>
+        <button type="button" id="btn-prep-next-workshop" class="btn-primary port-cta-btn" ${!fVal.ok ? 'disabled' : ''}>
+          下一步：进入自定义海图工坊 →
+        </button>
+      </div>
     `;
+
+    // Bind 3×4 Quick Presets Save / Load
+    prepCard.querySelectorAll('[data-s1-qpreset-save]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const idx = Number(btn.getAttribute('data-s1-qpreset-save'));
+        try {
+          const saved = await formation.saveQuickPreset(idx);
+          uiKit.showToast(`已保存当前 3×4 阵型至「${saved.name}」（${saved.memberCount} 舰）`, 'ok');
+          renderSortieConsole();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '保存预设失败', 'warn');
+        }
+      });
+    });
+
+    prepCard.querySelectorAll('[data-s1-qpreset-load]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const idx = Number(btn.getAttribute('data-s1-qpreset-load'));
+        try {
+          const res = await formation.loadQuickPreset(idx);
+          sortieState.selectedGridCellIndex = null;
+          uiKit.showToast(`⚡ 已载入「${res.preset.name}」（部署 ${res.state.count} 舰）`, 'ok');
+          renderSortieConsole();
+        } catch (err) {
+          uiKit.showToast(err instanceof Error ? err.message : '载入预设失败', 'warn');
+        }
+      });
+    });
+
+    prepCard.querySelector('#btn-s1-practice-range')?.addEventListener('click', () => {
+      openPracticeRangeModal();
+    });
 
     // Bind 3×4 grid cell interactions
     prepCard.querySelectorAll('[data-s1-cell]').forEach((btn) => {

@@ -342,6 +342,11 @@ export function migrateSavePayload(rawData = {}) {
       ent.statBounds.affinity = { min: 0, max: targetMax };
       migrated = true;
     }
+    const normRetrofit = Math.max(0, Math.min(2, Math.floor(Number(ent.meta.retrofitStage || 0))));
+    if (ent.meta.retrofitStage !== normRetrofit) {
+      ent.meta.retrofitStage = normRetrofit;
+      migrated = true;
+    }
   }
 
   if (!data.storyEngine || typeof data.storyEngine !== 'object') {

@@ -2705,6 +2705,191 @@ export function getOathBondModifiers(characterId, oathTitle = '永恒誓约') {
   }));
 }
 
+// ============================================================
+// v32: +10 Orange Gear Tactical Engravings (战术铭刻)
+// ============================================================
+
+export const ENGRAVING_CORE_COST = 1;
+
+export const TACTICAL_ENGRAVING_DEFS = Object.freeze([
+  {
+    id: 'engrave_fcs',
+    name: '火控校射',
+    label: '火控校射：命中+4',
+    shortLabel: '✦ 火控校射(命中+4)',
+    stat: 'recon',
+    value: 4,
+    hitBonus: 4,
+    checkBonus: 2,
+    desc: '精密光学与雷达校射铭刻：战斗命中修正 +4、侦查 +4、d20 检定 +2。',
+  },
+  {
+    id: 'engrave_asw',
+    name: '深弹挂载',
+    label: '深弹挂载：反潜+5',
+    shortLabel: '✦ 深弹挂载(反潜+5)',
+    stat: 'asw',
+    value: 5,
+    hitBonus: 0,
+    checkBonus: 0,
+    desc: '强化声呐深弹挂载架：反潜 +5，显著提高对水下潜艇的打击效能。',
+  },
+  {
+    id: 'engrave_aa',
+    name: '高角防空',
+    label: '高角防空：防空+5',
+    shortLabel: '✦ 高角防空(防空+5)',
+    stat: 'aa',
+    value: 5,
+    hitBonus: 0,
+    checkBonus: 0,
+    desc: '近炸引信与高角火控联动：防空 +5，强化全队防空弹幕拦截率。',
+  },
+  {
+    id: 'engrave_rudder',
+    name: '精密舵机',
+    label: '精密舵机：机动+4',
+    shortLabel: '✦ 精密舵机(机动+4)',
+    stat: 'evasion',
+    value: 4,
+    hitBonus: 0,
+    checkBonus: 0,
+    desc: '液压高速操舵增稳器：机动 +4，联动提升派生闪避与高速规避触发率。',
+  },
+  {
+    id: 'engrave_ap_core',
+    name: '穿甲弹芯',
+    label: '穿甲弹芯：攻击+4',
+    shortLabel: '✦ 穿甲弹芯(攻击+4)',
+    stat: 'firepower',
+    value: 4,
+    hitBonus: 0,
+    checkBonus: 0,
+    desc: '特种硬化被帽穿甲弹芯：火力 +4，保持两位数体系下的稳定破甲增伤。',
+  },
+]);
+
+export const TACTICAL_ENGRAVING_MAP = Object.freeze(
+  Object.fromEntries(TACTICAL_ENGRAVING_DEFS.map((d) => [d.id, d]))
+);
+
+// ============================================================
+// v32: 2-Stage Shipgirl Modernization Retrofit (一改 / 二改)
+// ============================================================
+
+export const SHIP_RETROFIT_CLASS_PASSIVES = Object.freeze({
+  DD: {
+    id: 'dd_night_torp',
+    name: '夜战雷击大师',
+    stage1Desc: '夜战雷击伤害 +16%，夜战暴击率 +8%',
+    stage2Desc: '夜战雷击伤害 +26%，夜战暴击率 +14%',
+  },
+  CL: {
+    id: 'cl_aa_aura',
+    name: '防空掩护光环',
+    stage1Desc: '全队防空弹幕拦截率 +10%，防空拦截贡献提升',
+    stage2Desc: '全队防空弹幕拦截率 +18%，防空拦截贡献大幅提升',
+  },
+  CA: {
+    id: 'ca_vanguard_shield',
+    name: '重巡铁壁护航',
+    stage1Desc: '炮击穿甲增伤 +10%，前排援护减伤 +10%',
+    stage2Desc: '炮击穿甲增伤 +18%，前排援护减伤 +18%',
+  },
+  BB: {
+    id: 'bb_flagship_salvo',
+    name: '战列旗舰齐射增伤',
+    stage1Desc: '炮击与主炮齐射伤害 +12%（担任旗舰时额外 +6%）',
+    stage2Desc: '炮击与主炮齐射伤害 +20%（担任旗舰时额外 +10%）',
+  },
+  CV: {
+    id: 'cv_air_dominance',
+    name: '首轮制空压制',
+    stage1Desc: '首轮制空战力 +18%，开幕轰炸伤害 +12%',
+    stage2Desc: '首轮制空战力 +32%，开幕轰炸伤害 +22%',
+  },
+  SS: {
+    id: 'ss_deep_stealth',
+    name: '深海幽影潜航',
+    stage1Desc: '开幕雷击伤害 +15%，水下规避命中修正 -2',
+    stage2Desc: '开幕雷击伤害 +25%，水下规避命中修正 -3',
+  },
+  AR: {
+    id: 'ar_emergency_dc',
+    name: '战地紧急损管',
+    stage1Desc: '战地抢修回复量 +22%，抢修附带护甲稳固',
+    stage2Desc: '战地紧急损管回复量 +38%，并额外恢复全队士气',
+  },
+  AO: {
+    id: 'ao_ammo_endurance',
+    name: '全队弹药续航增幅',
+    stage1Desc: '随队出征油弹步耗额外 -8%，前线补给量 +20%',
+    stage2Desc: '随队出征油弹步耗额外 -15%，前线补给量 +35%',
+  },
+});
+
+export function getShipRetrofitPlan(entity) {
+  const stage = Math.max(0, Math.min(2, Math.floor(Number(entity?.meta?.retrofitStage || 0))));
+  const shipClass = resolveShipClass(entity?.meta?.shipType || '驱逐舰');
+  const passive = SHIP_RETROFIT_CLASS_PASSIVES[shipClass] || SHIP_RETROFIT_CLASS_PASSIVES.DD;
+  const titleSuffix = stage >= 2 ? '改二' : stage === 1 ? '改' : '';
+
+  if (stage >= 2) {
+    return {
+      currentStage: 2,
+      nextStage: null,
+      canRetrofit: false,
+      titleSuffix,
+      nextTitleSuffix: null,
+      shipClass,
+      passive,
+      activePassiveDesc: passive.stage2Desc,
+      nextPassiveDesc: null,
+      cost: null,
+      statDelta: null,
+    };
+  }
+
+  const nextStage = stage + 1;
+  const isStage2 = nextStage === 2;
+  return {
+    currentStage: stage,
+    nextStage,
+    canRetrofit: true,
+    titleSuffix,
+    nextTitleSuffix: isStage2 ? '改二' : '改',
+    shipClass,
+    passive,
+    activePassiveDesc: stage === 1 ? passive.stage1Desc : null,
+    nextPassiveDesc: isStage2 ? passive.stage2Desc : passive.stage1Desc,
+    cost: isStage2
+      ? { retrofitCores: 2, steel: 380, fuel: 240, silver: 320 }
+      : { retrofitCores: 1, steel: 200, fuel: 120, silver: 160 },
+    statDelta: isStage2
+      ? { maxHp: 7, firepower: 4, armor: 4, torpedo: 4, evasion: 4, recon: 4, aa: 4, asw: 4 }
+      : { maxHp: 5, firepower: 3, armor: 3, torpedo: 3, evasion: 3, recon: 3, aa: 3, asw: 3 },
+  };
+}
+
+export function getShipRetrofitModifiers(characterId, retrofitStage = 0) {
+  const stage = Math.max(0, Math.min(2, Math.floor(Number(retrofitStage) || 0)));
+  if (stage <= 0) return [];
+  const cid = String(characterId || '');
+  const hpVal = stage >= 2 ? 12 : 5;
+  const combatVal = stage >= 2 ? 7 : 3;
+  const label = stage >= 2 ? '二阶段近代化改造 · 改二' : '一阶段近代化改造 · 改';
+  const keys = ['maxHp', 'firepower', 'armor', 'torpedo', 'evasion', 'recon', 'aa', 'asw'];
+  return keys.map((stat, idx) => ({
+    id: `retrofit_mod_${cid}_${idx}`,
+    stat,
+    layer: 'baseAdd',
+    value: stat === 'maxHp' ? hpVal : combatVal,
+    source: label,
+    enabled: true,
+  }));
+}
+
+
 
 
 

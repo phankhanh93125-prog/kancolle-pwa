@@ -573,3 +573,125 @@ export const MARITIME_ENCOUNTER_STORIES = Object.freeze([
     ],
   },
 ]);
+
+// ============================================================
+// v32: Favorite Gifts, Battle MVP Return Bubbles, Retrofit Lines & Live Status Signature
+// ============================================================
+
+export const SHIP_FAVORITE_GIFTS_BY_CLASS = Object.freeze({
+  DD: ['item_gift_dessert_box', 'item_gift_aroma_candle'],
+  CL: ['item_gift_black_tea', 'item_gift_dessert_box'],
+  CA: ['item_gift_pocket_watch', 'item_gift_black_tea'],
+  BB: ['item_gift_tactical_journal', 'item_gift_pocket_watch'],
+  CV: ['item_gift_aroma_candle', 'item_gift_black_tea'],
+  SS: ['item_gift_aroma_candle', 'item_gift_dessert_box'],
+  AR: ['item_gift_pocket_watch', 'item_gift_tactical_journal'],
+  AO: ['item_gift_dessert_box', 'item_gift_black_tea'],
+});
+
+export const GIFT_NAME_BY_ID = Object.freeze({
+  item_gift_dessert_box: '港区甜点盒',
+  item_gift_black_tea: '伯爵红茶礼罐',
+  item_gift_aroma_candle: '海风香薰蜡烛',
+  item_gift_pocket_watch: '精工机械怀表',
+  item_gift_tactical_journal: '精装战术手札',
+});
+
+export function getFavoriteGiftIdsForShip(actor) {
+  const st = String(actor?.meta?.shipType || '');
+  let cls = 'DD';
+  if (/轻巡|CL/i.test(st)) cls = 'CL';
+  else if (/重巡|CA/i.test(st)) cls = 'CA';
+  else if (/战列|BB/i.test(st)) cls = 'BB';
+  else if (/航母|CV/i.test(st)) cls = 'CV';
+  else if (/潜艇|SS/i.test(st)) cls = 'SS';
+  else if (/维修|AR/i.test(st)) cls = 'AR';
+  else if (/补给|AO/i.test(st)) cls = 'AO';
+
+  const base = [...(SHIP_FAVORITE_GIFTS_BY_CLASS[cls] || SHIP_FAVORITE_GIFTS_BY_CLASS.DD)];
+  const pText = `${actor?.meta?.personalityCombo?.primaryName || ''} ${actor?.meta?.personality || ''}`;
+  if (/傲娇|元气|吃货|活泼/.test(pText) && !base.includes('item_gift_dessert_box')) {
+    base[1] = 'item_gift_dessert_box';
+  } else if (/冷静|知性|严谨|腹黑/.test(pText) && !base.includes('item_gift_tactical_journal')) {
+    base[1] = 'item_gift_tactical_journal';
+  } else if (/温柔|体贴|文艺|慵懒/.test(pText) && !base.includes('item_gift_aroma_candle')) {
+    base[1] = 'item_gift_aroma_candle';
+  }
+  return base.slice(0, 2);
+}
+
+export const FAVORITE_GIFT_REACTIONS = Object.freeze([
+  {
+    narration: '{actor}拆开包装的瞬间眼睛一下亮了起来，耳尖微微泛红，小心翼翼地把{gift}捧在胸口。',
+    text: '「诶、诶？！你怎么知道我最想要{gift}的……{cmd}偷偷记下我的喜好，也太犯规了吧！」',
+  },
+  {
+    narration: '{actor}愣了半秒才反应过来，嘴角怎么都压不住上扬的弧度，轻轻拉了拉你的衣袖。',
+    text: '「居然真的是我最喜欢的{gift}……谢谢你，{cmd}！这份心意我会当成宝物好好珍藏起来的。」',
+  },
+  {
+    narration: '柔和的惊喜在{actor}眼底晕开，她朝你凑近半步，声音里藏不住雀跃与害羞。',
+    text: '「每次都在我最想要的时候送来{gift}……{cmd}这么了解我，我会越来越离不开你的呀。」',
+  },
+]);
+
+export const MVP_RETURN_LINES = Object.freeze([
+  {
+    narration: '刚踏上港区栈桥，身上还带着淡淡硝烟味的{actor}便小跑着迎上来，眼睛亮晶晶地看着你。',
+    text: '「{cmd}！刚才那场战斗的 MVP 是我哦！我的表现没有让你失望吧？下次出征也请继续把重任交给我！」',
+  },
+  {
+    narration: '{actor}轻轻拭去额角海风带来的水汽，嘴角扬起骄傲又温柔的笑意。',
+    text: '「顺利凯旋啦，{cmd}～今天能拿到全队 MVP，全靠你在后方的精准调度。……作为嘉奖，今晚可以多陪我聊一会儿吗？」',
+  },
+  {
+    narration: '夕光洒在刚归港的{actor}肩头，她朝你俏皮地敬了个礼，语气轻快而自豪。',
+    text: '「报告{cmd}，本次作战最佳表现奖已收入囊中！不过比起勋章，我更想听你亲口夸我一句呢。」',
+  },
+]);
+
+export const RETROFIT_DIALOGUE_LINES = Object.freeze({
+  1: {
+    narration: '船坞龙门吊缓缓升起，完成「一阶段近代化改造」的{actor}迈着轻盈而沉稳的步伐走到你面前，舾装泛着崭新冷光。',
+    text: '「{cmd}，一阶段近代化改造整备完毕！感觉火力与航速都脱胎换骨了——全新的我，请随时下令出击吧！」',
+  },
+  2: {
+    narration: '海风吹拂着焕然一新的旗舰礼装与尖端舾装，完成「二阶段近代化改造 · 改二」的{actor}向你郑重敬礼，目光耀眼如星辰。',
+    text: '「这就是我的最终形态「改二」……谢谢你一路倾注的心血，{cmd}。从今以后，无论多深的海域，我都能为你劈开前路！」',
+  },
+});
+
+export function composeLiveStatusSignature({ actor, status, recentEvent = null, date = new Date() } = {}) {
+  const tod = getTimeOfDayBucket(date);
+  const morale = Math.round(Number(actor?.stats?.morale ?? 75));
+  const retrofitStage = Math.floor(Number(actor?.meta?.retrofitStage || 0));
+  const now = date.getTime();
+  const isFresh = recentEvent && now - (Number(recentEvent.at) || 0) < 1000 * 60 * 45;
+
+  if (isFresh && recentEvent.type === 'mvp') {
+    return '🏆 刚刚斩获出征 MVP 凯旋归港，正期待着指挥官的嘉奖～';
+  }
+  if (isFresh && recentEvent.type === 'repaired') {
+    return '🔧 刚从船坞满血出渠，船体焕然一新、心情超好！';
+  }
+  if (isFresh && recentEvent.type === 'retrofit') {
+    return `⚙️ 刚刚完成${retrofitStage >= 2 ? '「改二」' : '「一改」'}近代化改造，迫不及待想试航！`;
+  }
+  if (morale < 35) {
+    return '💤 有点疲惫，想要在宿舍里喝杯热茶好好休息一下…';
+  }
+  if (status?.isOathed) {
+    return tod === 'night'
+      ? '💍 深夜港湾静悄悄的，正戴着誓约指环等你一起看星星。'
+      : '💍 誓约羁绊相伴左右，今天也是想和指挥官黏在一起的一天～';
+  }
+  if (morale >= 85) {
+    return tod === 'night'
+      ? '🌙 夜风轻柔、士气满满，随时可以陪你夜谈或夜战巡航！'
+      : '☀️ 今日状态绝佳！甲板整备完毕，随时听候指挥官差遣～';
+  }
+  return tod === 'night'
+    ? '🏮 深夜值守中，指挥室的暖灯还亮着呢，记得早点休息。'
+    : '⚓ 正在港区码头吹海风，顺手核对今天的补给与海图清单。';
+}
+

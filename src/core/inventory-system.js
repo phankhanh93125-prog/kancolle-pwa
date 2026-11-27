@@ -17,6 +17,7 @@
  */
 
 import {
+  ENGRAVING_CORE_COST,
   ITEM_RARITIES,
   ITEM_RARITY_MAP,
   ITEM_RARITY_ORDER,
@@ -26,6 +27,7 @@ import {
   NAVAL_EIGHT_STAT_DEFS,
   NAVAL_EIGHT_STAT_MAP,
   RARITY_STAT_BUDGETS,
+  TACTICAL_ENGRAVING_MAP,
   getDisassembleYieldByRarity,
   getEquipmentPromoteCost,
   getShipClassSlotCap,
@@ -686,6 +688,59 @@ export function getEnhanceCost(item, { discount = 0 } = {}) {
   };
 }
 
+/**
+ * Preview cumulative cost for One-Click Batch Enhancement up to `targetLevel` (+10)
+ * or the highest level affordable with current steel/bauxite/silver stock.
+ */
+export function computeBatchEnhancePlan(item, { resources = null, discount = 0, targetLevel = MAX_ENHANCE_LEVEL } = {}) {
+  const startLevel = Math.max(0, Math.floor(Number(item?.level) || 0));
+  const goalLevel = Math.max(startLevel, Math.min(MAX_ENHANCE_LEVEL, Math.floor(Number(targetLevel) || MAX_ENHANCE_LEVEL)));
+  const stockSteel = resources ? Math.floor(Number(resources.getBalance('steel') ?? 0)) : Infinity;
+  const stockBauxite = resources ? Math.floor(Number(resources.getBalance('bauxite') ?? 0)) : Infinity;
+  const stockSilver = resources ? Math.floor(Number(resources.getBalance('silver') ?? 0)) : Infinity;
+
+  const fullMaxCost = { steel: 0, bauxite: 0, silver: 0 };
+  const affordableCost = { steel: 0, bauxite: 0, silver: 0 };
+  let maxAffordableLevel = startLevel;
+  let stillAffordable = true;
+
+  for (let lv = startLevel; lv < goalLevel; lv++) {
+    const step = getEnhanceCost({ ...item, level: lv }, { discount });
+    fullMaxCost.steel += step.steel;
+    fullMaxCost.bauxite += step.bauxite;
+    fullMaxCost.silver += step.silver;
+    if (
+      stillAffordable &&
+      affordableCost.steel + step.steel <= stockSteel &&
+      affordableCost.bauxite + step.bauxite <= stockBauxite &&
+      affordableCost.silver + step.silver <= stockSilver
+    ) {
+      affordableCost.steel += step.steel;
+      affordableCost.bauxite += step.bauxite;
+      affordableCost.silver += step.silver;
+      maxAffordableLevel = lv + 1;
+    } else {
+      stillAffordable = false;
+    }
+  }
+
+  const baseBonuses =
+    Array.isArray(item?.baseBonuses) && item.baseBonuses.length > 0 ? item.baseBonuses : item?.bonuses || [];
+  const nextBonuses = computeEnhancedBonuses(baseBonuses, maxAffordableLevel);
+
+  return {
+    startLevel,
+    goalLevel,
+    maxAffordableLevel,
+    levelsToGain: Math.max(0, maxAffordableLevel - startLevel),
+    canEnhanceAny: maxAffordableLevel > startLevel,
+    reachesMax: maxAffordableLevel >= goalLevel,
+    affordableCost,
+    fullMaxCost,
+    nextBonuses,
+  };
+}
+
 export class InventorySystem {
   constructor({ storage, entities, commander = null, bus = null }) {
     this._storage = storage;
@@ -702,7 +757,7 @@ export class InventorySystem {
     this._equipped = {};
     /** @type {number} Salvage parts accumulated from disassembling surplus equipment for rarity promotion */
     this._salvageParts = 0;
-    /** @type {number} Retrofit Cores earned from duplicate ship construction */
+    /** @type {number} Retrofit Cores earned from bounties & ship construction */
     this._retrofitCores = 0;
     this._hydrated = false;
 
@@ -736,6 +791,19 @@ export class InventorySystem {
     this._retrofitCores = this.getRetrofitCores() + add;
     await this.persist();
     this._emit('inventory:retrofit-cores-changed', { retrofitCores: this._retrofitCores, delta: add });
+    return this._retrofitCores;
+  }
+
+  async spendRetrofitCores(amount) {
+    const cost = Math.max(0, Math.floor(Number(amount) || 0));
+    if (cost <= 0) return this.getRetrofitCores();
+    const cur = this.getRetrofitCores();
+    if (cur < cost) {
+      throw new Error(`改造核心不足：需要 ${cost} 颗，当前拥有 ${cur} 颗（可通过「档案 → 每日港务悬赏」获取）`);
+    }
+    this._retrofitCores = cur - cost;
+    await this.persist();
+    this._emit('inventory:retrofit-cores-changed', { retrofitCores: this._retrofitCores, delta: -cost });
     return this._retrofitCores;
   }
 
@@ -1736,6 +1804,120 @@ export class InventorySystem {
   }
 
   /**
+   * One-Click Batch Enhancement: upgrades an item directly to +10 (or highest affordable level)
+   * in a single resource transaction, respecting Commander `maintenance` cost discount.
+   */
+  async enhanceItemBatch(itemId, { resources = null, discount = 0, targetLevel = MAX_ENHANCE_LEVEL } = {}) {
+    const existing = this._items.get(String(itemId));
+    if (!existing) throw new Error(`物品 "${itemId}" 不存在`);
+    if (existing.category === ITEM_CATEGORIES.CONSUMABLE) {
+      throw new Error('消耗品不支持强化升级');
+    }
+    const prevLevel = Math.max(0, Math.floor(Number(existing.level) || 0));
+    if (prevLevel >= MAX_ENHANCE_LEVEL) {
+      throw new Error(`「${existing.name}」已达到最高强化等级 +${MAX_ENHANCE_LEVEL}`);
+    }
+
+    const plan = computeBatchEnhancePlan(existing, { resources, discount, targetLevel });
+    if (!plan.canEnhanceAny) {
+      throw new Error('当前钢材/铝材/银条不足以进行下一级强化');
+    }
+
+    if (resources) {
+      const spend = await resources.spendBatch(plan.affordableCost, {
+        reason: `一键强化「${existing.name}」（+${prevLevel} → +${plan.maxAffordableLevel}）`,
+      });
+      if (!spend.ok) throw new Error(spend.reason || '强化资源不足');
+    }
+
+    const baseBonuses =
+      Array.isArray(existing.baseBonuses) && existing.baseBonuses.length > 0
+        ? existing.baseBonuses
+        : existing.bonuses || [];
+    existing.level = plan.maxAffordableLevel;
+    existing.baseBonuses = deepClone(baseBonuses);
+    existing.bonuses = computeEnhancedBonuses(baseBonuses, plan.maxAffordableLevel);
+    existing.updatedAt = Date.now();
+
+    const affectedCharacters = [];
+    for (const [charId, slotMap] of Object.entries(this._equipped)) {
+      if (Object.values(slotMap).includes(existing.id)) {
+        this.syncCharacterModifiers(charId);
+        affectedCharacters.push(charId);
+      }
+    }
+
+    await this.persist();
+    const payload = {
+      item: deepClone(existing),
+      prevLevel,
+      nextLevel: plan.maxAffordableLevel,
+      levelsGained: plan.levelsToGain,
+      costSpent: plan.affordableCost,
+      affectedCharacters,
+      timestamp: Date.now(),
+    };
+    this._emit('inventory:enhanced', payload);
+    return payload;
+  }
+
+  /**
+   * Tactical Engraving (战术铭刻) for +10 Legendary (Orange) Equipment:
+   * Spends 1 Retrofit Core to engrave a balanced 2-digit tactical affix on the item.
+   */
+  async engraveOrangeItem(itemId, engravingId) {
+    const existing = this._items.get(String(itemId));
+    if (!existing) throw new Error(`物品 "${itemId}" 不存在`);
+    if (existing.category === ITEM_CATEGORIES.CONSUMABLE) {
+      throw new Error('消耗品不支持战术铭刻');
+    }
+    const rarity = inferItemRarity(existing);
+    if (rarity !== ITEM_RARITIES.LEGENDARY) {
+      throw new Error('仅【传说 · 橙】品质装备支持战术铭刻');
+    }
+    const curLv = Math.max(0, Math.floor(Number(existing.level) || 0));
+    if (curLv < MAX_ENHANCE_LEVEL) {
+      throw new Error(`需先强化至满级 +${MAX_ENHANCE_LEVEL} 方可进行战术铭刻（当前 +${curLv}）`);
+    }
+    const def = TACTICAL_ENGRAVING_MAP[String(engravingId || '')];
+    if (!def) throw new Error('请选择有效的战术铭刻词条');
+
+    await this.spendRetrofitCores(ENGRAVING_CORE_COST);
+
+    existing.engraving = {
+      id: def.id,
+      name: def.name,
+      label: def.label,
+      shortLabel: def.shortLabel,
+      stat: def.stat,
+      value: def.value,
+      hitBonus: def.hitBonus || 0,
+      checkBonus: def.checkBonus || 0,
+      engravedAt: Date.now(),
+    };
+    existing.updatedAt = Date.now();
+
+    const affectedCharacters = [];
+    for (const [charId, slotMap] of Object.entries(this._equipped)) {
+      if (Object.values(slotMap).includes(existing.id)) {
+        this.syncCharacterModifiers(charId);
+        affectedCharacters.push(charId);
+      }
+    }
+
+    await this.persist();
+    const payload = {
+      item: deepClone(existing),
+      engraving: deepClone(existing.engraving),
+      coresRemaining: this.getRetrofitCores(),
+      affectedCharacters,
+    };
+    this._emit('inventory:engraved', payload);
+    this._emit('inventory:item-updated', { item: deepClone(existing) });
+    return payload;
+  }
+
+  /**
    * Promote a +10 max-enhanced equipment/outfit item to the next rarity tier
    * (common -> uncommon -> rare -> epic -> legendary), elevating its base bonuses cleanly
    * and resetting enhance level to +0 to unlock another +1..+10 growth ceiling.
@@ -2084,6 +2266,16 @@ export class InventorySystem {
           enabled: true,
         });
       });
+      if (item.engraving && item.engraving.stat && Number(item.engraving.value)) {
+        this._entities.addModifier(characterId, {
+          id: `inv_eq_engrave_${slotId}_${item.id}`,
+          stat: item.engraving.stat,
+          layer: 'baseAdd',
+          value: Number(item.engraving.value),
+          source: `战术铭刻 · ${item.engraving.name || item.engraving.label}`,
+          enabled: true,
+        });
+      }
     }
 
     // Clamp current HP to effective maxHp ceiling if maxHp changed

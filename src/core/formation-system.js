@@ -185,6 +185,11 @@ export class FormationSystem {
     this._gridSlots = Array(GRID_TOTAL_CELLS).fill(null);
     this._formationId = 'line_ahead';
     this._customFormationMods = {};
+    this._quickPresets = [
+      { id: 'preset_1', name: '预设一 · 主力推图', memberIds: [], gridSlots: Array(GRID_TOTAL_CELLS).fill(null), formationId: 'line_ahead', updatedAt: null },
+      { id: 'preset_2', name: '预设二 · 反潜护航', memberIds: [], gridSlots: Array(GRID_TOTAL_CELLS).fill(null), formationId: 'double_line', updatedAt: null },
+      { id: 'preset_3', name: '预设三 · 防空制空', memberIds: [], gridSlots: Array(GRID_TOTAL_CELLS).fill(null), formationId: 'diamond', updatedAt: null },
+    ];
     this._hydrated = false;
 
     if (this._bus) {
@@ -727,7 +732,16 @@ export class FormationSystem {
     }
 
     const dispatchDiscount = this._commander ? this._commander.getSortieStepDiscount() : 0;
-    const scale = Math.max(0.5, 1 - dispatchDiscount);
+    // AO Stage 1/2 Retrofit Passive: 全队弹药续航增幅 (-8% / -15% extra sortie step discount)
+    let aoRetrofitDisc = 0;
+    for (const m of members) {
+      if (resolveShipClass(m.meta?.shipType) === 'AO') {
+        const stg = Math.floor(Number(m.meta?.retrofitStage || 0));
+        if (stg >= 2) aoRetrofitDisc = Math.max(aoRetrofitDisc, 0.15);
+        else if (stg >= 1) aoRetrofitDisc = Math.max(aoRetrofitDisc, 0.08);
+      }
+    }
+    const scale = Math.max(0.42, (1 - dispatchDiscount) * (1 - aoRetrofitDisc));
     const fuel = Math.max(4, Math.round(rawFuel * scale));
     const ammo = Math.max(4, Math.round(rawAmmo * scale));
 
@@ -737,6 +751,7 @@ export class FormationSystem {
       rawFuel: Math.round(rawFuel),
       rawAmmo: Math.round(rawAmmo),
       dispatchDiscount,
+      aoRetrofitDisc,
       oathedCount,
       fleetCount: members.length,
       breakdown,
@@ -932,13 +947,100 @@ export class FormationSystem {
     };
   }
 
+  listQuickPresets() {
+    return (this._quickPresets || []).map((p, idx) => {
+      const validMembers = (p.memberIds || []).filter((id) => this._entities?.has?.(id));
+      return {
+        index: idx,
+        id: p.id || `preset_${idx + 1}`,
+        name: p.name || `预设 ${idx + 1}`,
+        formationId: p.formationId || 'line_ahead',
+        memberIds: validMembers,
+        memberCount: validMembers.length,
+        gridSlots: Array.isArray(p.gridSlots) && p.gridSlots.length === GRID_TOTAL_CELLS
+          ? [...p.gridSlots]
+          : Array(GRID_TOTAL_CELLS).fill(null),
+        updatedAt: p.updatedAt || null,
+        hasSaved: validMembers.length > 0,
+      };
+    });
+  }
+
+  async saveQuickPreset(slotIndex, { name = null } = {}) {
+    const idx = Math.max(0, Math.min(2, Math.floor(Number(slotIndex) || 0)));
+    if (!Array.isArray(this._quickPresets) || this._quickPresets.length < 3) {
+      this._quickPresets = [
+        { id: 'preset_1', name: '预设一 · 主力推图', memberIds: [], gridSlots: Array(GRID_TOTAL_CELLS).fill(null), formationId: 'line_ahead', updatedAt: null },
+        { id: 'preset_2', name: '预设二 · 反潜护航', memberIds: [], gridSlots: Array(GRID_TOTAL_CELLS).fill(null), formationId: 'double_line', updatedAt: null },
+        { id: 'preset_3', name: '预设三 · 防空制空', memberIds: [], gridSlots: Array(GRID_TOTAL_CELLS).fill(null), formationId: 'diamond', updatedAt: null },
+      ];
+    }
+    const cur = this._quickPresets[idx];
+    const cleanName = name !== null && String(name).trim() ? String(name).trim().slice(0, 16) : cur.name;
+    this._quickPresets[idx] = {
+      id: cur.id || `preset_${idx + 1}`,
+      name: cleanName,
+      memberIds: [...this._memberIds],
+      gridSlots: [...this._gridSlots],
+      formationId: this._formationId,
+      updatedAt: Date.now(),
+    };
+    await this.persist();
+    this._emit('formation:presets-changed', { presets: this.listQuickPresets() });
+    return this.listQuickPresets()[idx];
+  }
+
+  async loadQuickPreset(slotIndex) {
+    const idx = Math.max(0, Math.min(2, Math.floor(Number(slotIndex) || 0)));
+    const preset = this._quickPresets?.[idx];
+    if (!preset || !Array.isArray(preset.memberIds) || preset.memberIds.length === 0) {
+      throw new Error(`「${preset?.name || `预设 ${idx + 1}`}」尚未保存编队，请先点击「存」保存当前 3×4 阵型`);
+    }
+    const cap = this.getFleetCap();
+    const validGrid = Array(GRID_TOTAL_CELLS).fill(null);
+    const placed = new Set();
+    const rawGrid = Array.isArray(preset.gridSlots) && preset.gridSlots.length === GRID_TOTAL_CELLS
+      ? preset.gridSlots
+      : Array(GRID_TOTAL_CELLS).fill(null);
+
+    for (let i = 0; i < GRID_TOTAL_CELLS; i++) {
+      const cid = rawGrid[i];
+      if (!cid || placed.has(cid) || placed.size >= cap) continue;
+      if (!this._entities?.has?.(cid)) continue;
+      if (this._expeditions?.isCharacterDispatched?.(cid)) continue;
+      validGrid[i] = String(cid);
+      placed.add(String(cid));
+    }
+
+    const orderedMembers = (preset.memberIds || [])
+      .map(String)
+      .filter((id) => placed.has(id));
+    for (const id of placed) {
+      if (!orderedMembers.includes(id)) orderedMembers.push(id);
+    }
+
+    if (orderedMembers.length === 0) {
+      throw new Error('该预设中的舰娘当前均不可出战（可能已退役或正在远征）');
+    }
+
+    this._gridSlots = validGrid;
+    this._memberIds = orderedMembers;
+    this._formationId = String(preset.formationId || 'line_ahead');
+    this._enforceCapAndCleanup({ silent: true });
+    await this.persist();
+    const nextState = this.getState();
+    this._emit('formation:changed', nextState);
+    return { preset: this.listQuickPresets()[idx], state: nextState };
+  }
+
   serialize() {
     return {
-      version: 2,
+      version: 3,
       memberIds: [...this._memberIds],
       gridSlots: [...this._gridSlots],
       formationId: this._formationId,
       customFormationMods: deepClone(this._customFormationMods),
+      quickPresets: deepClone(this._quickPresets || []),
     };
   }
 
@@ -951,6 +1053,29 @@ export class FormationSystem {
       this._gridSlots = snapshot.gridSlots.map((x) => (x ? String(x) : null));
     } else {
       this._gridSlots = buildPresetGridSlots(this._memberIds, this._entities, this._formationId);
+    }
+    const defaultPresets = [
+      { id: 'preset_1', name: '预设一 · 主力推图', memberIds: [], gridSlots: Array(GRID_TOTAL_CELLS).fill(null), formationId: 'line_ahead', updatedAt: null },
+      { id: 'preset_2', name: '预设二 · 反潜护航', memberIds: [], gridSlots: Array(GRID_TOTAL_CELLS).fill(null), formationId: 'double_line', updatedAt: null },
+      { id: 'preset_3', name: '预设三 · 防空制空', memberIds: [], gridSlots: Array(GRID_TOTAL_CELLS).fill(null), formationId: 'diamond', updatedAt: null },
+    ];
+    if (Array.isArray(snapshot.quickPresets) && snapshot.quickPresets.length > 0) {
+      this._quickPresets = defaultPresets.map((defP, i) => {
+        const sp = snapshot.quickPresets[i];
+        if (!sp || typeof sp !== 'object') return defP;
+        return {
+          id: String(sp.id || defP.id),
+          name: String(sp.name || defP.name),
+          memberIds: Array.isArray(sp.memberIds) ? sp.memberIds.map(String) : [],
+          gridSlots: Array.isArray(sp.gridSlots) && sp.gridSlots.length === GRID_TOTAL_CELLS
+            ? sp.gridSlots.map((x) => (x ? String(x) : null))
+            : Array(GRID_TOTAL_CELLS).fill(null),
+          formationId: String(sp.formationId || defP.formationId),
+          updatedAt: sp.updatedAt || null,
+        };
+      });
+    } else {
+      this._quickPresets = defaultPresets;
     }
     this._enforceCapAndCleanup({ silent: true });
     if (persist) this.persist();
