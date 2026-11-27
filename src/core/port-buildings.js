@@ -270,6 +270,10 @@ function createDefaultBuildingsState() {
       completedRepairs: 0,
       constructedCount: 0,
     },
+    warehouse: {
+      level: 1,
+      maxLevel: 10,
+    },
     customBuildings: [],
     medals: {
       unlockedIds: [],
@@ -891,6 +895,10 @@ export class PortBuildingsSystem {
       this._entities.setStat(cid, 'hp', effMaxHp, { min: 0, max: effMaxHp });
       this._entities.adjustStat(cid, 'morale', job.isMaintenanceOnly ? 10 : 6, { min: 0, max: 100 });
       this._entities.adjustStat(cid, 'ap', 20, { min: 0, max: Number(actor.stats.maxAp ?? 100) });
+      // Slow affection care bonus from Dockyard repair (+2, capped below next un-cleared gate via event or gentle clamp)
+      const curAff = Math.round(Number(actor.stats.affinity ?? 0));
+      const maxAff = Math.max(100, Number(actor.statBounds?.affinity?.max ?? 100));
+      this._entities.adjustStat(cid, 'affinity', 2, { min: 0, max: Math.min(maxAff, curAff + 2) });
     }
 
     dock.queue.splice(idx, 1);
@@ -905,7 +913,7 @@ export class PortBuildingsSystem {
         actorId: cid,
         actorName: job.characterName,
         title: `[${job.characterName}] 船坞${fastRepair ? '快速修复' : '维修'}完成出渠`,
-        detail: `${completeLine ? `${completeLine} | ` : ''}耐久已恢复满值${fastMethod ? `（快速修复消耗：${fastMethod}）` : ''}`,
+        detail: `${completeLine ? `${completeLine} | ` : ''}耐久已恢复满值 · 照料好感 +2${fastMethod ? `（快速修复消耗：${fastMethod}）` : ''}`,
       });
     }
 
@@ -914,20 +922,64 @@ export class PortBuildingsSystem {
     return { characterId: cid, characterName: job.characterName, fastMethod, completeLine };
   }
 
-  async expandDockyard() {
+  async expandDockyard({ skipCost = false } = {}) {
     const dock = this._state.dockyard;
     if (dock.capacity >= dock.maxCapacity) {
       throw new Error(`船坞已达最大渠位上限（${dock.maxCapacity} 渠位）`);
     }
-    const cost = this.getDockyardState().expandCost;
-    const spend = await this._resources.spendBatch(cost, { reason: '扩建船坞维修渠位' });
-    if (!spend.ok) throw new Error(spend.reason);
+    if (!skipCost) {
+      const cost = this.getDockyardState().expandCost;
+      const spend = await this._resources.spendBatch(cost, { reason: '扩建船坞维修渠位' });
+      if (!spend.ok) throw new Error(spend.reason);
+    }
 
     dock.capacity += 1;
     dock.level += 1;
     await this.persist();
     this._emit('buildings:updated', { reason: 'dock-expand' });
     return this.getDockyardState();
+  }
+
+  getWarehouseState() {
+    const wh = this._state.warehouse || { level: 1, maxLevel: 10 };
+    const lv = Math.max(1, Math.min(wh.maxLevel || 10, Math.floor(Number(wh.level) || 1)));
+    const maxLevel = wh.maxLevel || 10;
+    const canUpgrade = lv < maxLevel;
+    return {
+      level: lv,
+      maxLevel,
+      canUpgrade,
+      capBonus: (lv - 1) * 1500,
+      carriedSupplyBonus: (lv - 1) * 40,
+      regenBonusPct: (lv - 1) * 10,
+      upgradeCost: {
+        steel: 220 + lv * 140,
+        bauxite: 140 + lv * 90,
+        silver: 260 + lv * 160,
+      },
+    };
+  }
+
+  async upgradeLogisticsWarehouse() {
+    const st = this.getWarehouseState();
+    if (!st.canUpgrade) throw new Error(`后勤仓库已达最高等级 Lv.${st.maxLevel}`);
+    const spend = await this._resources.spendBatch(st.upgradeCost, { reason: `升级后勤仓库至 Lv.${st.level + 1}` });
+    if (!spend.ok) throw new Error(spend.reason);
+    if (!this._state.warehouse) this._state.warehouse = { level: 1, maxLevel: 10 };
+    this._state.warehouse.level = st.level + 1;
+    // Expand base 4 resource storage caps in ResourceManager
+    if (this._resources && typeof this._resources.get === 'function') {
+      for (const k of ['fuel', 'ammo', 'steel', 'bauxite']) {
+        const r = this._resources.get(k);
+        if (r && Number.isFinite(Number(r.cap))) {
+          r.cap = Math.max(r.cap, 5000 + (this._state.warehouse.level - 1) * 1500);
+        }
+      }
+      if (typeof this._resources.persist === 'function') await this._resources.persist();
+    }
+    await this.persist();
+    this._emit('buildings:updated', { reason: 'warehouse-upgrade' });
+    return this.getWarehouseState();
   }
 
   /**
@@ -1036,13 +1088,20 @@ export class PortBuildingsSystem {
     const a = clamp(Math.round(Number(ammo) || 30), 30, 600);
     const s = clamp(Math.round(Number(steel) || 30), 30, 600);
     const b = clamp(Math.round(Number(bauxite) || 30), 30, 600);
-    const silverFee = 60;
+    const fastBp = this._inventory?.getItem ? this._inventory.getItem('item_supply_fast_build_bp') : null;
+    const useFastBp = Boolean(fastBp && Number(fastBp.quantity || 0) > 0);
+    const silverFee = useFastBp ? 0 : 60;
 
+    const batchCost = { fuel: f, ammo: a, steel: s, bauxite: b };
+    if (silverFee > 0) batchCost.silver = silverFee;
     const spend = await this._resources.spendBatch(
-      { fuel: f, ammo: a, steel: s, bauxite: b, silver: silverFee },
-      { reason: `自由配方舰船建造（${f}/${a}/${s}/${b} + 银条${silverFee}）` }
+      batchCost,
+      { reason: `自由配方舰船建造（${f}/${a}/${s}/${b}${useFastBp ? ' · 快建图纸免银条' : ` + 银条${silverFee}`}）` }
     );
     if (!spend.ok) throw new Error(spend.reason);
+    if (useFastBp && typeof this._inventory?.consumeItemQuantity === 'function') {
+      await this._inventory.consumeItemQuantity(fastBp.id, 1);
+    }
 
     const probs = computeConstructionProbabilities({ fuel: f, ammo: a, steel: s, bauxite: b });
     const totalW = probs.reduce((acc, p) => acc + p.weight, 0) || 1;

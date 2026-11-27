@@ -32,6 +32,7 @@ import { PortBuildingsSystem } from './core/port-buildings.js';
 import { InteractionSystem } from './core/interaction-system.js';
 import { ContentManager } from './core/content-manager.js';
 import { StoryPackEngine } from './core/story-pack-engine.js';
+import { StoryEngine } from './core/story-engine.js';
 import { ThemeManager } from './core/theme-manager.js';
 import { PersonalityPool } from './core/personality-pool.js';
 import { DialogueEngine } from './core/dialogue-engine.js';
@@ -44,6 +45,7 @@ import {
 } from './modules/character-console.js';
 import { resetWorkshopState } from './modules/supply-workshop.js';
 import { resetPortHubState } from './modules/port-hub.js';
+import { openFacilitiesSection, resetFacilitiesHubState } from './modules/facilities-hub.js';
 import { hydrateActionConsole } from './modules/action-console.js';
 import { clearActiveSortieState, hydrateSortieConsole } from './modules/sortie-console.js';
 
@@ -155,6 +157,19 @@ const storyPacks = new StoryPackEngine({
   bus,
 });
 
+const storyEngine = new StoryEngine({
+  storage,
+  entities,
+  inventory,
+  commander,
+  interaction,
+  contentManager,
+  dialogueEngine,
+  narrative,
+  logs,
+  bus,
+});
+
 const combat = new TacticalCombatEngine({
   entities,
   inventory,
@@ -208,6 +223,7 @@ const els = {
 let activeInputHandler = null;
 let inputBusy = false;
 let swipeLockedByModule = false;
+let sortieNavLocked = false;
 let currentStageMode = 'theatre';
 
 const TOP_RESOURCE_META = [
@@ -277,16 +293,41 @@ function autoResizeInput() {
   el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
 }
 
+function scrollChatViewportToBottom() {
+  const vp = document.getElementById('chat-bubble-viewport');
+  if (vp) {
+    vp.scrollTop = vp.scrollHeight;
+  }
+}
+
 const ui = {
   showToast,
 
   setSwipeLocked(locked) {
     swipeLockedByModule = Boolean(locked);
-    document.body.dataset.swipeLocked = swipeLockedByModule ? 'true' : 'false';
+    document.body.dataset.swipeLocked = swipeLockedByModule || sortieNavLocked ? 'true' : 'false';
   },
 
   isSwipeLocked() {
-    return swipeLockedByModule;
+    return swipeLockedByModule || sortieNavLocked;
+  },
+
+  /**
+   * Gesture Conflict Lock #3:
+   * During Sortie Stage 2 (Custom Map Workshop) and Stage 3 (Navigation & Combat),
+   * lock global horizontal swipe AND bottom 5-tab bar clicks to prevent accidental exit.
+   */
+  setSortieNavLocked(locked) {
+    sortieNavLocked = Boolean(locked);
+    document.body.dataset.sortieNavLocked = sortieNavLocked ? 'true' : 'false';
+    document.body.dataset.swipeLocked = swipeLockedByModule || sortieNavLocked ? 'true' : 'false';
+    if (els.bottomTabBar) {
+      els.bottomTabBar.classList.toggle('is-nav-locked', sortieNavLocked);
+    }
+  },
+
+  isSortieNavLocked() {
+    return sortieNavLocked;
   },
 
   setStageMode(mode = 'theatre') {
@@ -309,6 +350,7 @@ const ui = {
     document.body.classList.toggle('is-immersive-battle', flag);
     ui.setSwipeLocked(flag);
     if (flag) {
+      ui.setSortieNavLocked(true);
       ui.setStageMode('battle');
     } else if (currentStageMode === 'battle') {
       ui.setStageMode('chart');
@@ -323,6 +365,7 @@ const ui = {
     document.body.classList.toggle('is-title-screen', flag);
     ui.setSwipeLocked(flag);
     if (flag) {
+      ui.setSortieNavLocked(false);
       ui.setStageMode('title');
     }
     if (els.moduleNavStrip) {
@@ -332,7 +375,7 @@ const ui = {
 
   setPlaceholder(text) {
     if (els.inputField) {
-      els.inputField.placeholder = text || '输入指令或消息...';
+      els.inputField.placeholder = text || '和秘书舰说点什么...';
     }
   },
 
@@ -372,7 +415,8 @@ const ui = {
     ui.setInputBusy(false);
     ui.setImmersiveBattle(false);
     ui.setTitleScreenMode(false);
-    ui.setPlaceholder('和秘书舰聊聊或输入指令...');
+    ui.setSortieNavLocked(false);
+    ui.setPlaceholder('和秘书舰说点什么...');
     if (els.quickActionsSlot) {
       els.quickActionsSlot.innerHTML = '';
       els.quickActionsSlot.hidden = true;
@@ -381,7 +425,7 @@ const ui = {
 };
 
 // ------------------------------------------------------------
-// 3. Universal Input Handling
+// 3. Universal Input Handling (Visible ONLY on Tab 1 「互动」)
 // ------------------------------------------------------------
 async function submitUniversalInput() {
   if (inputBusy || !els.inputField) return;
@@ -394,8 +438,9 @@ async function submitUniversalInput() {
   bus.emit('input:submit', { text });
   if (activeInputHandler) {
     await activeInputHandler(text);
+    setTimeout(scrollChatViewportToBottom, 40);
   } else {
-    showToast('当前模块未绑定输入处理器');
+    showToast('当前页面未绑定聊天输入');
   }
 }
 
@@ -408,10 +453,23 @@ if (els.inputForm) {
 
 if (els.inputField) {
   els.inputField.addEventListener('input', autoResizeInput);
+  // Gesture Conflict Lock #5: Soft keyboard focus auto-scrolls Tab 1 chat window to latest message
+  els.inputField.addEventListener('focus', () => {
+    setTimeout(scrollChatViewportToBottom, 80);
+    setTimeout(scrollChatViewportToBottom, 260);
+  });
   els.inputField.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       submitUniversalInput();
+    }
+  });
+}
+
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => {
+    if (document.body.dataset.activeModule === 'port-hub') {
+      setTimeout(scrollChatViewportToBottom, 60);
     }
   });
 }
@@ -424,6 +482,12 @@ const appActions = {
   openSaveVault: () => openSaveVaultSheet(),
   openSettings: () => openThemeSheet(),
   returnToTitle: () => moduleManager.mount('title-screen'),
+  openFacilitiesShop: (shelfId = 'outfits') => {
+    openFacilitiesSection('shop', shelfId);
+    if (moduleManager.getActive()?.id !== 'port-facilities-hub') {
+      moduleManager.mount('port-facilities-hub', { transition: 'left' });
+    }
+  },
   launchStoryPackInTheatre: (packId, nodeId = null) => {
     const sess = storyPacks.setActiveTheatreSession(packId, nodeId);
     if (!sess) return null;
@@ -465,6 +529,7 @@ const moduleManager = new ModuleManager({
     interaction,
     contentManager,
     storyPacks,
+    storyEngine,
     theme,
     uiKit,
     appActions,
@@ -494,12 +559,13 @@ const SWIPE_LOCKED_MODULE_IDS = new Set([
   'port-dockyard',
   'port-formation',
   'port-expedition',
-  'character-console',
 ]);
 
 function isSwipeBlockedNow() {
+  // Gesture Conflict Lock #4: Any open modal/drawer freezes background horizontal swipe
   if (isAnyModalOpen()) return true;
-  if (swipeLockedByModule) return true;
+  // Gesture Conflict Lock #3: Sortie Stage 2/3 or explicit module swipe lock
+  if (sortieNavLocked || swipeLockedByModule) return true;
   if (combat && (combat.isActive() || combat.isInBattleScreen())) return true;
   if (document.body.classList.contains('is-immersive-battle')) return true;
   const active = moduleManager.getActive();
@@ -512,19 +578,22 @@ function isSwipeBlockedNow() {
 
 const BOTTOM_NAV_ORDER = [
   'port-hub',
+  'character-console',
   'sortie-console',
-  'port-formation',
   'supply-workshop',
+  'port-facilities-hub',
 ];
 
 function syncBottomTabBar(activeId = null) {
   if (!els.bottomTabBar) return;
   const curId = activeId || moduleManager.getActive()?.id || 'port-hub';
   const mappedId =
-    curId === 'compendium-studio'
+    curId === 'compendium-studio' || curId === 'port-dormitory' || curId === 'port-expedition'
+      ? 'port-facilities-hub'
+      : curId === 'port-dockyard'
       ? 'supply-workshop'
-      : curId === 'port-dormitory' || curId === 'port-dockyard' || curId === 'port-expedition' || curId === 'character-console'
-      ? 'port-hub'
+      : curId === 'port-formation'
+      ? 'sortie-console'
       : curId;
   els.bottomTabBar.querySelectorAll('[data-bottom-nav]').forEach((btn) => {
     const targetId = btn.getAttribute('data-bottom-nav');
@@ -546,6 +615,11 @@ function attachBottomTabNavigation() {
       if (!targetId || !moduleManager.has(targetId)) return;
       const curId = moduleManager.getActive()?.id;
       if (targetId === curId) return;
+      // Gesture Conflict Lock #3: Block bottom nav switching during Sortie Stage 2/3
+      if (sortieNavLocked) {
+        showToast('出征配置或航行战斗中已锁定切页，请先返回出征准备或安全撤退', 'warn');
+        return;
+      }
       const curIdx = BOTTOM_NAV_ORDER.indexOf(curId);
       const nextIdx = BOTTOM_NAV_ORDER.indexOf(targetId);
       const dir = curIdx >= 0 && nextIdx >= 0 ? (nextIdx > curIdx ? 'left' : 'right') : null;
@@ -561,12 +635,22 @@ function renderModuleNavStrip(activeId = null) {
   syncBottomTabBar(activeId);
 }
 
+/**
+ * Gesture Conflict Lock #1:
+ * Range sliders, horizontal chip strips, 3×4 formation/tactical boards, modals/drawers,
+ * and elements marked `data-no-swipe="true"` MUST block global horizontal swipe.
+ */
 function hasHorizontallyScrollableAncestor(target, boundary) {
   let node = target instanceof Element ? target : null;
   while (node && node !== boundary && node !== document.body) {
     if (node.dataset?.noSwipe === 'true') return true;
     if (
       node.classList?.contains('tactical-grid-3x4') ||
+      node.classList?.contains('tac-radar-board') ||
+      node.classList?.contains('wh-filter-strip') ||
+      node.classList?.contains('chip-row') ||
+      node.classList?.contains('fac-shelf-pills') ||
+      node.classList?.contains('fac-top-segmented') ||
       node.classList?.contains('map-workshop-panel') ||
       node.classList?.contains('uikit-tactical-modal') ||
       node.classList?.contains('uikit-sheet')
@@ -611,6 +695,7 @@ function attachStageSwipeNavigation() {
         lastX: t.clientX,
         lastY: t.clientY,
         startedAt: Date.now(),
+        lockedVertical: false,
         cancelled: false,
       };
     },
@@ -628,6 +713,12 @@ function attachStageSwipeNavigation() {
       const t = e.touches[0];
       touchState.lastX = t.clientX;
       touchState.lastY = t.clientY;
+      // Gesture Conflict Lock #2: Lock swipe as soon as vertical scrolling intent is detected
+      const curDx = Math.abs(t.clientX - touchState.startX);
+      const curDy = Math.abs(t.clientY - touchState.startY);
+      if (curDy > 10 && curDy > curDx) {
+        touchState.lockedVertical = true;
+      }
     },
     { passive: true }
   );
@@ -643,7 +734,7 @@ function attachStageSwipeNavigation() {
   els.stage.addEventListener(
     'touchend',
     (e) => {
-      if (!touchState || touchState.cancelled || isSwipeBlockedNow()) {
+      if (!touchState || touchState.cancelled || touchState.lockedVertical || isSwipeBlockedNow()) {
         touchState = null;
         return;
       }
@@ -654,21 +745,20 @@ function attachStageSwipeNavigation() {
       const dy = endY - touchState.startY;
       touchState = null;
 
-      // Strict anti-mistouch guards
-      if (Math.abs(dy) >= Math.abs(dx)) return;
-      if (Math.abs(dx) < 64) return;
+      // Gesture Conflict Lock #2: Strict horizontal dominance (`|dx| > 60 && |dx| > |dy| * 1.8`)
+      if (Math.abs(dx) <= 60 || Math.abs(dx) <= Math.abs(dy) * 1.8) return;
 
-      // Strictly align horizontal swipe to the 4 bottom navigation tabs
+      // Strictly align horizontal swipe to the 5 bottom navigation tabs
       const curId = moduleManager.getActive()?.id;
       const curIdx = BOTTOM_NAV_ORDER.indexOf(curId);
       if (curIdx < 0) return;
 
-      if (dx <= -64 && curIdx < BOTTOM_NAV_ORDER.length - 1) {
+      if (dx < -60 && curIdx < BOTTOM_NAV_ORDER.length - 1) {
         const nextId = BOTTOM_NAV_ORDER[curIdx + 1];
         if (moduleManager.has(nextId)) {
           moduleManager.mount(nextId, { transition: 'left' });
         }
-      } else if (dx >= 64 && curIdx > 0) {
+      } else if (dx > 60 && curIdx > 0) {
         const prevId = BOTTOM_NAV_ORDER[curIdx - 1];
         if (moduleManager.has(prevId)) {
           moduleManager.mount(prevId, { transition: 'right' });
@@ -1067,6 +1157,7 @@ const RUNTIME_IDB_NAMESPACES = Object.freeze([
   'core-port-buildings',
   'core-expeditions',
   'core-interaction',
+  'core-story-engine',
   'core-commander',
   'core-resources',
   'core-logs',
@@ -1077,7 +1168,7 @@ const RUNTIME_IDB_NAMESPACES = Object.freeze([
 /**
  * Explicitly wipe all runtime game state from IndexedDB & localStorage before a New Game
  * or Save-Slot Restore so ZERO old ships, items, formations, dockyard queues, sea control,
- * or medals can leak from IndexedDB. Never deletes manual save slots (`save-slots`).
+ * chat histories, or medals can leak from IndexedDB. Never deletes manual save slots (`save-slots`).
  */
 async function clearAllRuntimePersistence({ keepCustomData = true, preserveImportedLibrary = true } = {}) {
   saves.cancelPendingAutoSaves();
@@ -1111,10 +1202,14 @@ async function resetAllInMemoryState({ keepCustomData = true, preserveCustomBuil
   resetCharacterConsoleState(storage);
   resetWorkshopState();
   resetPortHubState();
+  resetFacilitiesHubState();
   topCmdAvatarAssetCache = { assetId: '__refresh__', url: '' };
 
   if (storyPacks && typeof storyPacks.clearActiveTheatreSession === 'function') {
     storyPacks.clearActiveTheatreSession();
+  }
+  if (storyEngine && typeof storyEngine.resetAll === 'function') {
+    storyEngine.resetAll({ persist: false });
   }
   if (logs && typeof logs.clear === 'function') {
     await logs.clear();
@@ -1149,9 +1244,10 @@ async function resetAllInMemoryState({ keepCustomData = true, preserveCustomBuil
   );
   buildings.deserialize(
     {
-      version: 2,
+      version: 3,
       dormitory: { level: 1, capacity: 3, maxCapacity: 12, residents: [], lastSettledAt: now },
       dockyard: { level: 1, capacity: 2, maxCapacity: 6, queue: [], completedRepairs: 0, constructedCount: 0 },
+      warehouse: { level: 1, maxLevel: 10 },
       customBuildings: keepCustomData ? preserveCustomBuildings : [],
       medals: { unlockedIds: [], unlockedAt: {} },
       updatedAt: now,
@@ -1168,6 +1264,7 @@ function captureFullWorldSnapshot() {
     expeditions: expeditions.serialize(),
     buildings: buildings.serialize(),
     interaction: interaction.serialize(),
+    storyEngine: storyEngine.serialize(),
     contentManager: contentManager.serialize(),
     storyPacks: storyPacks.serialize(),
     personalityPool: personalityPool.serialize(),
@@ -1220,6 +1317,7 @@ async function persistAllWorldSubsystems(activeCharacterId = null) {
     buildings.persist(),
     expeditions.persist(),
     interaction.persist(),
+    storyEngine.persist(),
     routeGenerator.persistSeaControl(),
     contentManager.persist(),
     storyPacks.persist(),
@@ -1271,6 +1369,7 @@ async function restoreFullWorldSnapshot(rawData, { syncAutoSave = true, sourceNa
     buildings.deserialize(data.buildings, { persist: false });
     expeditions.deserialize(data.expeditions, { persist: false });
     interaction.deserialize(data.interaction, { persist: false });
+    storyEngine.deserialize(data.storyEngine, { persist: false });
     formation.deserialize(data.formation, { persist: false });
     routeGenerator.deserializeSeaControl(data.seaControl, { persist: false });
     contentManager.deserialize(data.contentManager, { persist: false });
@@ -1756,18 +1855,14 @@ function openThemeSheet() {
           <div class="lab-divider"></div>
 
           <div class="lab-stack-sm">
-            <strong style="font-size:13.5px;">3. 动效、触感震动与合成音效开关</strong>
+            <strong style="font-size:13.5px;">3. 视觉动效与合成音效开关</strong>
             <label class="checkbox-row">
               <input id="chk-fx-enabled" type="checkbox" ${fxStage.isEnabled() ? 'checked' : ''}>
-              <span>启用战斗红光闪烁、3D 骰子检定与屏幕震动演出</span>
+              <span>启用战斗红光闪烁、3D 骰子检定与视觉演出</span>
             </label>
             <label class="checkbox-row">
               <input id="chk-fx-sound" type="checkbox" ${fxStage.isSoundEnabled() ? 'checked' : ''}>
               <span>启用轻量级 Web Audio 合成音效（可随时静音）</span>
-            </label>
-            <label class="checkbox-row">
-              <input id="chk-fx-haptics" type="checkbox" ${fxStage.isHapticsEnabled() ? 'checked' : ''}>
-              <span>启用手机端轻微触感震动反馈 (Vibration)</span>
             </label>
             <button type="button" id="btn-fx-test-sfx" class="btn-secondary uikit-touch-target">试听检定音效与 3D 骰子演出</button>
           </div>
@@ -1881,9 +1976,6 @@ function openThemeSheet() {
       body.querySelector('#chk-fx-sound').addEventListener('change', (e) => {
         fxStage.setSoundEnabled(e.target.checked);
       });
-      body.querySelector('#chk-fx-haptics').addEventListener('change', (e) => {
-        fxStage.setHapticsEnabled(e.target.checked);
-      });
       body.querySelector('#btn-fx-test-sfx').addEventListener('click', () => {
         fxStage.playEffect('dice-roll', { naturalRoll: 18, total: 22, dc: 14, outcome: 'success', outcomeLabel: '成功' });
       });
@@ -1993,11 +2085,10 @@ function openSaveVaultSheet() {
 
       body.innerHTML = `
         <div class="module-stack">
-          <div class="section-header-row" style="margin-bottom:0; gap:8px;">
-            <span class="muted-text" style="font-size:12px;">随时返回封面切换新征程或继续航行</span>
-            <button type="button" id="btn-vault-return-title" class="btn-secondary uikit-touch-target" style="padding:0 12px; flex-shrink:0;">
-              返回标题画面
-            </button>
+          <div class="lab-btn-grid" style="grid-template-columns: repeat(3, 1fr);">
+            <button type="button" id="btn-vault-return-title" class="btn-secondary uikit-touch-target" style="font-size:12px;">返回标题封面</button>
+            <button type="button" id="btn-vault-open-api" class="btn-secondary uikit-touch-target" style="font-size:12px;">AI 模型设置</button>
+            <button type="button" id="btn-vault-open-data" class="btn-secondary uikit-touch-target" style="font-size:12px;">混合存储管理</button>
           </div>
 
           <div class="vault-slot-card is-auto" id="vault-auto-card">
@@ -2009,7 +2100,7 @@ function openSaveVaultSheet() {
               ${
                 autoMeta
                   ? `保存时间：${escapeHtml(formatTimeShort(autoMeta.timestamp))} · 指挥官 ${escapeHtml(autoMeta.summary?.commanderName || '提督')} Lv.${autoMeta.summary?.commanderLevel ?? 1} · 舰娘 ${autoMeta.summary?.characters ?? 0} 位 · 装备 ${autoMeta.summary?.items ?? 0} 件${autoMeta.summary?.seaSummary ? ` · 制海 ${escapeHtml(autoMeta.summary.seaSummary)}` : ''}`
-                  : '每次关键操作（抽卡/改造/出征/剧情抉择/换肤）都会自动备份快照至此。'
+                  : '每次关键操作（建造/改造/出征/互动/换肤）都会自动备份快照至此。'
               }
             </p>
             <button type="button" id="btn-vault-load-auto" class="btn-secondary uikit-touch-target" ${autoMeta ? '' : 'disabled'}>
@@ -2038,7 +2129,7 @@ function openSaveVaultSheet() {
                 <p class="muted-text" style="font-size:12px;" id="vault-slot-summary-${slot.slotIndex}">
                   ${
                     slot.empty
-                      ? '尚未写入存档数据。点击下方「保存至此槽位」即可独立备份当前舰娘名册、装备仓库、3×4 编队与海域进度。'
+                      ? '尚未写入存档数据。点击下方「保存至此槽位」即可独立备份当前舰娘名册、装备仓库、聊天记录、3×4 编队与海域进度。'
                       : `指挥官：${escapeHtml(s.commanderName || '提督')} Lv.${s.commanderLevel ?? 1} · 舰娘 ${s.characters ?? 0} 位 · 装备 ${s.items ?? 0} 件 · 秘书舰：${escapeHtml(s.flagshipName || '—')}${s.seaSummary ? ` · 制海：${escapeHtml(s.seaSummary)}` : ''}`
                   }
                 </p>
@@ -2063,9 +2154,9 @@ function openSaveVaultSheet() {
           <div class="lab-divider"></div>
 
           <div class="lab-stack-sm">
-            <strong style="font-size:13.5px;">全量存档文件备份与跨版本无损迁移（v8）</strong>
+            <strong style="font-size:13.5px;">全量存档文件备份与跨版本无损迁移（v9）</strong>
             <p class="muted-text" style="font-size:12px;">
-              导出的 JSON 包含自动存档、所有独立手动槽位与全局设置；导入旧版（v1~v7）存档将自动无损压缩为两位数数值体系、补齐 1★~5★ 制海权与改造核心字段，各槽位完全隔离互不串档。
+              导出的 JSON 包含自动存档、所有独立手动槽位与全局设置；导入旧版（v1~v8）存档将自动无损迁移并解锁已跨过的好感阶段突破小剧场，清理旧内置剧情包且完整保留外置 JSON 内容库。
             </p>
             ${
               lastExportNote
@@ -2083,6 +2174,8 @@ function openSaveVaultSheet() {
         closeSheet();
         moduleManager.mount('title-screen');
       });
+      body.querySelector('#btn-vault-open-api')?.addEventListener('click', () => openApiSheet());
+      body.querySelector('#btn-vault-open-data')?.addEventListener('click', () => openDataSheet());
 
       const loadAutoBtn = body.querySelector('#btn-vault-load-auto');
       if (loadAutoBtn) {
@@ -2220,10 +2313,13 @@ els.btnReturnTitle?.addEventListener('click', () => {
   moduleManager.mount('title-screen');
 });
 els.topCmdBtn?.addEventListener('click', () => {
-  if (moduleManager.getActive()?.id !== 'port-hub') {
-    moduleManager.mount('port-hub', { transition: 'right' });
+  if (sortieNavLocked) {
+    showToast('出征配置或航行战斗中已锁定切页，请先返回出征准备或安全撤退', 'warn');
+    return;
   }
-  setTimeout(() => bus.emit('port:open-commander', {}), 40);
+  if (moduleManager.getActive()?.id !== 'character-console') {
+    moduleManager.mount('character-console', { transition: 'left' });
+  }
 });
 els.btnApi?.addEventListener('click', openApiSheet);
 els.btnData?.addEventListener('click', openDataSheet);
@@ -2249,10 +2345,10 @@ async function bootApplication() {
       interaction.init(),
       contentManager.init(),
       storyPacks.init(),
+      storyEngine.init(),
     ]);
 
-    // On brand-new fresh saves, automatically load the full 8-ship / 16-gear / tiered-enemy / story-pack starter bundle.
-    // Existing saves remain untouched and can non-destructively merge via Compendium Studio's one-tap button.
+    // On brand-new fresh saves, automatically load the full 8-ship / 16-gear / tiered-enemy starter bundle.
     if (rosterRes?.seeded) {
       await contentManager.mergeStarterContentBundle({
         personalityPool,
@@ -2261,6 +2357,7 @@ async function bootApplication() {
         persistRosterFn: () => persistCharacterRoster({ storage, entities }),
         silent: true,
       });
+      storyEngine.syncLegacyBreakthroughs();
     }
 
     await formation.init();
@@ -2312,6 +2409,7 @@ async function bootApplication() {
       'interaction:talked',
       'interaction:gifted',
       'interaction:oathed',
+      'story-engine:updated',
       'content:updated',
       'content:mod-imported',
       'story:flag-changed',
@@ -2408,6 +2506,7 @@ window.__APP_BASE__ = {
   interaction,
   contentManager,
   storyPacks,
+  storyEngine,
   theme,
   uiKit,
   modules: moduleManager,

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'modular-pwa-base-v26';
+const CACHE_NAME = 'modular-pwa-base-v27';
 
 const CORE_ASSETS = [
   './',
@@ -7,7 +7,10 @@ const CORE_ASSETS = [
   './icon-192.png',
   './icon-512.png',
   './styles/main.css',
+  './styles/v27-layout.css',
   './src/main.js',
+  './src/data/default-dialogues.js',
+  './src/data/shop-catalog.js',
   './src/core/event-bus.js',
   './src/core/storage.js',
   './src/core/api.js',
@@ -34,6 +37,7 @@ const CORE_ASSETS = [
   './src/core/interaction-system.js',
   './src/core/content-manager.js',
   './src/core/story-pack-engine.js',
+  './src/core/story-engine.js',
   './src/core/theme-manager.js',
   './src/core/personality-pool.js',
   './src/core/dialogue-engine.js',
@@ -41,6 +45,7 @@ const CORE_ASSETS = [
   './src/modules/title-screen.js',
   './src/modules/port-hub.js',
   './src/modules/port-facilities.js',
+  './src/modules/facilities-hub.js',
   './src/modules/battle-screen.js',
   './src/modules/sortie-console.js',
   './src/modules/character-console.js',

@@ -668,11 +668,12 @@ export function createCollapsibleCard({
 export function createSubpageHeader({
   title,
   subtitle = '',
-  backLabel = '← 返回港区',
+  backLabel = '← 返回',
+  showBack = false,
   onBack = null,
   modules = null,
   resources = null,
-  resourceKeys = ['fuel', 'ammo'],
+  resourceKeys = [],
   rightSlot = null,
   id = '',
 } = {}) {
@@ -680,18 +681,21 @@ export function createSubpageHeader({
   header.className = 'subpage-topbar';
   if (id) header.id = id;
 
-  const backBtn = document.createElement('button');
-  backBtn.type = 'button';
-  backBtn.className = 'subpage-back-btn';
-  backBtn.id = 'btn-subpage-back';
-  backBtn.textContent = backLabel;
-  backBtn.addEventListener('click', () => {
-    if (typeof onBack === 'function') {
-      onBack();
-    } else if (modules && modules.has('port-hub')) {
-      modules.mount('port-hub', { transition: 'right' });
-    }
-  });
+  if (showBack || typeof onBack === 'function') {
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'subpage-back-btn';
+    backBtn.id = 'btn-subpage-back';
+    backBtn.textContent = backLabel;
+    backBtn.addEventListener('click', () => {
+      if (typeof onBack === 'function') {
+        onBack();
+      } else if (modules && modules.has('port-hub')) {
+        modules.mount('port-hub', { transition: 'right' });
+      }
+    });
+    header.appendChild(backBtn);
+  }
 
   const titleBox = document.createElement('div');
   titleBox.className = 'subpage-title-box';
@@ -730,7 +734,6 @@ export function createSubpageHeader({
     }
   }
 
-  header.appendChild(backBtn);
   header.appendChild(titleBox);
   header.appendChild(rightBox);
 

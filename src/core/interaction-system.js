@@ -309,6 +309,7 @@ export class InteractionSystem {
         title: cmdProfile.title,
       },
       outfit: outfitName,
+      outfitStyle: equipped?.outfit?.outfitStyle || '',
       speechHabit: actor.meta?.speechHabit || '「随时听候指挥官差遣。」',
       stageLabel: oath ? '誓约伴侣' : stage.label,
       stageKey: oath ? 'oath' : stage.id,
@@ -325,7 +326,7 @@ export class InteractionSystem {
     const customPool = this._contentManager
       ? this._contentManager
           .listCustomDialogues()
-          .filter((d) => d.stage === 'any' || d.stage === vars.stageKey)
+          .filter((d) => d && d.text && (d.stage === 'any' || d.stage === vars.stageKey))
           .map((d) => d.text)
       : [];
 
@@ -338,13 +339,13 @@ export class InteractionSystem {
         actor,
         commanderName: vars.commander.name,
         outfitName: vars.outfit,
-        outfitStyle: equipped?.outfit?.outfitStyle || '',
+        outfitStyle: vars.outfitStyle || '',
         affStageId: vars.stageKey,
         isOathed: this.isOathed(actor.id),
         oathTitle: vars.oathTitle,
         customTopic,
       });
-      baseTemplate = composed.text;
+      baseTemplate = composed?.text || `「${vars.commander.name}，今天也一起加油吧。」`;
       contextMeta = this._dialogueEngine.buildAiContextMeta({
         actor,
         commander: this._commander,

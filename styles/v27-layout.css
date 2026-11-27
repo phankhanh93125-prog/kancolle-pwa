@@ -1,0 +1,758 @@
+/* ============================================================
+ * Modular PWA Base v27 Layout & Theme Extension (`styles/v27-layout.css`)
+ *   - 5-Tab Bottom Navigation (`互动 / 档案 / 出征 / 工坊 / 设施`)
+ *   - Tab-1-Only Chat Input Bar (never obscured by bottom nav)
+ *   - WeChat/QQ Scrollable Bubble Chat + Portrait Touch Hotspots
+ *   - 6-Stage Slow Affection & Breakthrough CTA
+ *   - Tab 2 Archive Commander & Shipgirl Roster Grid
+ *   - Tab 3 Sortie Stage 1 Standby Roster & Smart Replacement
+ *   - Tab 4 Workshop Pagination
+ *   - Tab 5 Facilities Hub & 4-Shelf Shop
+ *   - 「夜灯微醺」(`cozy_night_lamp`) Warm Frosted Night Theme
+ * ============================================================ */
+
+/* ------------------------------------------------------------
+ * 1. Bottom 5-Tab Bar & Tab-1-Only Input Bar Visibility
+ * ------------------------------------------------------------ */
+.bottom-tab-bar.is-five-col {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+  padding: 6px calc(6px + var(--safe-right)) calc(6px + var(--safe-bottom)) calc(6px + var(--safe-left));
+  background: var(--bg-surface);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.bottom-tab-bar.is-five-col .bottom-tab-btn {
+  min-height: 50px;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 3px;
+}
+
+.bottom-tab-bar.is-nav-locked {
+  opacity: 0.55;
+}
+
+.bottom-tab-bar.is-nav-locked .bottom-tab-btn:not(.is-active) {
+  filter: grayscale(0.5);
+}
+
+/* Strictly show bottom text input ONLY on Tab 1 (`port-hub` / 互动) */
+body:not([data-active-module="port-hub"]) #universal-input-form,
+body.is-title-screen #universal-input-form,
+body.is-immersive-battle #universal-input-form {
+  display: none !important;
+}
+
+body[data-active-module="port-hub"]:not(.is-title-screen):not(.is-immersive-battle) #universal-input-form {
+  display: flex;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 7px calc(10px + var(--safe-right)) 7px calc(10px + var(--safe-left));
+}
+
+/* ------------------------------------------------------------
+ * 2. Tab 1 「互动」: Portrait Touch Stage + Bubble Chat Window
+ * ------------------------------------------------------------ */
+.interact-hub-root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+}
+
+.interact-hero-card {
+  padding: 10px 12px;
+  flex-shrink: 0;
+}
+
+.interact-hero-top {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.interact-portrait-wrap {
+  position: relative;
+  width: 96px;
+  height: 112px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-alt, rgba(255, 255, 255, 0.04));
+}
+
+.interact-portrait-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.touch-hotspot {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(10, 14, 22, 0.42);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 2px 4px;
+  cursor: pointer;
+  opacity: 0.78;
+  transition: opacity 0.15s ease, transform 0.12s ease, background 0.15s ease;
+  backdrop-filter: blur(4px);
+}
+
+.touch-hotspot:active,
+.touch-hotspot:hover {
+  opacity: 1;
+  background: var(--accent);
+  color: #fff;
+  transform: scale(0.97);
+}
+
+.touch-hotspot.is-head {
+  top: 4px;
+}
+
+.touch-hotspot.is-shoulder {
+  top: 42%;
+}
+
+.touch-hotspot.is-hand {
+  bottom: 4px;
+}
+
+.interact-meta-col {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.interact-name-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.interact-ship-name {
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.interact-icon-btn {
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-alt, rgba(255, 255, 255, 0.06));
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 28px;
+}
+
+.interact-outfit-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.interact-stage-pill {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent-hover, var(--accent));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  font-weight: 700;
+}
+
+.interact-outfit-name {
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.interact-aff-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.interact-aff-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+}
+
+.interact-aff-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.2);
+  overflow: hidden;
+}
+
+.interact-aff-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover, var(--accent)));
+  transition: width 0.25s ease;
+}
+
+.interact-stage-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.interact-breakthrough-btn {
+  font-size: 11.5px;
+  padding: 5px 10px;
+  min-height: 30px;
+  border-radius: 999px;
+  animation: v27PulseGlow 2.2s ease-in-out infinite;
+}
+
+@keyframes v27PulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 12px 2px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+}
+
+.interact-mini-chip {
+  font-size: 11px;
+  padding: 4px 9px;
+  min-height: 28px;
+  border-radius: 999px;
+}
+
+/* WeChat/QQ-Style Scrollable Bubble Chat Window */
+.interact-chat-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  flex: 1 1 auto;
+  min-height: 270px;
+}
+
+.chat-bubble-viewport {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: clamp(230px, 44dvh, 430px);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding: 6px 4px;
+  scroll-behavior: smooth;
+}
+
+.chat-narration {
+  align-self: center;
+  max-width: 90%;
+  text-align: center;
+  font-size: 11.5px;
+  line-height: 1.5;
+  font-style: italic;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.1);
+  border-radius: 10px;
+  padding: 4px 10px;
+}
+
+.chat-system-pill {
+  align-self: center;
+  max-width: 92%;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-hover, var(--accent));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 999px;
+  padding: 4px 12px;
+}
+
+.chat-msg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.chat-msg-row.is-ship {
+  justify-content: flex-start;
+}
+
+.chat-msg-row.is-commander {
+  justify-content: flex-end;
+}
+
+.chat-msg-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.chat-bubble-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 78%;
+}
+
+.chat-speaker-name {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  padding-left: 4px;
+}
+
+.chat-bubble {
+  padding: 9px 12px;
+  border-radius: 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.chat-bubble.is-ship {
+  background: var(--surface-alt, rgba(255, 255, 255, 0.07));
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  border-top-left-radius: 4px;
+}
+
+.chat-bubble.is-commander {
+  max-width: 78%;
+  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 78%, #000));
+  color: #fff;
+  border-top-right-radius: 4px;
+}
+
+.chat-bubble.is-commander.is-gift {
+  background: linear-gradient(135deg, #c2410c, #d97706);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  font-weight: 600;
+}
+
+.chat-quick-replies {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.chat-choice-btn {
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.interact-action-bar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.interact-act-btn {
+  min-height: 38px;
+  font-size: 12.5px;
+  padding: 0 8px;
+}
+
+.interact-pick-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  cursor: pointer;
+}
+
+.interact-pick-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.interact-drawer-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.interact-drawer-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------
+ * 3. Tab 2 「档案」: Commander 6-Stat + Shipgirl Roster Grid
+ * ------------------------------------------------------------ */
+.archive-hub-root {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.archive-cmd-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.archive-cmd-avatar {
+  width: 54px;
+  height: 54px;
+  border-radius: 14px;
+  object-fit: cover;
+  border: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.archive-cmd-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.archive-cmd-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.archive-cmd-stat-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: var(--surface-alt, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border-subtle);
+}
+
+.archive-cmd-stat-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.archive-alloc-btn {
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+
+.archive-roster-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+}
+
+.archive-ship-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-alt, rgba(255, 255, 255, 0.04));
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.12s ease;
+}
+
+.archive-ship-card:hover {
+  border-color: var(--accent);
+}
+
+.archive-ship-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.archive-ship-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid var(--border-subtle);
+}
+
+.archive-ship-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.archive-ship-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.archive-lock-btn {
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.archive-lock-btn.is-locked {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.archive-ship-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* ------------------------------------------------------------
+ * 4. Tab 3 「出征」: Stage 1 Standby Roster Chips
+ * ------------------------------------------------------------ */
+.s1-standby-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.s1-standby-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-alt, rgba(255, 255, 255, 0.05));
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.s1-standby-pill.is-replace-mode:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.s1-standby-pill:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.s1-standby-sub {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+/* ------------------------------------------------------------
+ * 5. Tab 4 「工坊」: Warehouse Pagination
+ * ------------------------------------------------------------ */
+.wh-pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.wh-page-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+/* ------------------------------------------------------------
+ * 6. Tab 5 「设施」: Top Segmented Hub & 4-Shelf Shop
+ * ------------------------------------------------------------ */
+.fac-top-segmented {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+}
+
+.fac-seg-btn {
+  border: none;
+  border-radius: 9px;
+  padding: 8px 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.fac-seg-btn.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.fac-shelf-pills {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.fac-shelf-pill {
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 7px 4px;
+  background: var(--surface-alt, rgba(255, 255, 255, 0.04));
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.fac-shelf-pill.is-active {
+  border-color: var(--accent);
+  color: var(--accent-hover, var(--accent));
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.fac-shop-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.fac-offer-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-alt, rgba(255, 255, 255, 0.04));
+}
+
+.fac-offer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.fac-offer-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.fac-offer-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.fac-offer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.fac-buy-btn,
+.fac-mini-btn {
+  min-height: 32px;
+  padding: 0 11px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.fac-chest-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  font-size: 12px;
+}
+
+/* ------------------------------------------------------------
+ * 7. 「夜灯微醺」(`cozy_night_lamp`) Warm Amber/Crimson Frosted Glow
+ * ------------------------------------------------------------ */
+html[data-theme="cozy_night_lamp"] body {
+  background-image:
+    radial-gradient(ellipse at 18% 12%, rgba(232, 132, 92, 0.16), transparent 52%),
+    radial-gradient(ellipse at 82% 88%, rgba(185, 56, 78, 0.14), transparent 55%);
+}
+
+html[data-theme="cozy_night_lamp"] .surface-card,
+html[data-theme="cozy_night_lamp"] .app-header,
+html[data-theme="cozy_night_lamp"] .bottom-tab-bar,
+html[data-theme="cozy_night_lamp"] .uikit-tactical-modal,
+html[data-theme="cozy_night_lamp"] .uikit-sheet {
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 198, 165, 0.08);
+}
+
+html[data-theme="cozy_night_lamp"] .chat-bubble.is-ship {
+  background: rgba(54, 28, 34, 0.82);
+  border-color: rgba(232, 132, 92, 0.25);
+}
+
+html[data-theme="cozy_night_lamp"] .chat-bubble.is-commander {
+  background: linear-gradient(135deg, #c75b39, #9f2d44);
+}

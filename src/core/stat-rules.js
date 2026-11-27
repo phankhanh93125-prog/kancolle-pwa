@@ -1621,22 +1621,23 @@ export class StatRulesEngine {
   }
 
   /**
-   * Map affinity (0..100) into 4 stages, optionally lowered by Commander `charisma` thresholdReduction.
+   * Map affinity (0..200) into the 6 slow-paced stages:
+   *   陌生 (0~19) -> 熟悉 (20~39) -> 信赖 (40~59) -> 心动 (60~79) -> 恋慕 (80~99) -> 誓约 (100+)
    */
-  getAffinityStage(affinityValue, { thresholdReduction = 0 } = {}) {
-    const val = clamp(Math.round(Number(affinityValue ?? 0)), 0, 100);
-    const red = clamp(Math.floor(Number(thresholdReduction) || 0), 0, 20);
-    const adjusted = AFFINITY_STAGES.map((s, idx) => ({
-      ...s,
-      min: idx === 0 ? 0 : Math.max(1, s.min - red),
-      max: idx === AFFINITY_STAGES.length - 1 ? 100 : Math.max(idx * 5 + 4, s.max - red),
-    }));
-    // Ensure contiguous boundaries
-    for (let i = 0; i < adjusted.length - 1; i++) {
-      adjusted[i].max = Math.max(adjusted[i].min, adjusted[i + 1].min - 1);
-    }
-
-    const stage = adjusted.find((s) => val >= s.min && val <= s.max) || adjusted[adjusted.length - 1];
+  getAffinityStage(affinityValue, { isOathed = false } = {}) {
+    const val = clamp(Math.round(Number(affinityValue ?? 0)), 0, 200);
+    const sixStages = [
+      { stageIndex: 0, id: 'stranger', label: '陌生', min: 0, max: 19, tone: 'muted' },
+      { stageIndex: 1, id: 'familiar', label: '熟悉', min: 20, max: 39, tone: 'info' },
+      { stageIndex: 2, id: 'trusted', label: '信赖', min: 40, max: 59, tone: 'ok' },
+      { stageIndex: 3, id: 'flutter', label: '心动', min: 60, max: 79, tone: 'warn' },
+      { stageIndex: 4, id: 'adoration', label: '恋慕', min: 80, max: 99, tone: 'warn' },
+      { stageIndex: 5, id: 'oath', label: '誓约', min: 100, max: 200, tone: 'ok' },
+    ];
+    const stage =
+      isOathed || val >= 100
+        ? sixStages[5]
+        : sixStages.find((s) => val >= s.min && val <= s.max) || sixStages[0];
     const span = Math.max(1, stage.max - stage.min + 1);
     const progressInStage = clamp((val - stage.min) / span, 0, 1);
     return {
@@ -1647,7 +1648,7 @@ export class StatRulesEngine {
       min: stage.min,
       max: stage.max,
       tone: stage.tone,
-      thresholdReduction: red,
+      thresholdReduction: 0,
       progressInStage: Number(progressInStage.toFixed(4)),
     };
   }

@@ -17,8 +17,13 @@
 import {
   CORE_STAT_DEFS,
   ENEMY_STRENGTH_PRESETS,
+  GRID_COLS,
+  GRID_ROWS,
+  GRID_ROW_LABELS,
   clampEnemyStrengthMultiplier,
+  getShipClassProfile,
   getShipClassSvg,
+  getTacticalGridSymbolSvg,
   normalizeStarTierId,
   resolveShipClass,
 } from '../core/stat-rules.js';
@@ -37,7 +42,7 @@ import {
   encodeMapSeed,
   estimateRouteProfile,
 } from '../core/route-generator.js';
-import { getActiveCharacterId, persistCharacterRoster } from './character-console.js';
+import { getActiveCharacterId, openCharacterCardById, persistCharacterRoster } from './character-console.js';
 import { openDockyardTacticalModal } from './port-facilities.js';
 import {
   playBattleStepChoreography,
@@ -76,6 +81,7 @@ let sortieState = {
   container: null,
   context: null,
   prepStage: 'prep', // 'prep' (Stage 1) | 'workshop' (Stage 2)
+  selectedGridCellIndex: null,
   carriedFuel: null,
   carriedAmmo: null,
   workshopConfig: {
@@ -568,13 +574,12 @@ async function resolveAnchorageAction(mode = 'rest') {
  * Build a Random Maritime Encounter story card by automatically pulling from user-imported
  * external JSON story packs (`storyPacks`) whenever available, with rich built-in fallback!
  */
-function buildMaritimeEncounterStory({ node, nodeIdx, stepCost, char, memberIds, run, storyPacks }) {
+function buildMaritimeEncounterStory({ node, nodeIdx, stepCost, char, memberIds, run, storyPacks, storyEngine }) {
   const allPacks = storyPacks && typeof storyPacks.listPacks === 'function' ? storyPacks.listPacks() : [];
   const customPacks = allPacks.filter((p) => p && !p.builtIn && Array.isArray(p.nodes) && p.nodes.length > 0);
-  const candidatePool = customPacks.length > 0 ? customPacks : allPacks.filter((p) => p && Array.isArray(p.nodes) && p.nodes.length > 0);
 
-  if (candidatePool.length > 0) {
-    const pickedPack = candidatePool[Math.floor(Math.random() * candidatePool.length)];
+  if (customPacks.length > 0) {
+    const pickedPack = customPacks[Math.floor(Math.random() * customPacks.length)];
     const startNode = pickedPack.nodes.find((n) => n.id === pickedPack.startNodeId) || pickedPack.nodes[0];
     if (startNode) {
       const rawChoices = Array.isArray(startNode.choices) && startNode.choices.length > 0
@@ -592,7 +597,7 @@ function buildMaritimeEncounterStory({ node, nodeIdx, stepCost, char, memberIds,
         isStoryPackEvent: true,
         sourcePackTitle: pickedPack.title || '外置奇遇剧情包',
         title: `${pickedPack.title || '随机海遇'} · 节点 ${node.code}`,
-        badge: customPacks.length > 0 ? '外置 JSON 海遇' : '随机海遇事件',
+        badge: '外置 JSON 海遇',
         prompt: String(startNode.text || `舰队在节点 ${node.code}「${node.name}」遭遇奇遇事件：`).replaceAll('{{flagship}}', char.name),
         choices: rawChoices.map((ch, idx) => ({
           id: ch.id || `sp_ch_${idx}`,
@@ -609,7 +614,37 @@ function buildMaritimeEncounterStory({ node, nodeIdx, stepCost, char, memberIds,
     }
   }
 
-  // Fallback built-in maritime encounter
+  // Fresh breezy romantic maritime encounters from StoryEngine
+  if (storyEngine && typeof storyEngine.pickMaritimeEncounter === 'function') {
+    const enc = storyEngine.pickMaritimeEncounter({ actor: char });
+    if (enc) {
+      return {
+        nodeIndex: nodeIdx,
+        node: deepClone(node),
+        stepCost: deepClone(stepCost),
+        flagshipId: char.id,
+        memberIds: [...memberIds],
+        isStoryPackEvent: true,
+        title: `${enc.title} · 节点 ${node.code}`,
+        badge: '海上邂逅',
+        prompt: enc.body,
+        choices: (enc.choices || []).map((ch, idx) => ({
+          id: ch.id || `me_ch_${idx}`,
+          label: ch.label,
+          dcDelta: idx === 0 ? 0 : -2,
+          lootMult: idx === 0 ? 1.2 : 1.0,
+          crateBonus: idx === 0 ? 0.18 : 0.1,
+          safeWeather: true,
+          refillCarried: ch.refillCarried || (idx === 0 ? { fuel: 18, ammo: 18 } : { fuel: 12, ammo: 12 }),
+          customReplyText: ch.successText || '',
+          tag: ch.tag || (idx === 0 ? '温馨互动' : '稳健应对'),
+        })),
+        outcome: null,
+      };
+    }
+  }
+
+  // Defensive minimal fallback
   return {
     nodeIndex: nodeIdx,
     node: deepClone(node),
@@ -617,29 +652,29 @@ function buildMaritimeEncounterStory({ node, nodeIdx, stepCost, char, memberIds,
     flagshipId: char.id,
     memberIds: [...memberIds],
     isStoryPackEvent: true,
-    title: `随机海遇 · 节点 ${node.code}「${node.name}」`,
-    badge: '随机海遇事件',
-    prompt: `海雾散开时，舰队在节点 ${node.code}「${node.name}」发现一艘发出微弱摩斯电码的旧时代补给浮标船，旗舰「${char.name}」等待你的指示：`,
+    title: `海风奇遇 · 节点 ${node.code}「${node.name}」`,
+    badge: '海上邂逅',
+    prompt: `海风柔和地拂过甲板，旗舰「${char.name}」指向前方泛着微光的航标，轻声询问你的决定：`,
     choices: [
       {
         id: 'enc_board',
-        label: '派遣登临小队检索海图与储备油弹（高收益 + 携带油弹补充）',
+        label: '放慢航速靠前探索并回收漂流补给',
         dcDelta: 0,
-        lootMult: 1.3,
-        crateBonus: 0.25,
-        safeWeather: false,
-        refillCarried: { fuel: 25, ammo: 25 },
-        tag: '登临探索',
+        lootMult: 1.25,
+        crateBonus: 0.2,
+        safeWeather: true,
+        refillCarried: { fuel: 22, ammo: 22 },
+        tag: '顺风打捞',
       },
       {
         id: 'enc_signal',
-        label: '远距离发送友好识别信号并回收外围漂流箱（稳健无风险）',
+        label: '与舰娘在甲板稍作休整，稳健继续航程',
         dcDelta: -2,
-        lootMult: 0.95,
+        lootMult: 1.0,
         crateBonus: 0.1,
         safeWeather: true,
         refillCarried: { fuel: 14, ammo: 14 },
-        tag: '稳妥回收',
+        tag: '温柔休整',
       },
     ],
     outcome: null,
@@ -800,7 +835,7 @@ async function advanceNextNode() {
     return;
   }
 
-  // Branch C: Random Maritime Encounter (auto-invokes imported JSON story packs!)
+  // Branch C: Random Maritime Encounter (auto-invokes imported JSON story packs or StoryEngine fresh encounters!)
   if (node.type === NODE_TYPES.STORY_EVENT) {
     sortieState.activeNodeStory = buildMaritimeEncounterStory({
       node,
@@ -810,6 +845,7 @@ async function advanceNextNode() {
       memberIds,
       run,
       storyPacks,
+      storyEngine: sortieState.context?.storyEngine,
     });
     await renderSortieConsole();
     return;
@@ -1213,10 +1249,15 @@ async function finalizeBattleOutcome(session) {
         }
       }
 
-      const aff = Math.max(1, Math.round((Number(node.affinityGain) || 3) * affMult));
+      const aff = Math.max(2, Math.round((Number(node.affinityGain) || 3) * affMult));
       const shipExp = node.type === NODE_TYPES.BOSS ? 65 : node.type === NODE_TYPES.ELITE ? 45 : 28;
+      const se = sortieState.context?.storyEngine;
       for (const m of fleetMembers) {
-        entities.adjustStat(m.id, 'affinity', aff, { min: 0, max: 100 });
+        if (se && typeof se.applySlowAffinityGain === 'function') {
+          se.applySlowAffinityGain(m.id, aff, { source: 'sortie-victory' });
+        } else {
+          entities.adjustStat(m.id, 'affinity', aff, { min: 0, max: 100 });
+        }
         entities.adjustStat(m.id, 'morale', session.status === 'victory' ? 4 : 1, { min: 0, max: 100 });
         if (statRules && typeof statRules.grantShipExp === 'function') {
           statRules.grantShipExp(entities, m.id, Math.round(shipExp * rewardFactor * lootBonus), {
@@ -1817,7 +1858,10 @@ async function renderSortieConsole() {
     routeGenerator,
     combat,
     formation,
+    expeditions,
+    buildings,
     commander,
+    rootStorage,
     fxStage,
     theme,
     modules,
@@ -2047,9 +2091,12 @@ async function renderSortieConsole() {
   const isStage3 = Boolean(sortieState.activeRun);
   const activeStep = isStage3 ? 3 : sortieState.prepStage === 'workshop' ? 2 : 1;
 
-  // Lock horizontal swipe during active voyage or custom map workshop!
-  if (ui && typeof ui.setSwipeLocked === 'function') {
-    ui.setSwipeLocked(isStage3 || activeStep === 2);
+  // Gesture Conflict Lock #3: Lock horizontal swipe AND bottom 5-tab nav during Stage 2 (Map Workshop) & Stage 3 (Voyage/Battle)!
+  const lockNavNow = isStage3 || activeStep === 2;
+  if (ui && typeof ui.setSortieNavLocked === 'function') {
+    ui.setSortieNavLocked(lockNavNow);
+  } else if (ui && typeof ui.setSwipeLocked === 'function') {
+    ui.setSwipeLocked(lockNavNow);
   }
 
   sortieState.container.innerHTML = '';
@@ -2249,71 +2296,255 @@ async function renderSortieConsole() {
   }
 
   // ============================================================
-  // STAGE 1: PREPARE SORTIE (Fleet Status + Logistics + Carried Supplies Sliders)
+  // STAGE 1: PREPARE SORTIE (3×4 Free-Placement Formation + Smart Replacement + Carried Supplies)
   // ============================================================
   if (activeStep === 1) {
     const caps = getCarriedSupplyCapsForCurrentFleet();
     const cmdProfile = commander ? commander.getProfile() : { name: '指挥官', level: 1, freePoints: 0, stats: { dispatch: 10 } };
     const freePoints = Number(cmdProfile.freePoints || 0);
-    const fleetCap = formation ? formation.getFleetCap() : 3;
+    const fState = formation ? formation.getState() : { count: 0, cap: 3, formationId: 'line_ahead', gridCells: [], gridMap: {}, summary: fleetSummary };
+    const allFormations = formation ? formation.listFormations() : [];
+    const fleetCap = fState.cap || 3;
     const fVal = formation ? formation.validateFleetForSortie() : { ok: true, errors: [], members: [char] };
-    const members = fleetSummary?.members || [];
+    const gridCells = fState.gridCells || [];
+    const gridMap = fState.gridMap || {};
+    const costInfo = fState.summary?.staggeredStepCost || (formation ? formation.computeStaggeredStepCost() : { fuel: 14, ammo: 12 });
+    const allChars = entities.list({ kind: 'character' });
+    const standbyChars = allChars.filter((c) => !gridMap[c.id]);
+    const isFleetFull = fState.count >= fleetCap;
+    const selIdx = sortieState.selectedGridCellIndex;
+    const selectedCell =
+      Number.isInteger(selIdx) && selIdx >= 0 && selIdx < gridCells.length ? gridCells[selIdx] : null;
     const mode = narrative.getMode();
     const isAiMode = mode !== NARRATIVE_MODES.LOCAL;
+
+    const openReplaceDeployedShipModal = (candidateChar) => {
+      if (!candidateChar || !formation) return;
+      const deployedCells = gridCells.filter((cell) => cell && cell.member);
+      if (deployedCells.length === 0) return;
+      const openFn = typeof uiKit.openTacticalModal === 'function' ? uiKit.openTacticalModal : uiKit.openModal;
+      openFn({
+        title: `编队已满（${fState.count}/${fleetCap}）· 选择要替换的舰娘`,
+        subtitle: `将「${candidateChar.name}」替换入队并直接承接目标舰娘在 3×4 阵型盘中的站位`,
+        renderContent: (body, close) => {
+          body.innerHTML = `
+            <div class="lab-stack-sm" id="sortie-smart-replace-list">
+              ${deployedCells
+                .map((cell) => {
+                  const m = cell.member;
+                  return `
+                    <button type="button" class="lab-slot-card interact-pick-row" data-replace-cell="${cell.index}">
+                      <div class="interact-pick-main">
+                        <span class="ship-class-ico">${getShipClassSvg(m.classCode, { size: 18 })}</span>
+                        <div style="text-align:left;">
+                          <strong>${m.isFlagship ? '★ ' : ''}[${escapeHtml(m.slotCode)}] ${escapeHtml(m.name)}</strong>
+                          <div class="cc-stat-sub">${escapeHtml(cell.rowLabel)} · ${escapeHtml(m.classCode)} · HP ${m.hp}/${m.maxHp}</div>
+                        </div>
+                      </div>
+                      <span class="status-badge badge-warn">替换此位</span>
+                    </button>
+                  `;
+                })
+                .join('')}
+            </div>
+          `;
+          body.querySelectorAll('[data-replace-cell]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+              const targetIdx = Number(btn.getAttribute('data-replace-cell'));
+              const oldMember = gridCells[targetIdx]?.member;
+              try {
+                await formation.removeFromCell(targetIdx);
+                await formation.addMember(candidateChar.id, { cellIndex: targetIdx });
+                sortieState.selectedGridCellIndex = null;
+                uiKit.showToast(
+                  `已将「${candidateChar.name}」替换「${oldMember?.name || '原成员'}」入队！`,
+                  'ok'
+                );
+                close();
+                renderSortieConsole();
+              } catch (err) {
+                uiKit.showToast(err instanceof Error ? err.message : '替换入队失败', 'warn');
+              }
+            });
+          });
+        },
+      });
+    };
+
+    // Build 3×4 grid markup
+    const rowsHtml = [];
+    for (let r = 0; r < GRID_ROWS; r++) {
+      const cellsHtml = [];
+      for (let c = 0; c < GRID_COLS; c++) {
+        const idx = r * GRID_COLS + c;
+        const cell = gridCells[idx];
+        const m = cell?.member || null;
+        const isSel = selIdx === idx;
+        if (m) {
+          const hpPct = Math.round((Math.max(0, m.hp) / Math.max(1, m.maxHp)) * 100);
+          cellsHtml.push(`
+            <button type="button" class="tac-grid-cell is-occupied is-ally ${isSel ? 'is-selected' : ''} ${m.isFlagship ? 'is-flagship' : ''}" data-s1-cell="${idx}" title="${escapeHtml(m.name)}（${escapeHtml(cell.rowLabel)}）">
+              <span class="tac-cell-no">${m.isFlagship ? '★' : ''}${escapeHtml(m.slotCode)}</span>
+              ${getTacticalGridSymbolSvg(m.classCode, { side: 'ally', size: 26 })}
+              <span class="tac-cell-mini-name">${escapeHtml(m.name.slice(0, 4))}</span>
+              <span class="tac-cell-hp"><span class="tac-cell-hp-fill ${hpPct < 25 ? 'is-danger' : ''}" style="width:${hpPct}%"></span></span>
+            </button>
+          `);
+        } else {
+          cellsHtml.push(`
+            <button type="button" class="tac-grid-cell is-empty ${isSel ? 'is-selected-empty' : ''}" data-s1-cell="${idx}" aria-label="${escapeHtml(GRID_ROW_LABELS[r])} 第${c + 1}列空位">
+              <span class="tac-radar-dot" aria-hidden="true"></span>
+            </button>
+          `);
+        }
+      }
+      rowsHtml.push(`
+        <div class="tac-grid-row" data-grid-row="${r}">
+          <span class="tac-row-label">${escapeHtml(GRID_ROW_LABELS[r])}</span>
+          <div class="tac-grid-row-cells">${cellsHtml.join('')}</div>
+        </div>
+      `);
+    }
+
+    const hintText = selectedCell
+      ? selectedCell.member
+        ? `已选中 [${selectedCell.member.slotCode}] ${selectedCell.member.name}：点任意格可移动/互换站位，再点自身可撤下`
+        : `已选中 ${selectedCell.rowLabel}空位：点下方待命舰娘可直接部署到此格`
+      : '点空位部署 · 点两格互换站位 · 满编时点待命舰娘可智能替换';
 
     const prepCard = document.createElement('section');
     prepCard.className = 'surface-card lab-stack-sm';
     prepCard.id = 'sortie-stage1-prep';
     prepCard.innerHTML = `
       <div class="section-header-row" style="margin-bottom:0;">
-        <h2 class="section-title">第 1 步 · 准备出征与携带油弹装填</h2>
+        <h2 class="section-title">第 1 步 · 3×4 排阵编队与油弹装填</h2>
         <button type="button" id="btn-sortie-mode-toggle" class="ac-mode-toggle ${isAiMode ? 'is-ai' : ''}">
           ${isAiMode ? 'AI 润色' : '纯本地模板'}
         </button>
       </div>
 
-      <div class="lab-slot-head">
-        <div class="cc-badge-row">
-          <span class="status-badge ${fVal.ok ? 'badge-ok' : 'badge-danger'}">${fVal.ok ? '编队适航就绪' : '编队待整备'}</span>
-          <span class="status-badge badge-muted">${members.length}/${fleetCap} 舰 · ${escapeHtml(fleetSummary?.formationName || '单纵阵')}</span>
-          ${caps.arCount > 0 ? `<span class="status-badge badge-ok">AR 维修舰×${caps.arCount}</span>` : ''}
-          ${caps.aoCount > 0 ? `<span class="status-badge badge-ok">AO 补给舰×${caps.aoCount}（携带扩容）</span>` : ''}
-        </div>
+      <div class="cc-badge-row">
+        <span class="status-badge ${fVal.ok ? 'badge-ok' : 'badge-danger'}">${fVal.ok ? '编队适航就绪' : '编队待整备'}</span>
+        <span class="status-badge badge-muted">统率上限 ${fState.count}/${fleetCap} 舰</span>
+        <span class="status-badge badge-muted">单步 油${costInfo.fuel}/弹${costInfo.ammo}</span>
+        ${caps.arCount > 0 ? `<span class="status-badge badge-ok">AR×${caps.arCount}</span>` : ''}
+        ${caps.aoCount > 0 ? `<span class="status-badge badge-ok">AO×${caps.aoCount}</span>` : ''}
       </div>
 
       ${!fVal.ok ? `<div class="seaworthy-alert">${escapeHtml(fVal.errors[0] || '编队未满足适航条件')}</div>` : ''}
 
-      <div class="port-gear-summary">
-        ${members
+      <!-- Formation Preset Bar -->
+      <div class="tac-preset-bar" data-no-swipe="true" id="s1-preset-bar">
+        ${allFormations
           .map(
-            (m, i) => `
-          <span class="ns-chip ${m.hp / Math.max(1, m.maxHp) < 0.5 ? 'is-warn' : ''}">
-            ${i === 0 ? '★' : `#${i}`}[${escapeHtml(m.classCode || 'DD')}]${escapeHtml(m.name)} ${m.hp}/${m.maxHp}
-          </span>
+            (p) => `
+          <button type="button" class="${p.id === fState.formationId ? 'btn-primary' : 'btn-secondary'} tac-preset-btn" data-s1-preset="${escapeHtml(p.id)}">
+            ${escapeHtml(p.name)}
+          </button>
         `
           )
           .join('')}
       </div>
 
-      <div class="lab-btn-grid">
-        <button type="button" id="btn-prep-open-dock" class="btn-secondary uikit-touch-target">快速入渠 / 船坞浮窗</button>
-        <button type="button" id="btn-prep-goto-formation" class="btn-secondary uikit-touch-target">调整 3×4 舰队编成</button>
+      <!-- 3×4 Free-Placement Formation Board -->
+      <div class="tac-radar-board is-editor-board" id="s1-formation-grid-3x4" data-no-swipe="true">
+        <div class="tac-board-axis-hint">▲ 接敌海面方向（前排突击 · 后排重炮/航母）</div>
+        ${rowsHtml.join('')}
+      </div>
+
+      <div class="formation-live-eval-bar" aria-label="编队实时评估">
+        <div class="form-eval-item">
+          <span class="form-eval-k">火力/雷击</span>
+          <strong class="form-eval-v">${fState.summary?.effective?.firepower ?? 0} / ${fState.summary?.effective?.torpedo ?? 0}</strong>
+        </div>
+        <div class="form-eval-item">
+          <span class="form-eval-k">全队侦查</span>
+          <strong class="form-eval-v">${fState.summary?.effective?.recon ?? 0}</strong>
+        </div>
+        <div class="form-eval-item">
+          <span class="form-eval-k">全队防空</span>
+          <strong class="form-eval-v">${fState.summary?.effective?.aa ?? 0}</strong>
+        </div>
+      </div>
+
+      <div class="tac-board-hint ${selectedCell ? 'is-active' : ''}">${escapeHtml(hintText)}</div>
+
+      ${
+        selectedCell?.member
+          ? `
+        <div class="tac-selected-bar">
+          <div class="tac-selected-info">
+            <strong>[${escapeHtml(selectedCell.member.slotCode)}] ${escapeHtml(selectedCell.member.name)}</strong>
+            <span class="status-badge badge-muted">${escapeHtml(selectedCell.rowLabel)}</span>
+          </div>
+          <div class="tac-selected-btns">
+            ${!selectedCell.member.isFlagship ? `<button type="button" class="btn-secondary tac-mini-act" id="btn-s1-flagship">设为旗舰</button>` : ''}
+            <button type="button" class="btn-secondary tac-mini-act" id="btn-s1-card">档案</button>
+            <button type="button" class="btn-danger tac-mini-act" id="btn-s1-remove">撤下</button>
+          </div>
+        </div>
+      `
+          : ''
+      }
+
+      <div class="lab-btn-grid" style="grid-template-columns: repeat(3, 1fr);">
+        <button type="button" id="btn-s1-autofill" class="btn-secondary uikit-touch-target" style="font-size:12px;">一键补满</button>
+        <button type="button" id="btn-s1-autoequip" class="btn-secondary uikit-touch-target" style="font-size:12px;" ${fState.count === 0 ? 'disabled' : ''}>全队最优配装</button>
+        <button type="button" id="btn-prep-open-dock" class="btn-secondary uikit-touch-target" style="font-size:12px;">快速船坞</button>
+      </div>
+
+      <!-- Standby Shipgirl Roster with Full-Fleet Smart Replacement -->
+      <div class="lab-stack-sm" id="s1-standby-roster">
+        <div class="section-header-row" style="margin-bottom:0;">
+          <strong style="font-size:13px;">待命舰娘名册（${standbyChars.length} 名待命）</strong>
+          <span class="muted-text" style="font-size:11.5px;">${isFleetFull ? '满编点击可一键替换入队' : '点击直接部署上阵'}</span>
+        </div>
+        <div class="s1-standby-chips" data-no-swipe="true">
+          ${
+            standbyChars.length === 0
+              ? '<span class="muted-text" style="font-size:12px;">全部舰娘均已在阵型盘中。</span>'
+              : standbyChars
+                  .map((c) => {
+                    const cls = resolveShipClass(c.meta?.shipType);
+                    const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(c.id, 'maxHp', { round: 'round' }).final));
+                    const curHp = Math.min(effMaxHp, Math.round(Number(c.stats.hp ?? effMaxHp)));
+                    const sw = statRules.evaluateSeaworthiness(inventory, c.id);
+                    const onExp = expeditions?.isCharacterDispatched?.(c.id);
+                    const inDock = buildings?.isInDockyard?.(c.id);
+                    const unavailableReason = onExp ? '远征中' : inDock ? '维修中' : !sw.seaworthy ? '缺核心件' : '';
+                    return `
+                      <button
+                        type="button"
+                        class="s1-standby-pill ${isFleetFull ? 'is-replace-mode' : ''}"
+                        data-s1-deploy="${escapeHtml(c.id)}"
+                        ${unavailableReason ? 'disabled' : ''}
+                      >
+                        <span class="ship-class-ico">${getShipClassSvg(cls, { size: 14 })}</span>
+                        <span>${escapeHtml(c.name)}</span>
+                        <span class="s1-standby-sub">${unavailableReason || (isFleetFull ? '替换入队' : `HP ${curHp}/${effMaxHp}`)}</span>
+                      </button>
+                    `;
+                  })
+                  .join('')
+          }
+        </div>
       </div>
 
       <div class="lab-divider"></div>
 
+      <!-- Carried Supplies & Logistics -->
       <div class="sortie-logistics-box" data-no-swipe="true">
         <div class="lab-slot-head">
           <strong style="font-size:13.5px;">指挥官后勤与随舰携带油弹</strong>
-          <span class="status-badge badge-ok">后勤评分 ${caps.logisticsScore} · 携带上限 油${caps.maxFuel}/弹${caps.maxAmmo}</span>
+          <span class="status-badge badge-ok">后勤 ${caps.logisticsScore} · 上限 油${caps.maxFuel}/弹${caps.maxAmmo}</span>
         </div>
         ${
           freePoints > 0
             ? `<div class="lab-slot-head" style="background:rgba(20,184,166,0.1); padding:6px 10px; border-radius:var(--radius-sm); border:1px solid var(--border);">
-                <span class="muted-text" style="font-size:12px;">可用指挥官自由属性点：<strong>${freePoints}</strong>（每 +1 后勤调度，随舰油弹上限 +10）</span>
+                <span class="muted-text" style="font-size:12px;">可用自由点：<strong>${freePoints}</strong>（每 +1 调度，上限 +10）</span>
                 <button type="button" id="btn-prep-add-logistics" class="btn-primary uikit-touch-target" style="min-height:32px; padding:0 10px; font-size:12px;">+1 后勤加点</button>
               </div>`
-            : `<span class="cc-stat-sub">提升指挥官「后勤调度」或编入「补给舰 (AO)」均可大幅扩容随舰携带油弹上限。</span>`
+            : ''
         }
 
         <div class="sortie-supply-sliders">
@@ -2340,7 +2571,7 @@ async function renderSortieConsole() {
         </div>
 
         <p class="muted-text" style="font-size:11.5px; margin:0;">
-          规则说明：出征返航或安全撤退时，<strong>剩余未消耗携带油弹 100% 退回港区仓库</strong>；航行中耗尽仅触发「补给匮乏」（攻防机动 -25%、禁夜战），绝不卡死。
+          返航或安全撤退时，<strong>剩余携带油弹 100% 退回港区仓库</strong>。
         </p>
       </div>
 
@@ -2349,6 +2580,132 @@ async function renderSortieConsole() {
       </button>
     `;
 
+    // Bind 3×4 grid cell interactions
+    prepCard.querySelectorAll('[data-s1-cell]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const idx = Number(btn.getAttribute('data-s1-cell'));
+        const clickedCell = gridCells[idx];
+        const prevIdx = sortieState.selectedGridCellIndex;
+        const prevCell = Number.isInteger(prevIdx) ? gridCells[prevIdx] : null;
+
+        if (prevIdx === idx) {
+          if (clickedCell?.member) {
+            const name = clickedCell.member.name;
+            await formation.removeFromCell(idx);
+            sortieState.selectedGridCellIndex = null;
+            uiKit.showToast(`已将「${name}」撤出编队`, 'info');
+            renderSortieConsole();
+            return;
+          }
+          sortieState.selectedGridCellIndex = null;
+          renderSortieConsole();
+          return;
+        }
+        if (prevCell?.member) {
+          await formation.swapGridCells(prevIdx, idx);
+          sortieState.selectedGridCellIndex = null;
+          uiKit.showToast(
+            clickedCell?.member
+              ? `已互换「${prevCell.member.name}」与「${clickedCell.member.name}」站位`
+              : `已移动「${prevCell.member.name}」至${GRID_ROW_LABELS[Math.floor(idx / GRID_COLS)]}`,
+            'ok'
+          );
+          renderSortieConsole();
+          return;
+        }
+        if (prevCell && !prevCell.member && clickedCell?.member) {
+          await formation.swapGridCells(idx, prevIdx);
+          sortieState.selectedGridCellIndex = null;
+          uiKit.showToast(`已移动「${clickedCell.member.name}」至${prevCell.rowLabel}`, 'ok');
+          renderSortieConsole();
+          return;
+        }
+        sortieState.selectedGridCellIndex = idx;
+        renderSortieConsole();
+      });
+    });
+
+    prepCard.querySelectorAll('[data-s1-preset]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const pid = btn.getAttribute('data-s1-preset');
+        const next = await formation.applyGridPreset(pid);
+        sortieState.selectedGridCellIndex = null;
+        uiKit.showToast(`已切换阵型：${next.formation?.name || pid}`, 'ok');
+        renderSortieConsole();
+      });
+    });
+
+    prepCard.querySelector('#btn-s1-flagship')?.addEventListener('click', async () => {
+      if (!selectedCell?.member) return;
+      await formation.setFlagship(selectedCell.member.id);
+      uiKit.showToast(`已指派「${selectedCell.member.name}」担任旗舰`, 'ok');
+      renderSortieConsole();
+    });
+    prepCard.querySelector('#btn-s1-card')?.addEventListener('click', () => {
+      if (!selectedCell?.member) return;
+      openCharacterCardById(selectedCell.member.id, sortieState.context);
+    });
+    prepCard.querySelector('#btn-s1-remove')?.addEventListener('click', async () => {
+      if (!selectedCell?.member) return;
+      const name = selectedCell.member.name;
+      await formation.removeFromCell(selIdx);
+      sortieState.selectedGridCellIndex = null;
+      uiKit.showToast(`已将「${name}」撤出编队`, 'info');
+      renderSortieConsole();
+    });
+
+    prepCard.querySelector('#btn-s1-autofill')?.addEventListener('click', async () => {
+      const next = await formation.autoFillFleet();
+      sortieState.selectedGridCellIndex = null;
+      uiKit.showToast(`已自动补满 ${next.count}/${next.cap} 席位`, 'ok');
+      renderSortieConsole();
+    });
+    prepCard.querySelector('#btn-s1-autoequip')?.addEventListener('click', async () => {
+      try {
+        const res = await formation.autoEquipFleet({ includeOutfit: true });
+        await persistCharacterRoster({ storage: rootStorage, entities });
+        uiKit.showToast(
+          res.totalEquipped > 0
+            ? `已为全队 ${res.fleetCount} 舰自动配装 ${res.totalEquipped} 件最优装备！`
+            : '当前编队均已是仓库最优配装',
+          res.totalEquipped > 0 ? 'ok' : 'info'
+        );
+        renderSortieConsole();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '自动配装失败', 'warn');
+      }
+    });
+
+    // Standby Shipgirl Click -> Direct Deploy OR Full-Fleet Smart Replacement Modal!
+    prepCard.querySelectorAll('[data-s1-deploy]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const cid = btn.getAttribute('data-s1-deploy');
+        const cand = entities.get(cid);
+        if (!cand) return;
+        if (isFleetFull) {
+          openReplaceDeployedShipModal(cand);
+          return;
+        }
+        try {
+          if (selectedCell && !selectedCell.member) {
+            await formation.addMember(cid, { cellIndex: selIdx });
+            sortieState.selectedGridCellIndex = null;
+          } else {
+            await formation.addMember(cid);
+          }
+          uiKit.showToast(`「${cand.name}」已加入出征编队！`, 'ok');
+          renderSortieConsole();
+        } catch (err) {
+          // Fallback to smart replacement if fleet cap hit
+          if (/上限|已满/.test(String(err?.message || ''))) {
+            openReplaceDeployedShipModal(cand);
+          } else {
+            uiKit.showToast(err instanceof Error ? err.message : '入队失败', 'warn');
+          }
+        }
+      });
+    });
+
     prepCard.querySelector('#btn-sortie-mode-toggle').addEventListener('click', () => {
       const next = isAiMode ? NARRATIVE_MODES.LOCAL : NARRATIVE_MODES.AI_POLISH;
       narrative.setMode(next);
@@ -2356,13 +2713,10 @@ async function renderSortieConsole() {
       renderSortieConsole();
     });
     prepCard.querySelector('#btn-prep-open-dock').addEventListener('click', () => openDockyardTacticalModal(sortieState.context));
-    prepCard.querySelector('#btn-prep-goto-formation').addEventListener('click', () => {
-      if (modules.has('port-formation')) modules.mount('port-formation', { transition: 'left' });
-    });
     prepCard.querySelector('#btn-prep-add-logistics')?.addEventListener('click', async () => {
       try {
-        await commander.allocatePoint('dispatch', 1);
-        uiKit.showToast('指挥官「调度/后勤」+1！携带油弹上限已提升', 'ok');
+        await commander.allocateStat('dispatch', 1);
+        uiKit.showToast('指挥官「后勤调度」+1！携带油弹上限已提升', 'ok');
         renderSortieConsole();
       } catch (err) {
         uiKit.showToast(err instanceof Error ? err.message : '加点失败', 'warn');
@@ -2752,6 +3106,7 @@ export default {
     sortieState.autoRunning = false;
     if (sortieState.context?.ui) {
       sortieState.context.ui.setImmersiveBattle(false);
+      sortieState.context.ui.setSortieNavLocked?.(false);
       sortieState.context.ui.setSwipeLocked(false);
     }
     for (const u of sortieState.unsubs) {

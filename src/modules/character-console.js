@@ -40,6 +40,7 @@ import {
   createResourceOverviewBar,
 } from '../core/resource-manager.js';
 import { LOG_CATEGORIES, LOG_CATEGORY_LABELS } from '../core/log-system.js';
+import { COMMANDER_STAT_DEFS } from '../core/commander-system.js';
 import { clamp } from '../core/calc-engine.js';
 
 const CHAR_STORAGE_NS = 'core-characters';
@@ -893,7 +894,8 @@ function openAddCustomSlotSheet(char, { contextOverride = null, onUpdated = null
   const { inventory, resources, uiKit, logs } = ctx;
   const capInfo = inventory.getCharacterSlotCapInfo(char.id);
   const cost = capInfo.expansionCost;
-  const afford = resources ? resources.canAfford(cost) : { ok: true };
+  const permitQty = Number(inventory.getItem('item_permit_slot_expand')?.quantity || 0);
+  const afford = permitQty > 0 ? { ok: true } : resources ? resources.canAfford(cost) : { ok: true };
   const blocked = !capInfo.canExpand || !afford.ok;
 
   uiKit.openBottomSheet({
@@ -904,18 +906,22 @@ function openAddCustomSlotSheet(char, { contextOverride = null, onUpdated = null
         <div class="module-stack" id="cc-expand-slot-picker">
           <div class="surface-card lab-stack-sm" style="padding:10px;">
             <div class="lab-slot-head">
-              <strong style="font-size:12.5px;">本次扩建所需材料（需求 / 当前库存）</strong>
+              <strong style="font-size:12.5px;">${permitQty > 0 ? '🎟 已持有扩建许可（本次免费免材料）' : '本次扩建所需材料（需求 / 当前库存）'}</strong>
               <span class="status-badge ${capInfo.canExpand ? 'badge-ok' : 'badge-danger'}">
                 已扩建 ${capInfo.used} / ${capInfo.max}
               </span>
             </div>
-            <div class="cc-badge-row">${buildSlotCostCompareHtml(cost, resources)}</div>
+            ${
+              permitQty > 0
+                ? `<div class="cc-badge-row"><span class="status-badge badge-ok">自定义装备槽位扩建许可 ×${permitQty}（优先消耗 1 张）</span></div>`
+                : `<div class="cc-badge-row">${buildSlotCostCompareHtml(cost, resources)}</div>`
+            }
             ${
               !capInfo.canExpand
                 ? `<div class="seaworthy-alert" style="margin:0;">该舰种（${escapeHtml(capInfo.shipClass)}）自定义槽位已达上限（${capInfo.used}/${capInfo.max}），可先拆除或变更已有槽位类型。</div>`
                 : !afford.ok
-                ? '<div class="seaworthy-alert" style="margin:0;">扩建材料不足，请先通过出征、远征或拆解多余装备补充钢材/铝材/银条。</div>'
-                : '<span class="muted-text" style="font-size:11.5px;">点击下方任意装备类型即可立即消耗材料完成扩建，穿戴时精准匹配同类型装备。</span>'
+                ? '<div class="seaworthy-alert" style="margin:0;">扩建材料不足，可补充钢材/铝材/银条或前往「设施 → 港区特许处」兑换扩建许可。</div>'
+                : '<span class="muted-text" style="font-size:11.5px;">点击下方任意装备类型即可完成扩建，穿戴时精准匹配同类型装备。</span>'
             }
           </div>
           ${buildEquipmentTypePickerMarkup(inventory)}
@@ -938,10 +944,17 @@ function openAddCustomSlotSheet(char, { contextOverride = null, onUpdated = null
                 actorId: char.id,
                 actorName: char.name,
                 title: `[${char.name}] 扩建装备槽位「${slot.label}」`,
-                detail: `消耗 钢${cost.steel}/铝${cost.bauxite}/银${cost.silver} · 进度 ${capInfo.used + 1}/${capInfo.max}`,
+                detail: slot.usedPermit
+                  ? `消耗槽位扩建许可 ×1 · 进度 ${capInfo.used + 1}/${capInfo.max}`
+                  : `消耗 钢${cost.steel}/铝${cost.bauxite}/银${cost.silver} · 进度 ${capInfo.used + 1}/${capInfo.max}`,
               });
             }
-            uiKit.showToast(`已为「${char.name}」扩建「${slot.label}」（${capInfo.used + 1}/${capInfo.max}）`, 'ok');
+            uiKit.showToast(
+              slot.usedPermit
+                ? `已使用扩建许可为「${char.name}」免费扩建「${slot.label}」！`
+                : `已为「${char.name}」扩建「${slot.label}」（${capInfo.used + 1}/${capInfo.max}）`,
+              'ok'
+            );
             close();
             if (typeof onUpdated === 'function') await onUpdated();
             else await renderConsole();
@@ -2851,10 +2864,369 @@ function renderLogsTab(host) {
 }
 
 // ============================================================
-// Root Console Render
+// Tab 2 「档案」: Commander 6-Stat & Medals + Full Shipgirl Roster
 // ============================================================
+let archiveFilterClass = 'all';
+
+function openCommanderEditModal() {
+  const { commander, assets, uiKit } = consoleState.context;
+  const openFn = typeof uiKit.openTacticalModal === 'function' ? uiKit.openTacticalModal : uiKit.openModal;
+
+  openFn({
+    title: '编辑指挥官档案',
+    subtitle: '修改呼号、头衔与头像，所有变更实时同步至顶部状态栏与对话称呼',
+    renderContent: (body, close) => {
+      const renderForm = async () => {
+        const p = commander.getProfile();
+        const avatarRes = await assets.getAssetUrl(p.avatarAssetId, {
+          fallbackSeed: 'commander-profile',
+          fallbackLabel: (p.name || 'CMD').slice(0, 4),
+        });
+        body.innerHTML = `
+          <form id="archive-cmd-edit-form" class="module-stack">
+            <div class="cc-hero-row">
+              <img class="cc-avatar" src="${avatarRes.url}" alt="指挥官头像">
+              <div class="lab-stack-sm" style="flex:1 1 auto;">
+                <button type="button" id="btn-arc-cmd-avatar" class="btn-secondary uikit-touch-target">上传指挥官头像</button>
+                <span class="muted-text" style="font-size:11.5px;">Lv.${p.level} · EXP ${p.exp}/${p.expToNext} · 自由点 ${p.freePoints}</span>
+              </div>
+            </div>
+            <div class="lab-kv-grid">
+              <div class="form-group">
+                <label class="form-label" for="arc-cmd-name">指挥官呼号</label>
+                <input id="arc-cmd-name" class="form-input" type="text" value="${escapeHtml(p.name)}">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="arc-cmd-title">军衔头衔</label>
+                <input id="arc-cmd-title" class="form-input" type="text" value="${escapeHtml(p.title)}">
+              </div>
+            </div>
+            <div class="lab-btn-grid">
+              <button type="button" id="btn-arc-cmd-cancel" class="btn-secondary uikit-touch-target">取消</button>
+              <button type="submit" class="btn-primary uikit-touch-target">保存档案</button>
+            </div>
+          </form>
+        `;
+
+        body.querySelector('#btn-arc-cmd-avatar')?.addEventListener('click', () => {
+          const inp = document.createElement('input');
+          inp.type = 'file';
+          inp.accept = 'image/*';
+          inp.onchange = async () => {
+            const f = inp.files?.[0];
+            if (!f) return;
+            try {
+              const saved = await assets.saveImageFile(f, { maxWidth: 320, maxHeight: 320, quality: 0.85 });
+              await commander.updateProfile({ avatarAssetId: saved.id });
+              uiKit.showToast('指挥官头像已更新', 'ok');
+              renderForm();
+            } catch (err) {
+              uiKit.showToast(err instanceof Error ? err.message : '上传失败', 'warn');
+            }
+          };
+          inp.click();
+        });
+        body.querySelector('#btn-arc-cmd-cancel')?.addEventListener('click', () => close());
+        body.querySelector('#archive-cmd-edit-form')?.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const name = body.querySelector('#arc-cmd-name')?.value?.trim() || '指挥官';
+          const title = body.querySelector('#arc-cmd-title')?.value?.trim() || '提督';
+          await commander.updateProfile({ name, title });
+          uiKit.showToast('指挥官档案已保存', 'ok');
+          close();
+          renderConsole();
+        });
+      };
+      renderForm();
+    },
+  });
+}
+
+function openHonorMedalsModal() {
+  const { buildings, commander, uiKit } = consoleState.context;
+  const openFn = typeof uiKit.openTacticalModal === 'function' ? uiKit.openTacticalModal : uiKit.openModal;
+  const overview = buildings?.getMedalsOverview?.() || { unlockedCount: 0, totalCount: 0, totalLuckBonus: 0, medals: [] };
+  const luckFx = commander?.getLuckEffects?.() || { luck: 0, rareDropBonus: 0 };
+
+  openFn({
+    title: `港区荣誉勋章室（${overview.unlockedCount}/${overview.totalCount}）`,
+    subtitle: `当前指挥官永久运气 ${luckFx.luck}（勋章提供 +${overview.totalLuckBonus} · 稀有掉率加成 +${Math.round((luckFx.rareDropBonus || 0) * 100)}%）`,
+    wide: true,
+    renderContent: (body, close) => {
+      body.innerHTML = `
+        <div class="module-stack">
+          <div class="lab-stack-sm">
+            ${(overview.medals || [])
+              .map(
+                (m) => `
+              <div class="lab-slot-card ${m.unlocked ? 'is-medal-unlocked' : ''}">
+                <div class="lab-slot-head">
+                  <strong>${m.unlocked ? '★ ' : '☆ '}${escapeHtml(m.title)}</strong>
+                  <span class="status-badge ${m.unlocked ? 'badge-ok' : 'badge-muted'}">
+                    ${m.unlocked ? `已点亮 · 运气 +${m.luckBonus}` : `未解锁 · 运气 +${m.luckBonus}`}
+                  </span>
+                </div>
+                <div class="cc-stat-sub">${escapeHtml(m.description || '')}</div>
+              </div>
+            `
+              )
+              .join('')}
+          </div>
+          <button type="button" id="btn-arc-medals-close" class="btn-secondary uikit-touch-target">关闭勋章室</button>
+        </div>
+      `;
+      body.querySelector('#btn-arc-medals-close')?.addEventListener('click', () => close());
+    },
+  });
+}
+
+async function renderArchiveConsole() {
+  if (!consoleState.container || !consoleState.context) return;
+  const {
+    entities,
+    inventory,
+    statRules,
+    commander,
+    expeditions,
+    buildings,
+    formation,
+    interaction,
+    storyEngine,
+    assets,
+    uiKit,
+  } = consoleState.context;
+
+  const profile = commander.getProfile();
+  const luckFx = commander.getLuckEffects();
+  const fleetCap = formation?.getFleetCap
+    ? formation.getFleetCap()
+    : typeof commander.getFleetCapacity === 'function'
+    ? commander.getFleetCapacity()
+    : 3;
+  const cmdAvatar = await assets.getAssetUrl(profile.avatarAssetId, {
+    fallbackSeed: 'commander-profile',
+    fallbackLabel: (profile.name || 'CMD').slice(0, 4),
+  });
+  const medalsOv = buildings?.getMedalsOverview?.() || { unlockedCount: 0, totalCount: 0 };
+
+  const roster = getCharacters();
+  const avatars = new Map();
+  for (const c of roster) {
+    avatars.set(c.id, await resolveAvatarUrl(c));
+  }
+
+  const classFilters = [
+    { id: 'all', label: `全部 (${roster.length})` },
+    { id: 'DD', label: '驱逐' },
+    { id: 'CRUISER', label: '巡洋' },
+    { id: 'BB', label: '战列' },
+    { id: 'CV', label: '航母' },
+    { id: 'SUP', label: '后勤(AR/AO)' },
+  ];
+
+  const filteredRoster = roster.filter((c) => {
+    if (archiveFilterClass === 'all') return true;
+    const cls = resolveShipClass(c.meta?.shipType);
+    if (archiveFilterClass === 'CRUISER') return cls === 'CL' || cls === 'CA';
+    if (archiveFilterClass === 'SUP') return cls === 'AR' || cls === 'AO';
+    return cls === archiveFilterClass;
+  });
+
+  consoleState.container.innerHTML = '';
+  const root = document.createElement('div');
+  root.className = 'cc-root archive-hub-root';
+  root.id = 'page-character-archive';
+
+  // 1. Upper Section: Commander 6-Stat Card + Honor Medals
+  const cmdCard = document.createElement('section');
+  cmdCard.className = 'surface-card lab-stack-sm archive-cmd-card';
+  cmdCard.id = 'archive-commander-card';
+  const expPct = Math.min(100, Math.round((Number(profile.exp || 0) / Math.max(1, Number(profile.expToNext || 100))) * 100));
+
+  cmdCard.innerHTML = `
+    <div class="archive-cmd-top">
+      <img class="archive-cmd-avatar" src="${cmdAvatar.url}" alt="${escapeHtml(profile.name)}">
+      <div class="archive-cmd-meta">
+        <div class="section-header-row" style="margin-bottom:2px; gap:6px;">
+          <div style="display:flex; align-items:center; gap:6px; min-width:0; flex-wrap:wrap;">
+            <strong style="font-size:15px;">${escapeHtml(profile.name)}</strong>
+            <span class="status-badge badge-ok">Lv.${profile.level}</span>
+            <span class="status-badge badge-muted">${escapeHtml(profile.title || '提督')}</span>
+          </div>
+          <div style="display:flex; gap:4px; flex-shrink:0;">
+            <button type="button" id="btn-arc-cmd-edit" class="interact-icon-btn">编辑</button>
+            <button type="button" id="btn-arc-medals" class="interact-icon-btn">★ 勋章 ${medalsOv.unlockedCount}/${medalsOv.totalCount}</button>
+          </div>
+        </div>
+        <div class="cc-stat-sub">
+          EXP ${profile.exp}/${profile.expToNext} · 出战上限 ${fleetCap} 舰 · 永久运气 ${luckFx.luck}
+          ${profile.freePoints > 0 ? ` · <strong style="color:var(--accent);">可分配点数 ${profile.freePoints}</strong>` : ''}
+        </div>
+        <div class="interact-aff-track" style="margin-top:4px;">
+          <div class="interact-aff-fill" style="width:${expPct}%"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="archive-cmd-stats-grid" id="archive-cmd-stats">
+      ${COMMANDER_STAT_DEFS.map((d) => {
+        const val = Number(profile.stats?.[d.key] ?? 10);
+        return `
+          <div class="archive-cmd-stat-cell">
+            <div class="archive-cmd-stat-head">
+              <span class="muted-text" style="font-size:11.5px;">${escapeHtml(d.label)}</span>
+              <strong>${val}</strong>
+            </div>
+            ${
+              profile.freePoints > 0
+                ? `<button type="button" class="archive-alloc-btn" data-cmd-alloc="${escapeHtml(d.key)}">+1</button>`
+                : ''
+            }
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+
+  cmdCard.querySelector('#btn-arc-cmd-edit')?.addEventListener('click', () => openCommanderEditModal());
+  cmdCard.querySelector('#btn-arc-medals')?.addEventListener('click', () => openHonorMedalsModal());
+  cmdCard.querySelectorAll('[data-cmd-alloc]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const statKey = btn.getAttribute('data-cmd-alloc');
+      try {
+        await commander.allocateStat(statKey, 1);
+        uiKit.showToast('已分配 1 点指挥官属性', 'ok');
+        renderConsole();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '分配失败', 'warn');
+      }
+    });
+  });
+  root.appendChild(cmdCard);
+
+  // 2. Lower Section: Full Shipgirl Roster (Tap any card -> Centered Frosted Detail Modal)
+  const rosterSection = document.createElement('section');
+  rosterSection.className = 'surface-card lab-stack-sm archive-roster-section';
+  rosterSection.id = 'archive-roster-section';
+  rosterSection.innerHTML = `
+    <div class="section-header-row" style="margin-bottom:0;">
+      <h2 class="section-title">全员舰娘档案名册（${roster.length} 名）</h2>
+      <button type="button" id="btn-arc-new-ship" class="btn-secondary fac-mini-btn">+ 新建舰娘</button>
+    </div>
+
+    <div class="chip-row" data-no-swipe="true">
+      ${classFilters
+        .map(
+          (f) =>
+            `<button type="button" class="preset-chip ${archiveFilterClass === f.id ? 'is-active' : ''}" data-arc-filter="${escapeHtml(f.id)}">${escapeHtml(f.label)}</button>`
+        )
+        .join('')}
+    </div>
+
+    <div class="archive-roster-grid" id="archive-roster-grid">
+      ${
+        filteredRoster.length === 0
+          ? '<p class="muted-text" style="grid-column:1/-1; text-align:center;">该分类下暂无舰娘。</p>'
+          : filteredRoster
+              .map((c) => {
+                const prog = statRules.ensureShipProgression(c);
+                const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(c.id, 'maxHp', { round: 'round' }).final));
+                const curHp = Math.min(effMaxHp, Math.round(Number(c.stats.hp ?? effMaxHp)));
+                const hpPct = Math.round((curHp / effMaxHp) * 100);
+                const affSt = storyEngine?.getAffectionStatus
+                  ? storyEngine.getAffectionStatus(c.id)
+                  : { affinity: Math.round(Number(c.stats.affinity ?? 0)), stage: { label: '陌生' } };
+                const status = buildings?.getCharacterGlobalStatus
+                  ? buildings.getCharacterGlobalStatus(c.id, { formation, expeditions, interaction })
+                  : { badges: [] };
+                const isLocked = Boolean(c.meta?.locked);
+                const slotsCap = inventory.getCharacterSlotCapInfo(c.id);
+
+                return `
+                  <div class="archive-ship-card" data-arc-ship="${escapeHtml(c.id)}">
+                    <div class="archive-ship-head">
+                      <img class="archive-ship-avatar" src="${avatars.get(c.id) || ''}" alt="${escapeHtml(c.name)}">
+                      <div class="archive-ship-info">
+                        <div class="archive-ship-title">
+                          <span class="ship-class-ico">${getShipClassSvg(c.meta?.shipType, { size: 15 })}</span>
+                          <strong>${escapeHtml(c.name)}</strong>
+                          <span class="status-badge ship-lv-badge">Lv.${prog.level}</span>
+                        </div>
+                        <div class="cc-stat-sub">
+                          ${escapeHtml(c.meta?.shipType || '驱逐舰')} · ${escapeHtml(affSt.stage.label)}(${affSt.affinity}) · 槽 ${slotsCap.used}/${slotsCap.max}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        class="archive-lock-btn ${isLocked ? 'is-locked' : ''}"
+                        data-arc-lock="${escapeHtml(c.id)}"
+                        title="${isLocked ? '已锁定保护' : '点击锁定'}"
+                      >${isLocked ? '🔒' : '🔓'}</button>
+                    </div>
+                    <div class="archive-ship-bars">
+                      <div class="tac-cell-hp" style="height:5px;">
+                        <div class="tac-cell-hp-fill ${hpPct < 30 ? 'is-danger' : ''}" style="width:${hpPct}%"></div>
+                      </div>
+                      <div class="archive-ship-foot">
+                        <span class="muted-text" style="font-size:11px;">HP ${curHp}/${effMaxHp}</span>
+                        <div style="display:flex; gap:4px; flex-wrap:wrap;">
+                          ${(status.badges || [])
+                            .slice(0, 2)
+                            .map((b) => `<span class="status-badge badge-${escapeHtml(b.tone)}" style="font-size:10px; padding:1px 5px;">${escapeHtml(b.label)}</span>`)
+                            .join('')}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                `;
+              })
+              .join('')
+      }
+    </div>
+  `;
+
+  rosterSection.querySelector('#btn-arc-new-ship')?.addEventListener('click', () => openCharacterEditorSheet(null));
+
+  rosterSection.querySelectorAll('[data-arc-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      archiveFilterClass = btn.getAttribute('data-arc-filter') || 'all';
+      renderConsole();
+    });
+  });
+
+  rosterSection.querySelectorAll('[data-arc-lock]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const cid = btn.getAttribute('data-arc-lock');
+      const ent = entities.get(cid);
+      if (!ent) return;
+      ent.meta = ent.meta || {};
+      ent.meta.locked = !ent.meta.locked;
+      await saveRosterNow();
+      uiKit.showToast(ent.meta.locked ? `已锁定「${ent.name}」` : `已解锁「${ent.name}」`, 'info');
+      renderConsole();
+    });
+  });
+
+  rosterSection.querySelectorAll('[data-arc-ship]').forEach((card) => {
+    card.addEventListener('click', () => {
+      const cid = card.getAttribute('data-arc-ship');
+      if (cid) {
+        consoleState.activeCharacterId = cid;
+        openCharacterCardById(cid, consoleState.context);
+      }
+    });
+  });
+
+  root.appendChild(rosterSection);
+  consoleState.container.appendChild(root);
+}
 
 async function renderConsole() {
+  return renderArchiveConsole();
+}
+
+async function _legacyRenderConsoleUnused() {
   if (!consoleState.container || !consoleState.context) return;
   const {
     entities,
@@ -3199,13 +3571,14 @@ async function renderConsole() {
 
 export default {
   id: 'character-console',
-  name: '角色控制台',
-  description: '精修舰娘角色卡：全局状态标签、宿舍/秘书舰/投喂行内快捷条、五舰种成长、三核心适航与自定义扩展槽。',
+  name: '档案',
+  description: '指挥官六维属性与荣誉勋章室 + 全员舰娘档案名册（点开查看八维、扩建槽位与换装）。',
 
   mount(container, context) {
     consoleState.container = container;
     consoleState.context = context;
     consoleState.avatarUrlCache.clear();
+    context.ui.setSwipeLocked(false);
 
     if (getCharacters().length === 0) {
       for (const tpl of DEFAULT_CHARACTER_TEMPLATES) {
@@ -3213,45 +3586,6 @@ export default {
       }
       context.inventory.syncAllCharacters();
     }
-
-    context.ui.setPlaceholder('输入快捷备忘或指令，记录到当前角色行动日志...');
-    context.ui.setInputHandler(async (text) => {
-      const char = getActiveCharacter();
-      context.logs.add({
-        category: LOG_CATEGORIES.CHARACTER,
-        actorId: char?.id || null,
-        actorName: char?.name || '',
-        title: `${char ? `[${char.name}] ` : ''}控制台备忘`,
-        detail: text,
-      });
-      context.uiKit.showToast('已记入行动日志', 'ok');
-      if (consoleState.activeTab === 'logs') {
-        await renderConsole();
-      }
-    });
-
-    context.ui.setQuickActions([
-      {
-        id: 'cc-quick-add-slot',
-        label: '+ 自定义槽位',
-        onClick: () => openAddCustomSlotSheet(getActiveCharacter()),
-      },
-      {
-        id: 'cc-quick-check',
-        label: '模拟检定',
-        onClick: () => openCheckSimulatorSheet(getActiveCharacter()),
-      },
-      {
-        id: 'cc-quick-rules',
-        label: '数值规则',
-        onClick: () => openStatRulesSheet(),
-      },
-      {
-        id: 'cc-quick-new-item',
-        label: '新建部件/装备',
-        onClick: () => openItemEditorSheet(null),
-      },
-    ]);
 
     consoleState.unsubs = [
       context.bus.on('stat-rules:changed', () => renderConsole()),
@@ -3270,6 +3604,7 @@ export default {
       context.bus.on('buildings:updated', () => renderConsole()),
       context.bus.on('formation:changed', () => renderConsole()),
       context.bus.on('interaction:secretary-changed', () => renderConsole()),
+      context.bus.on('story-engine:updated', () => renderConsole()),
       context.bus.on('storage:changed', (detail) => {
         if (detail?.action === 'resetAll' || detail?.action === 'import') {
           renderConsole();

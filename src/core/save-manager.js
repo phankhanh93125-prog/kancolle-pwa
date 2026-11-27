@@ -31,7 +31,7 @@ export const SAVE_ZONES = Object.freeze({
 
 export const DEFAULT_SLOT_COUNT = 5;
 export const VAULT_PRIMARY_SLOTS = 3;
-export const SAVE_SCHEMA_VERSION = 8;
+export const SAVE_SCHEMA_VERSION = 9;
 
 function deepClone(value) {
   if (typeof structuredClone === 'function') {
@@ -318,6 +318,41 @@ export function migrateSavePayload(rawData = {}) {
       data.formation.version = 2;
       migrated = true;
     }
+  }
+
+  // Schema v9: Ensure storyEngine bubble-chat & 6-stage breakthrough state exists,
+  // auto-unlock crossed gates for legacy high-affinity ships, and purge deprecated legacy built-in story packs
+  if (!data.storyEngine || typeof data.storyEngine !== 'object') {
+    const unlockedBreakthroughs = {};
+    for (const ent of data.entities?.entities || []) {
+      if (ent?.kind !== 'character' || !ent.id) continue;
+      const aff = Math.round(Number(ent.stats?.affinity ?? 0));
+      const crossed = [20, 40, 60, 80, 100].filter((g) => aff >= g);
+      if (crossed.length > 0) unlockedBreakthroughs[ent.id] = crossed;
+    }
+    data.storyEngine = {
+      version: 1,
+      chatLogsByShip: {},
+      dailyTalkByShip: {},
+      unlockedBreakthroughs,
+      activePromptByShip: {},
+    };
+    migrated = true;
+  }
+
+  if (data.storyPacks && Array.isArray(data.storyPacks.packs)) {
+    const legacyIds = new Set([
+      'pack_port_daily_ext',
+      'pack_sea_investigation',
+      'pack_port_life_15',
+      'pack_abyssal_ruins_4ch',
+      'pack_abyssal_ruins_04',
+    ]);
+    const beforeLen = data.storyPacks.packs.length;
+    data.storyPacks.packs = data.storyPacks.packs.filter(
+      (p) => p && p.id && !legacyIds.has(String(p.id)) && p.builtIn !== true
+    );
+    if (data.storyPacks.packs.length !== beforeLen) migrated = true;
   }
 
   return { data, migrated };

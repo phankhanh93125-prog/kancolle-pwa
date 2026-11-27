@@ -530,6 +530,26 @@ export class CommanderSystem {
   }
 
   /**
+   * Reset all 6 allocated core stats back to baseline (10) and refund 100% of spent points into freePoints.
+   * Independent `luck` is preserved untouched.
+   */
+  async resetAllocatedStats() {
+    let refunded = 0;
+    for (const def of COMMANDER_STAT_DEFS) {
+      const cur = Math.round(Number(this._state.stats[def.key] ?? 10));
+      if (cur > 10) {
+        refunded += cur - 10;
+        this._state.stats[def.key] = 10;
+      }
+    }
+    this._state.freePoints = Math.max(0, Math.round(Number(this._state.freePoints || 0))) + refunded;
+    await this.persist();
+    const profile = this.getProfile();
+    this._emit('commander:updated', { profile, reason: 'reset-stats', refunded });
+    return { refunded, freePoints: this._state.freePoints, profile };
+  }
+
+  /**
    * Adjust independent Luck stat (positive or negative) via special events, rare items, or milestones.
    */
   async adjustLuck(delta, reason = '特殊事件影响') {

@@ -31,6 +31,7 @@ import {
   ITEM_RARITY_MAP,
   NAVAL_EIGHT_STAT_DEFS,
   getEquipmentPromoteCost,
+  getShipClassSvg,
   inferItemRarity,
   normalizeRarity,
 } from '../core/stat-rules.js';
@@ -1527,7 +1528,7 @@ function renderWarehouseEnhanceTab(host) {
     </div>
 
     <!-- Category Tabs -->
-    <div class="wh-filter-strip" id="sw-wh-group-tabs" role="tablist" aria-label="装备分类">
+    <div class="wh-filter-strip" id="sw-wh-group-tabs" data-no-swipe="true" role="tablist" aria-label="装备分类">
       ${WAREHOUSE_GROUP_DEFS.map(
         (g) => `
         <button type="button" class="wh-pill-btn ${workshopState.warehouseGroup === g.id ? 'is-active' : ''}" data-wh-group="${g.id}">
@@ -1538,7 +1539,7 @@ function renderWarehouseEnhanceTab(host) {
     </div>
 
     <!-- Five-Tier Rarity Filter Strip (White -> Green -> Blue -> Purple -> Orange) -->
-    <div class="wh-filter-strip" id="sw-wh-rarity-tabs" role="tablist" aria-label="品级筛选">
+    <div class="wh-filter-strip" id="sw-wh-rarity-tabs" data-no-swipe="true" role="tablist" aria-label="品级筛选">
       <button type="button" class="wh-pill-btn is-sm ${workshopState.rarityFilter === 'all' ? 'is-active' : ''}" data-wh-rarity="all">全部品级</button>
       ${ITEM_RARITY_DEFS.map(
         (r) => `
@@ -1571,8 +1572,9 @@ function renderWarehouseEnhanceTab(host) {
       </button>
     </div>
 
-    <p class="muted-text" style="font-size:11.5px; margin:0;">点击任意装备打开「居中战术浮窗」执行 +1~+10 强化、白→橙品级升阶或拆解回收余料。</p>
+    <p class="muted-text" style="font-size:11.5px; margin:0;">点击任意装备打开「居中战术浮窗」执行 +1~+10 强化、白→橙品级升阶、锁定或拆解回收。</p>
     <div class="wh-compact-list" id="sw-enhance-list"></div>
+    <div id="sw-pagination-mount"></div>
   `;
 
   card.querySelector('#btn-sw-new-custom-eq').addEventListener('click', () => {
@@ -1584,6 +1586,7 @@ function renderWarehouseEnhanceTab(host) {
   card.querySelectorAll('[data-wh-group]').forEach((btn) => {
     btn.addEventListener('click', () => {
       workshopState.warehouseGroup = btn.getAttribute('data-wh-group');
+      workshopState.warehousePage = 1;
       renderWorkshop();
     });
   });
@@ -1591,6 +1594,7 @@ function renderWarehouseEnhanceTab(host) {
   card.querySelectorAll('[data-wh-rarity]').forEach((btn) => {
     btn.addEventListener('click', () => {
       workshopState.rarityFilter = btn.getAttribute('data-wh-rarity');
+      workshopState.warehousePage = 1;
       renderWorkshop();
     });
   });
@@ -1598,6 +1602,7 @@ function renderWarehouseEnhanceTab(host) {
   card.querySelectorAll('[data-wh-status]').forEach((btn) => {
     btn.addEventListener('click', () => {
       workshopState.equipStatus = btn.getAttribute('data-wh-status');
+      workshopState.warehousePage = 1;
       renderWorkshop();
     });
   });
@@ -1608,11 +1613,17 @@ function renderWarehouseEnhanceTab(host) {
     });
   });
 
+  const PAGE_SIZE = 12;
+  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const curPage = Math.max(1, Math.min(totalPages, Number(workshopState.warehousePage) || 1));
+  workshopState.warehousePage = curPage;
+  const pageItems = items.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE);
+
   const listEl = card.querySelector('#sw-enhance-list');
-  if (items.length === 0) {
+  if (pageItems.length === 0) {
     listEl.innerHTML = '<p class="muted-text" style="padding:8px 0;">当前分类与品级筛选条件下暂无物品。</p>';
   } else {
-    for (const item of items) {
+    for (const item of pageItems) {
       const lv = Number(item.level) || 0;
       const rarityId = inferItemRarity(item);
       const rDef = ITEM_RARITY_MAP[rarityId] || ITEM_RARITY_MAP.common;
@@ -1663,165 +1674,215 @@ function renderWarehouseEnhanceTab(host) {
     }
   }
 
+  // Compact Pagination Bar
+  const pagMount = card.querySelector('#sw-pagination-mount');
+  if (pagMount && totalPages > 1) {
+    pagMount.innerHTML = `
+      <div class="wh-pagination-bar" id="sw-pagination-bar">
+        <button type="button" class="btn-secondary wh-page-btn" id="btn-wh-prev-page" ${curPage <= 1 ? 'disabled' : ''}>‹ 上一页</button>
+        <span class="muted-text" style="font-size:12px;">第 <strong>${curPage}</strong> / ${totalPages} 页 · 共 ${items.length} 件</span>
+        <button type="button" class="btn-secondary wh-page-btn" id="btn-wh-next-page" ${curPage >= totalPages ? 'disabled' : ''}>下一页 ›</button>
+      </div>
+    `;
+    pagMount.querySelector('#btn-wh-prev-page')?.addEventListener('click', () => {
+      workshopState.warehousePage = Math.max(1, curPage - 1);
+      renderWorkshop();
+    });
+    pagMount.querySelector('#btn-wh-next-page')?.addEventListener('click', () => {
+      workshopState.warehousePage = Math.min(totalPages, curPage + 1);
+      renderWorkshop();
+    });
+  }
+
   host.appendChild(card);
 }
 
 // ============================================================
-// Root View Renderer
+// Lower Section: Embedded Dockyard Repair Queue (Tab 4 「工坊」)
+// ============================================================
+
+function formatDockDuration(sec) {
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
+  if (s < 60) return `${s}秒`;
+  const m = Math.floor(s / 60);
+  const remS = s % 60;
+  if (m < 60) return remS > 0 ? `${m}分${remS}秒` : `${m}分钟`;
+  const h = Math.floor(m / 60);
+  const remM = m % 60;
+  return remM > 0 ? `${h}时${remM}分` : `${h}小时`;
+}
+
+function renderEmbeddedDockyardSection(host) {
+  const { buildings, entities, resources, rootStorage, uiKit } = workshopState.context;
+  if (!buildings) return;
+  const dock = buildings.getDockyardState();
+  const inDockIds = new Set(dock.queue.map((q) => q.characterId));
+  const repairCandidates = entities
+    .list({ kind: 'character' })
+    .filter((c) => !inDockIds.has(c.id))
+    .map((c) => ({ char: c, plan: buildings.computeDockRepairPlan(c.id) }))
+    .sort((a, b) => (b.plan.missingHp || 0) - (a.plan.missingHp || 0));
+
+  const card = document.createElement('section');
+  card.className = 'surface-card lab-stack-sm';
+  card.id = 'sw-dockyard-section';
+  card.innerHTML = `
+    <div class="section-header-row" style="margin-bottom:0;">
+      <h2 class="section-title">船坞入渠维修队列（${dock.queue.length}/${dock.capacity}）</h2>
+      <button type="button" id="btn-sw-dock-expand" class="btn-secondary fac-mini-btn" ${dock.canExpand ? '' : 'disabled'}>
+        ${dock.canExpand ? '+ 扩建渠位' : '渠位已满'}
+      </button>
+    </div>
+
+    ${
+      dock.queue.length === 0
+        ? '<p class="muted-text" style="font-size:12px; margin:0;">当前维修渠位空闲。完成船坞照料出渠可额外提升舰娘好感 +2。</p>'
+        : dock.queue
+            .map(
+              (job) => `
+          <div class="lab-slot-card" data-sw-dock-job="${escapeHtml(job.characterId)}">
+            <div class="lab-slot-head">
+              <strong>${escapeHtml(job.characterName)}</strong>
+              <span class="status-badge ${job.ready ? 'badge-ok' : 'badge-warn'}">
+                ${job.ready ? '维修完工可出渠' : `剩余 ${formatDockDuration(job.remainingSec)}`}
+              </span>
+            </div>
+            <div class="lab-btn-grid">
+              ${
+                job.ready
+                  ? `<button type="button" class="btn-primary uikit-touch-target" data-sw-dock-complete="${escapeHtml(job.characterId)}">完成出渠 (+好感)</button>`
+                  : `<button type="button" class="btn-secondary uikit-touch-target" data-sw-dock-fast="${escapeHtml(job.characterId)}">快速修复（损管/40银）</button>`
+              }
+            </div>
+          </div>
+        `
+            )
+            .join('')
+    }
+
+    <div class="lab-stack-sm" id="sw-dock-candidates">
+      ${repairCandidates
+        .slice(0, 8)
+        .map(({ char: c, plan }) => {
+          const costStr = Object.entries(plan.cost || {})
+            .filter(([, v]) => Number(v) > 0)
+            .map(([k, v]) => `${resources.get(k)?.name || k}${v}`)
+            .join(' ');
+          return `
+            <div class="lab-slot-card interact-drawer-item">
+              <div class="interact-drawer-info">
+                <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                  <span class="ship-class-ico">${getShipClassSvg(c.meta?.shipType, { size: 15 })}</span>
+                  <strong>${escapeHtml(c.name)}</strong>
+                  <span class="status-badge ${plan.missingHp > 0 ? 'badge-danger' : 'badge-ok'}">
+                    ${plan.missingHp > 0 ? `损血 -${plan.missingHp}` : '满血完好'}
+                  </span>
+                </div>
+                <div class="cc-stat-sub">耗时 ${escapeHtml(plan.durationText)} · ${escapeHtml(costStr || '低耗保养')}</div>
+              </div>
+              <button
+                type="button"
+                class="${plan.missingHp > 0 ? 'btn-primary' : 'btn-secondary'} fac-mini-btn"
+                data-sw-dock-start="${escapeHtml(c.id)}"
+                ${dock.queue.length >= dock.capacity ? 'disabled' : ''}
+              >${plan.isMaintenanceOnly ? '保养' : '入渠'}</button>
+            </div>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
+
+  card.querySelector('#btn-sw-dock-expand')?.addEventListener('click', async () => {
+    try {
+      const next = await buildings.expandDockyard();
+      uiKit.showToast(`船坞已扩建至 Lv.${next.level}（${next.capacity} 渠位）`, 'ok');
+      renderWorkshop();
+    } catch (err) {
+      uiKit.showToast(err instanceof Error ? err.message : '扩建失败', 'warn');
+    }
+  });
+
+  card.querySelectorAll('[data-sw-dock-complete]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        const res = await buildings.completeDockRepair(btn.getAttribute('data-sw-dock-complete'));
+        await persistCharacterRoster({ storage: rootStorage, entities });
+        uiKit.showToast(`「${res.characterName}」已满血出渠！（好感 +2）`, 'ok');
+        renderWorkshop();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '出渠失败', 'warn');
+      }
+    });
+  });
+
+  card.querySelectorAll('[data-sw-dock-fast]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        const res = await buildings.completeDockRepair(btn.getAttribute('data-sw-dock-fast'), { fastRepair: true });
+        await persistCharacterRoster({ storage: rootStorage, entities });
+        uiKit.showToast(`「${res.characterName}」快速修复完成（${res.fastMethod} · 好感 +2）`, 'ok');
+        renderWorkshop();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '快修失败', 'warn');
+      }
+    });
+  });
+
+  card.querySelectorAll('[data-sw-dock-start]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        const job = await buildings.startDockRepair(btn.getAttribute('data-sw-dock-start'));
+        uiKit.showToast(`「${job.characterName}」已入渠维修（${formatDockDuration(job.durationSec)}）`, 'ok');
+        renderWorkshop();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '入渠失败', 'warn');
+      }
+    });
+  });
+
+  host.appendChild(card);
+}
+
+// ============================================================
+// Root View Renderer (Tab 4 「工坊」 — Pure Hardware & Dockyard)
 // ============================================================
 
 function renderWorkshop() {
   if (!workshopState.container || !workshopState.context) return;
-  const { resources, entities, modules, uiKit } = workshopState.context;
-  const chars = entities.list({ kind: 'character' });
-  const targetChar = getTargetCharacter();
 
   workshopState.container.innerHTML = '';
   const root = document.createElement('div');
-  root.className = 'sw-root';
+  root.className = 'sw-root module-stack';
+  root.id = 'page-supply-workshop';
 
-  root.appendChild(
-    uiKit.createSubpageHeader({
-      title: '仓库与图鉴',
-      subtitle: '装备强化升阶 · 补给工坊与图鉴内容库',
-      modules,
-      resources,
-      resourceKeys: ['steel', 'bauxite', 'silver'],
-      id: 'sw-subpage-header',
-    })
-  );
+  // Upper: Equipment Warehouse with category tabs, filters, pagination, enhance/promote/lock/disassemble
+  renderWarehouseEnhanceTab(root);
 
-  // Unified 4th-Tab Top Switcher: 装备仓库与工坊 ⇄ 图鉴与内容库
-  const hubSwitcher = document.createElement('div');
-  hubSwitcher.className = 'wh-hub-switch-bar';
-  hubSwitcher.id = 'sw-hub-switch-bar';
-  hubSwitcher.innerHTML = `
-    <button type="button" class="wh-hub-switch-btn is-active" id="btn-hub-to-warehouse">装备仓库与工坊</button>
-    <button type="button" class="wh-hub-switch-btn" id="btn-hub-to-compendium">图鉴与内容库</button>
-  `;
-  hubSwitcher.querySelector('#btn-hub-to-compendium').addEventListener('click', () => {
-    if (modules.has('compendium-studio')) modules.mount('compendium-studio', { transition: 'left' });
-  });
-  root.appendChild(hubSwitcher);
-
-  // 1. Unified 6-Resource & Dual-Currency Overview Bar
-  root.appendChild(createResourceOverviewBar(resources, { showCaps: true, id: 'sw-resource-bar' }));
-
-  // 2. Target Character Selector + Quick Nav Card
-  const topCard = document.createElement('section');
-  topCard.className = 'surface-card lab-stack-sm';
-  topCard.innerHTML = `
-    <div class="section-header-row" style="margin-bottom:0;">
-      <h2 class="section-title">目标舰娘（穿戴与消耗品生效对象）</h2>
-      <button type="button" id="btn-sw-back-char" class="btn-secondary uikit-touch-target" style="padding:0 12px;">角色详情卡</button>
-    </div>
-    <div class="cc-roster-strip" id="sw-char-strip"></div>
-  `;
-  topCard.querySelector('#btn-sw-back-char').addEventListener('click', () => {
-    if (modules.has('character-console')) modules.mount('character-console');
-  });
-
-  const strip = topCard.querySelector('#sw-char-strip');
-  for (const c of chars) {
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = `cc-roster-chip ${targetChar && c.id === targetChar.id ? 'is-active' : ''}`;
-    chip.dataset.swChar = c.id;
-    chip.textContent = `${c.name} (HP ${Math.round(c.stats.hp ?? 0)})`;
-    chip.addEventListener('click', () => {
-      workshopState.targetCharId = c.id;
-      renderWorkshop();
-    });
-    strip.appendChild(chip);
-  }
-  root.appendChild(topCard);
-
-  // 3. 3 Segmented Tabs (Compact Warehouse & Enhance / Shop / Supply Pool)
-  workshopState.tabsCtrl = uiKit.createTabs({
-    items: [
-      { id: 'warehouse', label: '装备仓库与强化' },
-      { id: 'shop', label: '商店与消耗品' },
-      { id: 'gacha', label: '随机补给池' },
-    ],
-    activeId: workshopState.activeTab === 'enhance' ? 'warehouse' : workshopState.activeTab,
-    onChange: (next) => {
-      workshopState.activeTab = next;
-      renderWorkshop();
-    },
-  });
-  const tabsWrap = document.createElement('div');
-  tabsWrap.id = 'sw-tabs-mount';
-  tabsWrap.appendChild(workshopState.tabsCtrl.element);
-  root.appendChild(tabsWrap);
-
-  // 4. Tab Content
-  const body = document.createElement('div');
-  body.className = 'module-stack';
-  body.id = 'sw-tab-body';
-  if (workshopState.activeTab === 'shop') {
-    renderShopTab(body);
-  } else if (workshopState.activeTab === 'gacha') {
-    renderGachaTab(body);
-  } else {
-    renderWarehouseEnhanceTab(body);
-  }
-  root.appendChild(body);
+  // Lower: Embedded Dockyard Repair Queue
+  renderEmbeddedDockyardSection(root);
 
   workshopState.container.appendChild(root);
 }
 
 // ============================================================
-// Standard Module Export
+// Standard Module Export (Tab 4 「工坊」)
 // ============================================================
 
 export default {
   id: 'supply-workshop',
-  name: '物资与工坊台',
-  description: '紧凑型分类装备仓库（核心/武器/辅助/服道具、闲置清理与强化升阶）、补给商店与可自定义随机补给池。',
+  name: '工坊',
+  description: '纯粹的硬件整备台：上方为分类分页装备仓库（强化/升阶/锁定/拆解），下方为船坞入渠维修队列。',
 
   mount(container, context) {
     workshopState.container = container;
     workshopState.context = context;
-
-    context.ui.setPlaceholder('工坊台：可输入采购或整理备忘记录到行动日志...');
-    context.ui.setInputHandler((text) => {
-      context.logs.add({
-        category: LOG_CATEGORIES.RESOURCE,
-        title: '物资工坊备忘',
-        detail: text,
-      });
-      context.uiKit.showToast('已记录至行动日志', 'ok');
-    });
-
-    context.ui.setQuickActions([
-      {
-        id: 'sw-q-warehouse',
-        label: '分类装备仓库',
-        onClick: () => {
-          workshopState.activeTab = 'warehouse';
-          renderWorkshop();
-        },
-      },
-      {
-        id: 'sw-q-shop',
-        label: '商店与消耗品',
-        onClick: () => {
-          workshopState.activeTab = 'shop';
-          renderWorkshop();
-        },
-      },
-      {
-        id: 'sw-q-gacha',
-        label: '随机补给池',
-        onClick: () => {
-          workshopState.activeTab = 'gacha';
-          renderWorkshop();
-        },
-      },
-    ]);
+    workshopState.warehousePage = workshopState.warehousePage || 1;
+    context.ui.setSwipeLocked(false);
 
     workshopState.unsubs = [
       context.bus.on('resource:changed', () => renderWorkshop()),
+      context.bus.on('buildings:updated', () => renderWorkshop()),
       context.bus.on('inventory:enhanced', () => renderWorkshop()),
       context.bus.on('inventory:promoted', () => renderWorkshop()),
       context.bus.on('inventory:salvage-changed', () => renderWorkshop()),
@@ -1840,10 +1901,18 @@ export default {
       }),
     ];
 
+    workshopState.dockTimer = setInterval(() => {
+      if (workshopState.context?.buildings?.getDockyardState()?.queue?.length > 0) {
+        renderWorkshop();
+      }
+    }, 15000);
+
     hydratePoolConfig().then(() => renderWorkshop());
   },
 
   unmount() {
+    if (workshopState.dockTimer) clearInterval(workshopState.dockTimer);
+    workshopState.dockTimer = null;
     for (const unsub of workshopState.unsubs) {
       try {
         unsub();

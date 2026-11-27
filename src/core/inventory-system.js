@@ -902,15 +902,22 @@ export class InventorySystem {
     }
 
     let paidCost = null;
+    let usedPermit = false;
     if (resources && !skipCost) {
-      const cost = capInfo.expansionCost;
-      const spend = await resources.spendBatch(cost, {
-        reason: `扩建「${this._entities?.get(cid)?.name || cid}」第 ${capInfo.used + 1} 个装备槽位`,
-      });
-      if (!spend.ok) {
-        throw new Error(spend.reason || '扩建所需钢材/铝材/银条不足');
+      const permitItem = this.getItem('item_permit_slot_expand');
+      if (permitItem && Number(permitItem.quantity || 0) > 0) {
+        await this.consumeItemQuantity(permitItem.id, 1);
+        usedPermit = true;
+      } else {
+        const cost = capInfo.expansionCost;
+        const spend = await resources.spendBatch(cost, {
+          reason: `扩建「${this._entities?.get(cid)?.name || cid}」第 ${capInfo.used + 1} 个装备槽位`,
+        });
+        if (!spend.ok) {
+          throw new Error(spend.reason || '扩建所需钢材/铝材/银条不足');
+        }
+        paidCost = cost;
       }
-      paidCost = cost;
     }
 
     const typeDef = KNOWN_EQUIPMENT_TYPE_MAP[typeId];
@@ -929,6 +936,7 @@ export class InventorySystem {
       characterId: cid,
       slot: deepClone(slot),
       cost: paidCost,
+      usedPermit,
       used: this._customSlotsByCharacter[cid].length,
       max: capInfo.max,
     };
@@ -1302,6 +1310,7 @@ export class InventorySystem {
     difficulty = 'star_1',
     dropMultiplier = 1.0,
     luckBonus = null,
+    forcedRarity = null,
     rng = Math.random,
   } = {}) {
     const mult = Math.max(0.5, Number(dropMultiplier) || 1.0);
@@ -1327,7 +1336,9 @@ export class InventorySystem {
     const roll = rng() + diffBoost + multBoost + cmdLuckBoost;
 
     let rarity = ITEM_RARITIES.UNCOMMON;
-    if (tier === 'boss') {
+    if (forcedRarity && ITEM_RARITY_MAP[forcedRarity]) {
+      rarity = forcedRarity;
+    } else if (tier === 'boss') {
       rarity = roll >= 0.78 ? ITEM_RARITIES.LEGENDARY : roll >= 0.42 ? ITEM_RARITIES.EPIC : ITEM_RARITIES.RARE;
     } else if (tier === 'elite') {
       rarity = roll >= 0.9 ? ITEM_RARITIES.LEGENDARY : roll >= 0.56 ? ITEM_RARITIES.EPIC : roll >= 0.22 ? ITEM_RARITIES.RARE : ITEM_RARITIES.UNCOMMON;
@@ -2441,6 +2452,32 @@ export class InventorySystem {
     };
     this._emit('inventory:consumed', payload);
     return payload;
+  }
+
+  async consumeItemQuantity(itemId, count = 1) {
+    const item = this._items.get(String(itemId));
+    const n = Math.max(1, Math.floor(Number(count) || 1));
+    if (!item || Number(item.quantity || 0) < n) {
+      throw new Error('背包道具数量不足');
+    }
+    item.quantity = Math.max(0, Math.floor(Number(item.quantity || 0)) - n);
+    item.updatedAt = Date.now();
+    await this.persist();
+    this._emit('inventory:item-updated', { item: deepClone(item), consumed: n });
+    return deepClone(item);
+  }
+
+  listBackpackGifts() {
+    return this.listItems({ category: ITEM_CATEGORIES.CONSUMABLE }).filter((it) => {
+      if (Number(it.quantity || 0) <= 0) return false;
+      const hasAffBonus = (it.bonuses || []).some((b) => b.stat === 'affinity' && Number(b.value) > 0);
+      const hasGiftTag = (it.tags || []).some((t) => /礼物|好感|心意/.test(String(t)));
+      return hasAffBonus || hasGiftTag;
+    });
+  }
+
+  listOwnedOutfits() {
+    return this.listItems({ category: ITEM_CATEGORIES.OUTFIT });
   }
 
   // ------------------------------------------------------------

@@ -10,7 +10,7 @@
  *       * 'crit-flash'   : bright highlight flash on crit success / crit hit / oath
  *       * 'damage-flash' : red edge vignette warning flash on taking combat damage
  *   - Typewriter text reveal helper: `typewrite(el, text, { speedMs })` with tap-to-complete
- *   - Optional lightweight mobile haptic feedback (`navigator.vibrate`)
+ *   - Pure visual feedback & Web Audio synthesized SFX (mobile vibration disabled)
  *   - Optional zero-dependency Web Audio synthesized SFX (dice, hit, crit, scan, click, chime)
  *     with global mute toggles persisted in localStorage.
  */
@@ -95,15 +95,8 @@ export class FxStage {
     return el;
   }
 
-  _vibrate(pattern) {
-    if (!this._hapticsEnabled) return;
-    try {
-      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-        navigator.vibrate(pattern);
-      }
-    } catch {
-      // ignore unsupported environments
-    }
+  _vibrate() {
+    // Vibration feedback strictly disabled by architecture policy
   }
 
   /**
