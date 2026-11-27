@@ -253,7 +253,7 @@ export async function hydrateCharacterRoster({
   const saved = await scope.getLarge(ROSTER_KEY, null);
   const now = Date.now();
 
-  if (saved && Array.isArray(saved.characters) && saved.characters.length > 0) {
+  if (saved && Array.isArray(saved.characters)) {
     for (const ch of saved.characters) {
       if (ch && ch.id) {
         const reg = entities.register({ ...ch, kind: 'character' });
@@ -279,45 +279,19 @@ export async function hydrateCharacterRoster({
         });
       }
     }
-    const restoredId = saved.activeCharacterId || saved.characters[0]?.id || null;
+    const restoredId =
+      (saved.activeCharacterId && entities.has(saved.activeCharacterId) ? saved.activeCharacterId : null) ||
+      saved.characters[0]?.id ||
+      null;
     consoleState.activeCharacterId = restoredId;
     if (restoredId) scope.set('activeCharacterId', restoredId);
     return { activeCharacterId: restoredId, seeded: false };
   }
 
-  // First boot: seed 3 seaworthy starter shipgirls equipped with engine/armor/core + 1 sample custom module
-  for (const tpl of DEFAULT_CHARACTER_TEMPLATES) {
-    const reg = entities.register(tpl);
-    if (statRules && typeof statRules.ensureShipProgression === 'function') {
-      statRules.ensureShipProgression(reg);
-    }
-    if (personalityPool && typeof personalityPool.ensurePersonalityOnEntity === 'function') {
-      personalityPool.ensurePersonalityOnEntity(reg);
-    }
-  }
-  await equipStarterCorePartsIfPresent(inventory, 'char_template_01', true);
-  await equipStarterCorePartsIfPresent(inventory, 'char_template_02', false);
-  await equipStarterCorePartsIfPresent(inventory, 'char_template_03', false);
-
-  // Equip a starter typed expanded Sonar slot carrying dynamic extended attribute ('夜战修正') on ship #1
-  if (inventory.getItem('item_ext_02')) {
-    const slot = await inventory.addExpandedSlot('char_template_01', KNOWN_EQUIPMENT_TYPES.SONAR);
-    await inventory.equipItem('char_template_01', slot.id, 'item_ext_02');
-  }
-
-  // Ensure initial HP matches effective maxHp after core armor bonus
-  for (const tpl of DEFAULT_CHARACTER_TEMPLATES) {
-    const effMaxHp = Math.round(entities.getEffectiveStat(tpl.id, 'maxHp', { round: 'round' }).final);
-    entities.setStat(tpl.id, 'hp', effMaxHp, { min: 0, max: effMaxHp });
-  }
-
-  consoleState.activeCharacterId = 'char_template_01';
-  await persistCharacterRoster({
-    storage,
-    entities,
-    activeCharacterId: 'char_template_01',
-  });
-  return { activeCharacterId: 'char_template_01', seeded: true };
+  // Brand-new clean state: NEVER inject hardcoded default named demonstration ships.
+  // Players choose their exact starter ship (or clean Free Build empty dock) via "新的征程".
+  consoleState.activeCharacterId = null;
+  return { activeCharacterId: null, seeded: false };
 }
 
 export function getActiveCharacterId(storage = null) {
@@ -332,10 +306,253 @@ export function getActiveCharacterId(storage = null) {
   return null;
 }
 
+function computeShipRetireSalvage(shipType) {
+  const cls = resolveShipClass(shipType);
+  if (cls === 'BB' || cls === 'CV') return { fuel: 35, steel: 55 };
+  if (cls === 'CA') return { fuel: 25, steel: 40 };
+  if (cls === 'CL' || cls === 'AR' || cls === 'AO') return { fuel: 20, steel: 30 };
+  return { fuel: 15, steel: 20 };
+}
+
+/**
+ * Unified safe Shipgirl Retirement / Deletion flow:
+ *   1. Blocks locked shipgirls (🔒) with explicit unlock guidance.
+ *   2. Blocks ships currently on Expedition or in Dockyard repair with explicit status message.
+ *   3. If deployed in 3x4 Formation, clearly alerts player and offers 1-click remove-from-formation + retire confirmation.
+ *   4. Upon confirmation: safely unequips ALL equipped gear & outfit back to 「工坊」 warehouse (never destroyed!),
+ *      returns scrap salvage Fuel/Steel, permanently deletes the shipgirl and her independent chat log, and refreshes UI.
+ */
+function openShipRetireFlow(targetChar, context = {}, { onRetired = null } = {}) {
+  if (!targetChar) return;
+  const ctx = context && context.entities ? context : consoleState.context || {};
+  const {
+    entities,
+    inventory,
+    resources,
+    formation,
+    expeditions,
+    buildings,
+    interaction,
+    storyEngine,
+    rootStorage,
+    bus,
+    uiKit,
+  } = ctx;
+  if (!entities || !inventory || !uiKit) return;
+
+  const ch = entities.get(targetChar.id);
+  if (!ch) return;
+
+  // 1. Lock guard
+  if (ch.meta?.locked) {
+    uiKit.showToast('舰娘已锁定，请先在详情中解锁后再退役', 'warn');
+    return;
+  }
+
+  // 2. Expedition / Dockyard / Formation status checks
+  const inExpedition = Boolean(expeditions?.isCharacterDispatched?.(ch.id));
+  const inDockyard = Boolean(buildings?.isInDockyard?.(ch.id));
+  const inFormation = Boolean(formation?.getMemberIds?.().includes(ch.id));
+  const inDorm = Boolean(buildings?.isInDormitory?.(ch.id));
+
+  if (inExpedition) {
+    uiKit.openTacticalModal({
+      title: '无法执行退役 · 远征任务中',
+      subtitle: `${ch.name}（${ch.meta?.shipType || '舰娘'}）当前正在执行海上远征`,
+      renderContent: (body, close) => {
+        body.innerHTML = `
+          <div class="module-stack">
+            <div class="surface-card" style="border-color:rgba(245,158,11,0.45); background:rgba(245,158,11,0.08);">
+              <p style="margin:0; font-size:13px; line-height:1.6;">
+                「<strong>${escapeHtml(ch.name)}</strong>」正在远征队列中执勤，不能直接退役。请先前往「设施 → 远征与基建」中途召回或等待远征结算后再执行退役操作。
+              </p>
+            </div>
+            <button type="button" id="btn-retire-busy-ok" class="btn-primary uikit-touch-target">知道了</button>
+          </div>
+        `;
+        body.querySelector('#btn-retire-busy-ok')?.addEventListener('click', close);
+      },
+    });
+    return;
+  }
+
+  if (inDockyard) {
+    uiKit.openTacticalModal({
+      title: '无法执行退役 · 船坞维修中',
+      subtitle: `${ch.name}（${ch.meta?.shipType || '舰娘'}）当前正在入渠维修`,
+      renderContent: (body, close) => {
+        body.innerHTML = `
+          <div class="module-stack">
+            <div class="surface-card" style="border-color:rgba(245,158,11,0.45); background:rgba(245,158,11,0.08);">
+              <p style="margin:0; font-size:13px; line-height:1.6;">
+                「<strong>${escapeHtml(ch.name)}</strong>」当前正在船坞维修渠位中整备，无法直接退役。请等待维修完成或取消入渠后再操作。
+              </p>
+            </div>
+            <button type="button" id="btn-retire-busy-ok" class="btn-primary uikit-touch-target">知道了</button>
+          </div>
+        `;
+        body.querySelector('#btn-retire-busy-ok')?.addEventListener('click', close);
+      },
+    });
+    return;
+  }
+
+  const equippedMap = inventory.getCharacterEquipment(ch.id) || {};
+  const equippedItems = Object.values(equippedMap).filter(Boolean);
+  const salvage = computeShipRetireSalvage(ch.meta?.shipType);
+
+  uiKit.openTacticalModal({
+    title: inFormation ? `移出编队并退役 · ${ch.name}` : `确认退役 / 删除舰娘 · ${ch.name}`,
+    subtitle: `${ch.meta?.shipType || '舰娘'} · 所有穿戴装备将安全退回「工坊」装备仓库`,
+    renderContent: (body, close) => {
+      body.innerHTML = `
+        <div class="module-stack" id="retire-confirm-body">
+          ${
+            inFormation
+              ? `
+            <div class="surface-card" style="border-color:rgba(245,158,11,0.5); background:rgba(245,158,11,0.10); padding:10px 12px;">
+              <strong style="color:#fbbf24; font-size:12.5px;">⚠ 当前正处于 3×4 出征编队中</strong>
+              <p style="margin:4px 0 0; font-size:12px; line-height:1.5;">
+                「${escapeHtml(ch.name)}」已部署在出征编队阵型盘上。点击下方确认后，将自动一键移出编队并执行退役。
+              </p>
+            </div>
+          `
+              : ''
+          }
+
+          <div class="surface-card lab-stack-sm" style="padding:12px;">
+            <div class="lab-slot-head">
+              <strong>装备自动卸下与仓库保护</strong>
+              <span class="status-badge badge-ok">回收 ${equippedItems.length} 件装备</span>
+            </div>
+            <p class="muted-text" style="font-size:12px; margin:0; line-height:1.55;">
+              ${
+                equippedItems.length > 0
+                  ? `已穿戴的 <strong>${equippedItems
+                      .slice(0, 6)
+                      .map((it) => escapeHtml(it.name))
+                      .join('、')}${equippedItems.length > 6 ? ` 等 ${equippedItems.length} 件` : ''}</strong> 将在退役时自动安全卸下并退回「工坊」仓库，绝不销毁。`
+                  : '该舰娘当前未穿戴装备，退役后不会影响装备仓库。'
+              }
+            </p>
+            <div class="lab-slot-head" style="margin-top:4px;">
+              <strong>退役拆解物资返还</strong>
+              <span class="status-badge badge-muted">燃油 +${salvage.fuel} · 钢材 +${salvage.steel}</span>
+            </div>
+          </div>
+
+          <p style="margin:0; font-size:12px; color:#fca5a5; line-height:1.55;">
+            此操作将永久删除「<strong>${escapeHtml(ch.name)}</strong>」的舰娘档案、好感记录及其独立聊天记录，且不可撤销。
+          </p>
+
+          <div class="lab-btn-grid">
+            <button type="button" id="btn-retire-confirm-cancel" class="btn-secondary uikit-touch-target">取消</button>
+            <button type="button" id="btn-retire-confirm-exec" class="btn-danger uikit-touch-target">
+              ${inFormation ? '一键移出编队并确认退役' : '确认退役并回收装备'}
+            </button>
+          </div>
+        </div>
+      `;
+
+      body.querySelector('#btn-retire-confirm-cancel')?.addEventListener('click', close);
+      body.querySelector('#btn-retire-confirm-exec')?.addEventListener('click', async () => {
+        const execBtn = body.querySelector('#btn-retire-confirm-exec');
+        if (!execBtn || execBtn.disabled) return;
+        execBtn.disabled = true;
+        execBtn.textContent = '正在卸下装备并执行退役...';
+
+        try {
+          const liveChar = entities.get(ch.id);
+          if (!liveChar) {
+            close();
+            return;
+          }
+          if (liveChar.meta?.locked) {
+            uiKit.showToast('舰娘已锁定，请先解锁后再退役', 'warn');
+            close();
+            return;
+          }
+
+          const removedId = liveChar.id;
+          const removedName = liveChar.name;
+
+          // 1. Remove from 3x4 Formation & Dormitory cleanly
+          if (inFormation && formation?.removeMember) {
+            await formation.removeMember(removedId);
+          }
+          if (inDorm && buildings?.removeDormResident) {
+            await buildings.removeDormResident(removedId);
+          }
+
+          // 2. Safely unequip ALL equipped gear & outfit back to warehouse (items remain intact!)
+          const unequipRes = await inventory.unequipAllForCharacter(removedId);
+          await inventory.removeCharacterEquipment(removedId);
+
+          // 3. Return scrap salvage resources (Fuel + Steel)
+          if (resources?.add) {
+            await resources.add('fuel', salvage.fuel, { reason: 'ship-retire' });
+            await resources.add('steel', salvage.steel, { reason: 'ship-retire' });
+          }
+
+          // 4. Delete independent chat history & interaction/oath records
+          if (storyEngine?.deleteShipChatHistory) {
+            await storyEngine.deleteShipChatHistory(removedId);
+          }
+          if (interaction?.removeCharacterData) {
+            await interaction.removeCharacterData(removedId);
+          }
+
+          // 5. Remove shipgirl entity from active roster
+          entities.remove(removedId);
+
+          // 6. Reassign secretary & activeCharacterId safely
+          const remaining = entities.list({ kind: 'character' });
+          const nextId = remaining[0]?.id || null;
+          if (interaction && !interaction.getSecretaryId?.()) {
+            await interaction.setSecretary(nextId);
+          }
+          consoleState.activeCharacterId = nextId;
+          if (rootStorage) {
+            await persistCharacterRoster({
+              storage: rootStorage,
+              entities,
+              activeCharacterId: nextId,
+            });
+          }
+
+          bus?.emit?.('character:deleted', {
+            characterId: removedId,
+            name: removedName,
+            returnedGearCount: unequipRes.removedCount || 0,
+            salvage,
+          });
+
+          close();
+          if (typeof onRetired === 'function') {
+            await onRetired(removedId);
+          }
+          if (consoleState.container && consoleState.context) {
+            renderConsole();
+          }
+
+          uiKit.showToast(
+            `已将「${removedName}」退役！${unequipRes.removedCount || 0} 件装备已安全退回「工坊」仓库，返还燃油 +${salvage.fuel}、钢材 +${salvage.steel}。`,
+            'ok'
+          );
+        } catch (err) {
+          execBtn.disabled = false;
+          execBtn.textContent = inFormation ? '一键移出编队并确认退役' : '确认退役并回收装备';
+          uiKit.showToast(err instanceof Error ? err.message : '退役执行失败', 'error');
+        }
+      });
+    },
+  });
+}
+
 /**
  * Open a shipgirl's details in a sleek Centered Frosted-Glass Tactical Modal over the Central Main Stage,
- * with live 8-stat breakdown, ship-class slot cap (`used/max`), and slide-up Bottom Sheets for equip/slot expansion.
- * Pass `{ fullScreen: true }` to mount the full `character-console` module directly.
+ * with live 8-stat breakdown, ship-class slot cap (`used/max`), slide-up Bottom Sheets for equip/slot expansion,
+ * lock toggle, and safe Ship Retire/Delete with automatic gear recovery.
  */
 export function openCharacterCardById(characterId, context = {}, { fullScreen = false } = {}) {
   const cid = String(characterId || '');
@@ -352,10 +569,8 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
     context.bus.emit('character:selected', { characterId: cid, name: entity?.name || '' });
   }
 
-  const activeId = context.modules?.getActiveId ? context.modules.getActiveId() : null;
   const shouldOpenFloating =
     !fullScreen &&
-    activeId !== 'character-console' &&
     context.uiKit &&
     typeof context.uiKit.openTacticalModal === 'function' &&
     context.entities &&
@@ -370,6 +585,8 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
       statRules,
       assets,
       buildings,
+      formation,
+      expeditions,
       interaction,
       personalityPool,
       rootStorage,
@@ -400,6 +617,10 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
           const combo = personalityPool ? personalityPool.ensurePersonalityOnEntity(ch) : ch.meta?.personalityCombo || null;
           const isSec = interaction?.getSecretaryId?.() === ch.id;
           const inDorm = buildings?.isInDormitory?.(ch.id) || false;
+          const inFormation = Boolean(formation?.getMemberIds?.().includes(ch.id));
+          const inDockyard = Boolean(buildings?.isInDockyard?.(ch.id));
+          const inExpedition = Boolean(expeditions?.isCharacterDispatched?.(ch.id));
+          const isLocked = Boolean(ch.meta?.locked);
           const effMaxHp = Math.max(1, Math.round(entities.getEffectiveStat(ch.id, 'maxHp', { round: 'round' }).final));
           const curHp = Math.min(effMaxHp, Math.round(Number(ch.stats.hp ?? effMaxHp)));
           let avatarUrl = '';
@@ -411,6 +632,16 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
             avatarUrl = av.url;
           }
 
+          const retireBtnLabel = isLocked
+            ? '🔒 舰娘已锁定，请先在详情中解锁后再退役'
+            : inExpedition
+            ? '退役 / 删除舰娘（远征中 · 需先召回）'
+            : inDockyard
+            ? '退役 / 删除舰娘（船坞维修中）'
+            : inFormation
+            ? '退役 / 删除舰娘（编队中 · 可一键移出）'
+            : '退役 / 删除舰娘';
+
           body.innerHTML = `
             <div class="module-stack" id="tactical-ship-detail-body">
               <div class="cc-hero-row">
@@ -420,7 +651,7 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
                     <span class="ship-class-ico">${getShipClassSvg(shipClass, { size: 20 })}</span>
                     <h3 class="cc-hero-name">${escapeHtml(ch.name)}</h3>
                     <span class="status-badge ship-lv-badge">Lv.${prog.level}</span>
-                    ${ch.meta?.locked ? '<span class="status-badge badge-warn ship-lock-badge">🔒 已锁定</span>' : ''}
+                    ${isLocked ? '<span class="status-badge badge-warn ship-lock-badge">🔒 已锁定</span>' : ''}
                     <span class="status-badge ${seaworthy.seaworthy ? 'badge-ok' : 'badge-danger'}">${seaworthy.seaworthy ? '适航' : '未适航'}</span>
                   </div>
                   <div class="cc-badge-row">
@@ -456,8 +687,8 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
                   ${isSec ? '★ 当前秘书舰' : '设为秘书舰'}
                 </button>
               </div>
-              <button type="button" id="btn-tm-toggle-lock" class="${ch.meta?.locked ? 'btn-primary' : 'btn-secondary'} uikit-touch-target">
-                ${ch.meta?.locked ? '🔓 解除舰娘锁定保护' : '🔒 锁定舰娘（防止误删/退役）'}
+              <button type="button" id="btn-tm-toggle-lock" class="${isLocked ? 'btn-primary' : 'btn-secondary'} uikit-touch-target">
+                ${isLocked ? '🔓 解除舰娘锁定保护' : '🔒 锁定舰娘（防止误删/退役）'}
               </button>
 
               <div class="lab-stack-sm">
@@ -493,8 +724,25 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
               </div>
 
               <button type="button" id="btn-tm-open-full-cc" class="btn-secondary uikit-touch-target">
-                进入全屏精修角色台（编辑白值/性格/检定/日志）
+                编辑舰娘资料与立绘（改名 / 白值 / 性格）
               </button>
+
+              <div class="ship-retire-zone" style="margin-top:4px; padding-top:10px; border-top:1px dashed rgba(239,68,68,0.35);">
+                <button
+                  type="button"
+                  id="btn-tm-retire-ship"
+                  class="btn-danger uikit-touch-target"
+                  style="width:100%;"
+                  ${isLocked ? 'disabled' : ''}
+                >${retireBtnLabel}</button>
+                <p class="muted-text" style="font-size:11px; margin:6px 0 0; text-align:center;">
+                  ${
+                    isLocked
+                      ? '舰娘已锁定，请先在上方点击「解除舰娘锁定保护」后再执行退役。'
+                      : '退役将自动安全卸下全部装备退回「工坊」仓库，并返还少量油/钢物资。'
+                  }
+                </p>
+              </div>
             </div>
           `;
 
@@ -547,6 +795,7 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
               'info'
             );
             await renderDetailBody();
+            if (consoleState.container && consoleState.context) renderConsole();
           });
 
           body.querySelectorAll('[data-tm-pick-slot]').forEach((btn) => {
@@ -587,9 +836,15 @@ export function openCharacterCardById(characterId, context = {}, { fullScreen = 
 
           body.querySelector('#btn-tm-open-full-cc')?.addEventListener('click', () => {
             closeModal();
-            if (modules && modules.has('character-console')) {
-              modules.mount('character-console');
-            }
+            openCharacterEditorSheet(ch);
+          });
+
+          body.querySelector('#btn-tm-retire-ship')?.addEventListener('click', () => {
+            openShipRetireFlow(ch, context, {
+              onRetired: () => {
+                closeModal();
+              },
+            });
           });
         };
 
@@ -3140,6 +3395,10 @@ async function renderArchiveConsole() {
                   ? buildings.getCharacterGlobalStatus(c.id, { formation, expeditions, interaction })
                   : { badges: [] };
                 const isLocked = Boolean(c.meta?.locked);
+                const inFormation = Boolean(formation?.getMemberIds?.().includes(c.id));
+                const inDockyard = Boolean(buildings?.isInDockyard?.(c.id));
+                const inExpedition = Boolean(expeditions?.isCharacterDispatched?.(c.id));
+                const canQuickRetire = !isLocked && !inFormation && !inDockyard && !inExpedition;
                 const slotsCap = inventory.getCharacterSlotCapInfo(c.id);
 
                 return `
@@ -3169,11 +3428,16 @@ async function renderArchiveConsole() {
                       </div>
                       <div class="archive-ship-foot">
                         <span class="muted-text" style="font-size:11px;">HP ${curHp}/${effMaxHp}</span>
-                        <div style="display:flex; gap:4px; flex-wrap:wrap;">
+                        <div style="display:flex; gap:4px; flex-wrap:wrap; align-items:center;">
                           ${(status.badges || [])
                             .slice(0, 2)
                             .map((b) => `<span class="status-badge badge-${escapeHtml(b.tone)}" style="font-size:10px; padding:1px 5px;">${escapeHtml(b.label)}</span>`)
                             .join('')}
+                          ${
+                            canQuickRetire
+                              ? `<button type="button" class="archive-retire-mini-btn" data-arc-retire="${escapeHtml(c.id)}" title="退役此舰娘（装备自动退回仓库）">退役</button>`
+                              : ''
+                          }
                         </div>
                       </div>
                     </div>
@@ -3205,6 +3469,17 @@ async function renderArchiveConsole() {
       await saveRosterNow();
       uiKit.showToast(ent.meta.locked ? `已锁定「${ent.name}」` : `已解锁「${ent.name}」`, 'info');
       renderConsole();
+    });
+  });
+
+  rosterSection.querySelectorAll('[data-arc-retire]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const cid = btn.getAttribute('data-arc-retire');
+      const ent = entities.get(cid);
+      if (ent) {
+        openShipRetireFlow(ent, consoleState.context);
+      }
     });
   });
 

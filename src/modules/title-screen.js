@@ -9,47 +9,12 @@
  *   - 「读取存档」: opens Save Vault directly for manual save slots & JSON backup import
  */
 
-const FLEET_PREF_OPTIONS = Object.freeze([
-  {
-    id: 'balanced',
-    label: '均衡编队',
-    badge: 'DD + CL + BB',
-    desc: '驱逐/轻巡/战列全面搭配，稳健适应炮击、雷击与防空反潜全场景。',
-  },
-  {
-    id: 'torpedo',
-    label: '雷击先锋',
-    badge: '双DD + CL',
-    desc: '高机动抢先先攻与强力开幕雷击，额外获赠【精良】五联酸素鱼雷与主动声呐。',
-  },
-  {
-    id: 'battleship',
-    label: '重炮主力',
-    badge: '双BB + CA',
-    desc: '厚重装甲与远距主炮齐射压制，额外获赠【稀有】双联主炮与复合重甲。',
-  },
-  {
-    id: 'carrier',
-    label: '航空制空',
-    badge: 'CV + CA + CL',
-    desc: '开幕航空战制空与大视野雷达侦察，额外获赠【稀有】舰载轰炸机与对空雷达。',
-  },
-]);
-
-const RESOURCE_MODE_OPTIONS = Object.freeze([
-  {
-    id: 'standard',
-    label: '标准开荒',
-    badge: '1.0x 常规',
-    desc: '初始油弹钢 1800 / 铝 1200 / 银条 3200 / 金条 180，体验稳步成长节奏。',
-  },
-  {
-    id: 'abundant',
-    label: '丰饶畅玩',
-    badge: '2.0x 丰饶',
-    desc: '初始油弹钢 6000 / 铝 4000 / 银条 12000 / 金条 600，自动启用 2.0x 掉落倍率并附赠紫/蓝装备箱。',
-  },
-]);
+import {
+  NEW_GAME_COMMANDER_FOCUS,
+  NEW_GAME_DROP_MULTIPLIERS,
+  NEW_GAME_RESOURCE_MODES,
+  NEW_GAME_STARTER_OPTIONS,
+} from '../core/save-manager.js';
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -60,22 +25,28 @@ function escapeHtml(str) {
     .replaceAll("'", '&#39;');
 }
 
-function openNewJourneyModal(context) {
+export function openNewJourneyModal(context) {
   const { uiKit, commander, appActions } = context;
   let prefs = {
     commanderName: commander?.getProfile()?.name || '新任提督',
-    fleetPreference: 'balanced',
+    commanderFocus: 'balanced',
+    starterSelection: 'DD',
+    starterShipName: '',
     resourceMode: 'standard',
+    dropMultiplier: 1.0,
     keepCustomData: true,
   };
 
   const openFn = typeof uiKit.openTacticalModal === 'function' ? uiKit.openTacticalModal : uiKit.openModal;
   openFn({
     title: '新的征程 · 开局偏好设置',
-    subtitle: '开启新征程将彻底清空当前运行的旧舰娘、装备仓库、3×4 编队、船坞与海域进度（手动存档槽位不受影响）',
+    subtitle: '开启新征程将彻底清空当前运行的旧舰娘、装备仓库、3×4 编队、船坞与海域进度（手动存档槽位与外部 JSON 库永久保留）',
+    wide: true,
     renderContent: (body, close) => {
       const renderForm = () => {
         const prevScroll = body.scrollTop;
+        const selectedStarter =
+          NEW_GAME_STARTER_OPTIONS.find((s) => s.id === prefs.starterSelection) || NEW_GAME_STARTER_OPTIONS[0];
         body.innerHTML = `
           <div class="module-stack" id="new-journey-form">
             <div class="form-group">
@@ -84,14 +55,14 @@ function openNewJourneyModal(context) {
             </div>
 
             <div class="form-group">
-              <label class="form-label">2. 初始舰队偏好</label>
-              <div class="nj-option-grid" id="nj-fleet-options">
-                ${FLEET_PREF_OPTIONS.map(
+              <label class="form-label">2. 指挥官初始偏向（决定初始六维属性）</label>
+              <div class="nj-option-grid" id="nj-focus-options">
+                ${NEW_GAME_COMMANDER_FOCUS.map(
                   (opt) => `
-                  <button type="button" class="nj-option-card ${prefs.fleetPreference === opt.id ? 'is-selected' : ''}" data-nj-fleet="${opt.id}">
+                  <button type="button" class="nj-option-card ${prefs.commanderFocus === opt.id ? 'is-selected' : ''}" data-nj-focus="${opt.id}">
                     <div class="nj-option-top">
                       <strong>${escapeHtml(opt.label)}</strong>
-                      <span class="status-badge ${prefs.fleetPreference === opt.id ? 'badge-ok' : 'badge-muted'}">${escapeHtml(opt.badge)}</span>
+                      <span class="status-badge ${prefs.commanderFocus === opt.id ? 'badge-ok' : 'badge-muted'}">${escapeHtml(opt.badge)}</span>
                     </div>
                     <span class="nj-option-desc">${escapeHtml(opt.desc)}</span>
                   </button>
@@ -101,9 +72,36 @@ function openNewJourneyModal(context) {
             </div>
 
             <div class="form-group">
-              <label class="form-label">3. 开局资源模式</label>
+              <label class="form-label">3. 初始舰娘 / 舰种配置（严格只生成所选项，绝无多余示范舰）</label>
+              <div class="nj-option-grid" id="nj-starter-options">
+                ${NEW_GAME_STARTER_OPTIONS.map(
+                  (opt) => `
+                  <button type="button" class="nj-option-card ${prefs.starterSelection === opt.id ? 'is-selected' : ''}" data-nj-starter="${opt.id}">
+                    <div class="nj-option-top">
+                      <strong>${escapeHtml(opt.label)}</strong>
+                      <span class="status-badge ${prefs.starterSelection === opt.id ? 'badge-ok' : 'badge-muted'}">${escapeHtml(opt.badge)}</span>
+                    </div>
+                    <span class="nj-option-desc">${escapeHtml(opt.desc)}</span>
+                  </button>
+                `
+                ).join('')}
+              </div>
+              ${
+                selectedStarter.id !== 'none'
+                  ? `
+                <div class="form-group" style="margin-top:8px;">
+                  <label class="form-label" for="nj-starter-name">初始舰娘命名（选填，留空默认「${escapeHtml(selectedStarter.defaultCallsign || selectedStarter.shipType)}」）</label>
+                  <input id="nj-starter-name" class="form-input" type="text" maxlength="16" value="${escapeHtml(prefs.starterShipName)}" placeholder="例如：${escapeHtml(selectedStarter.defaultCallsign || '朝雾')}（留空则使用干净默认代号）" />
+                </div>
+              `
+                  : `<p class="muted-text" style="font-size:12px; margin:6px 0 0;">已选「无初始舰 · 自由建造」：船坞将保持 0 艘舰娘干净开局，并额外发放启动建造资材。</p>`
+              }
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">4. 开局资源模式</label>
               <div class="nj-option-grid" id="nj-res-options">
-                ${RESOURCE_MODE_OPTIONS.map(
+                ${NEW_GAME_RESOURCE_MODES.map(
                   (opt) => `
                   <button type="button" class="nj-option-card ${prefs.resourceMode === opt.id ? 'is-selected' : ''}" data-nj-res="${opt.id}">
                     <div class="nj-option-top">
@@ -117,9 +115,22 @@ function openNewJourneyModal(context) {
               </div>
             </div>
 
+            <div class="form-group">
+              <label class="form-label">5. 战利品与掉落倍率（当前：<strong>${Number(prefs.dropMultiplier).toFixed(1)}x</strong>）</label>
+              <div style="display:flex; gap:8px; flex-wrap:wrap;" id="nj-drop-options">
+                ${NEW_GAME_DROP_MULTIPLIERS.map(
+                  (mult) => `
+                  <button type="button" class="preset-chip ${Math.abs(Number(prefs.dropMultiplier) - mult) < 0.05 ? 'is-active' : ''}" data-nj-drop="${mult}">
+                    ${mult.toFixed(1)}x 掉落
+                  </button>
+                `
+                ).join('')}
+              </div>
+            </div>
+
             <label class="checkbox-row" style="padding:10px 12px; background:var(--surface-alt); border-radius:var(--radius-sm); border:1px solid var(--border);">
               <input type="checkbox" id="nj-keep-custom" ${prefs.keepCustomData ? 'checked' : ''} />
-              <span><strong>保留自定义建筑与 UI 皮肤</strong>（注：外置 JSON 导入的角色模板、性格池、台词与剧情包始终受保护不丢失，旧档舰队与装备将彻底清空）</span>
+              <span><strong>保留自定义建筑与 UI 皮肤</strong>（注：在「自定义工坊」中导入的外部 JSON 角色模板、装备、台词与事件包始终受保护不丢失，旧档舰队与进度将彻底清空）</span>
             </label>
 
             <button type="button" id="btn-nj-confirm" class="btn-primary port-cta-btn">
@@ -129,23 +140,45 @@ function openNewJourneyModal(context) {
         `;
         body.scrollTop = prevScroll;
 
-        const syncName = () => {
+        const syncInputs = () => {
           const inp = body.querySelector('#nj-cmd-name');
           if (inp) prefs.commanderName = inp.value.trim() || '新任提督';
+          const shipInp = body.querySelector('#nj-starter-name');
+          if (shipInp) prefs.starterShipName = shipInp.value.trim();
         };
 
-        body.querySelectorAll('[data-nj-fleet]').forEach((btn) => {
+        body.querySelectorAll('[data-nj-focus]').forEach((btn) => {
           btn.addEventListener('click', () => {
-            syncName();
-            prefs.fleetPreference = btn.getAttribute('data-nj-fleet');
+            syncInputs();
+            prefs.commanderFocus = btn.getAttribute('data-nj-focus') || 'balanced';
+            renderForm();
+          });
+        });
+
+        body.querySelectorAll('[data-nj-starter]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            syncInputs();
+            prefs.starterSelection = btn.getAttribute('data-nj-starter') || 'none';
             renderForm();
           });
         });
 
         body.querySelectorAll('[data-nj-res]').forEach((btn) => {
           btn.addEventListener('click', () => {
-            syncName();
-            prefs.resourceMode = btn.getAttribute('data-nj-res');
+            syncInputs();
+            const nextMode = btn.getAttribute('data-nj-res') || 'standard';
+            prefs.resourceMode = nextMode;
+            const found = NEW_GAME_RESOURCE_MODES.find((r) => r.id === nextMode);
+            if (found) prefs.dropMultiplier = found.defaultDropMultiplier;
+            renderForm();
+          });
+        });
+
+        body.querySelectorAll('[data-nj-drop]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            syncInputs();
+            const val = Number(btn.getAttribute('data-nj-drop'));
+            if (Number.isFinite(val)) prefs.dropMultiplier = val;
             renderForm();
           });
         });
@@ -155,7 +188,7 @@ function openNewJourneyModal(context) {
         });
 
         body.querySelector('#btn-nj-confirm')?.addEventListener('click', async () => {
-          syncName();
+          syncInputs();
           const btn = body.querySelector('#btn-nj-confirm');
           if (!btn || btn.disabled) return;
           btn.disabled = true;

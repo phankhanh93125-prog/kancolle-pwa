@@ -535,11 +535,26 @@ async function renderPortHub({ forceFull = false } = {}) {
     portState.renderedMsgIds.clear();
     portState.container.innerHTML = `
       <div class="interact-hub-root" id="page-port-hub">
-        <div class="surface-card" style="text-align:center; padding:24px;">
-          <p class="muted-text">当前港区尚无执勤舰娘，请前往「设施 → 舰船建造」建造新舰！</p>
+        <div class="surface-card lab-stack-sm" style="text-align:center; padding:24px;">
+          <h3 style="margin:0; font-size:16px;">港区船坞当前为空</h3>
+          <p class="muted-text" style="font-size:12.5px; margin:0;">
+            当前尚无执勤舰娘。您可以前往「设施 · 舰船建造」使用自由配方建造首位舰娘，或在顶栏「自定义工坊」中自由创作专属舰娘。
+          </p>
+          <div class="lab-btn-grid" style="margin-top:8px;">
+            <button type="button" id="btn-empty-goto-build" class="btn-primary uikit-touch-target">前往设施 · 自由建造</button>
+            <button type="button" id="btn-empty-open-cw" class="btn-secondary uikit-touch-target">打开自定义工坊</button>
+          </div>
         </div>
       </div>
     `;
+    portState.container.querySelector('#btn-empty-goto-build')?.addEventListener('click', () => {
+      portState.context?.modules?.mount?.('port-facilities-hub', { transition: 'left' });
+    });
+    portState.container.querySelector('#btn-empty-open-cw')?.addEventListener('click', () => {
+      if (typeof window !== 'undefined' && typeof window.__APP_BASE__?.openCustomWorkshop === 'function') {
+        window.__APP_BASE__.openCustomWorkshop('ship');
+      }
+    });
     return;
   }
 
@@ -786,6 +801,8 @@ export default {
       context.bus.on('inventory:unequipped', () => renderPortHub()),
       context.bus.on('interaction:oathed', () => renderPortHub()),
       context.bus.on('story:packs-changed', () => renderPortHub({ forceFull: true })),
+      context.bus.on('character:deleted', () => renderPortHub({ forceFull: true })),
+      context.bus.on('character:saved', () => renderPortHub({ forceFull: true })),
     ];
 
     renderPortHub({ forceFull: true });

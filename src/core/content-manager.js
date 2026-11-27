@@ -1407,6 +1407,8 @@ export class ContentManager {
     statRules = null,
     persistRosterFn = null,
     silent = false,
+    includeDemoShips = false,
+    includeItems = true,
   } = {}) {
     const summary = {
       addedShips: 0,
@@ -1416,7 +1418,7 @@ export class ContentManager {
     };
 
     // 1. Merge 16-piece Equipment Pack first (only missing IDs)
-    if (this._inventory) {
+    if (includeItems && this._inventory) {
       for (const tpl of STARTER_PACK_EQUIPMENT_16) {
         if (!this._inventory.getItem(tpl.id)) {
           await this._inventory.createItem(deepClone(tpl));
@@ -1425,8 +1427,8 @@ export class ContentManager {
       }
     }
 
-    // 2. Merge 8 Featured Shipgirls across DD/CL/CA/BB/CV (only missing IDs)
-    if (this._entities) {
+    // 2. Demo ships are disabled by default — New Game strictly creates ONLY the player's chosen starter ship(s)
+    if (includeDemoShips && this._entities) {
       const usedComboKeys = new Set(
         this._entities
           .list({ kind: 'character' })

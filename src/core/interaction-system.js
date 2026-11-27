@@ -199,6 +199,12 @@ export class InteractionSystem {
   }
 
   async setSecretary(characterId) {
+    if (characterId === null || characterId === undefined || characterId === '') {
+      this._secretaryId = null;
+      await this.persist();
+      this._emit('interaction:secretary-changed', { characterId: null, name: '' });
+      return null;
+    }
     const cid = String(characterId);
     const actor = this._entities?.get(cid);
     if (!actor || actor.kind !== 'character') throw new Error('指定角色不存在');
@@ -206,6 +212,16 @@ export class InteractionSystem {
     await this.persist();
     this._emit('interaction:secretary-changed', { characterId: cid, name: actor.name });
     return actor;
+  }
+
+  async removeCharacterData(characterId) {
+    const cid = String(characterId || '');
+    if (!cid) return;
+    if (this._secretaryId === cid) {
+      this._secretaryId = null;
+    }
+    delete this._oaths[cid];
+    await this.persist();
   }
 
   getLastInteraction() {

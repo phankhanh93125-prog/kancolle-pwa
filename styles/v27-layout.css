@@ -885,3 +885,35 @@ html[data-theme="cozy_night_lamp"] .chat-bubble.is-commander {
   font-size: 12.5px;
   text-align: center;
 }
+
+/* ============================================================
+   v29 Shipgirl Retire / Delete Action Styling
+   ============================================================ */
+.archive-retire-mini-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.14);
+  color: #fca5a5;
+  font-size: 10.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.12s ease;
+}
+
+.archive-retire-mini-btn:hover,
+.archive-retire-mini-btn:active {
+  background: rgba(239, 68, 68, 0.28);
+  transform: scale(0.97);
+}
+
+.ship-retire-zone .btn-danger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: grayscale(0.45);
+}
+

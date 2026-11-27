@@ -297,6 +297,22 @@ export class StoryEngine {
     return cid && this._state.activePromptByShip[cid] ? deepClone(this._state.activePromptByShip[cid]) : null;
   }
 
+  /**
+   * Completely remove a retired/deleted shipgirl's independent chat log, prompts,
+   * daily talk counter, and breakthrough markers from memory & IndexedDB.
+   */
+  async deleteShipChatHistory(characterId) {
+    const cid = String(characterId || '');
+    if (!cid) return false;
+    delete this._state.chatLogsByShip[cid];
+    delete this._state.activePromptByShip[cid];
+    delete this._state.dailyTalkByShip[cid];
+    delete this._state.unlockedBreakthroughs[cid];
+    await this.persist();
+    this._emit('story-engine:updated', { characterId: cid, deleted: true });
+    return true;
+  }
+
   _appendMessage(characterId, msg) {
     const cid = String(characterId || '');
     if (!cid) return;

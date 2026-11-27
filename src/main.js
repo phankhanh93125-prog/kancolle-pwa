@@ -5,6 +5,7 @@ import { ModuleManager } from './core/module-manager.js';
 import {
   SaveManager,
   VAULT_PRIMARY_SLOTS,
+  buildNewGameSeedPlan,
   migrateSavePayload,
   triggerJsonDownload,
 } from './core/save-manager.js';
@@ -47,6 +48,7 @@ import { resetWorkshopState } from './modules/supply-workshop.js';
 import { resetPortHubState } from './modules/port-hub.js';
 import { openFacilitiesSection, resetFacilitiesHubState } from './modules/facilities-hub.js';
 import { openCustomWorkshopModal } from './modules/custom-workshop.js';
+import { openNewJourneyModal } from './modules/title-screen.js';
 import { hydrateActionConsole } from './modules/action-console.js';
 import { clearActiveSortieState, hydrateSortieConsole } from './modules/sortie-console.js';
 
@@ -1417,18 +1419,15 @@ async function restoreFullWorldSnapshot(rawData, { syncAutoSave = true, sourceNa
 }
 
 async function startNewJourney(prefs = {}) {
-  const commanderName = String(prefs.commanderName || '新任提督').trim() || '新任提督';
-  const fleetPref = ['balanced', 'torpedo', 'battleship', 'carrier'].includes(prefs.fleetPreference)
-    ? prefs.fleetPreference
-    : 'balanced';
-  const isAbundant = prefs.resourceMode === 'abundant';
-  const keepCustomData = prefs.keepCustomData !== false;
+  const plan = buildNewGameSeedPlan(prefs);
+  const commanderName = plan.commander.name;
+  const keepCustomData = plan.keepCustomData;
 
   isWorldTransitioning = true;
   saves.cancelPendingAutoSaves();
   buildings.setMedalAutoCheckPaused(true);
 
-  let chosen = null;
+  let flagshipId = null;
   try {
     // CRITICAL PROTECTION BOUNDARY:
     // ALWAYS preserve user-imported external JSON content libraries (custom character/equipment/enemy templates,
@@ -1445,35 +1444,36 @@ async function startNewJourney(prefs = {}) {
     // 2. Thoroughly reset ALL in-memory engines & UI caches (ships, gear, 3x4 formation, dockyard, sea control, medals, logs)
     await resetAllInMemoryState({ keepCustomData, preserveCustomBuildings: preservedCustomBuildings });
 
-    // 3. Reset commander profile & stats cleanly with player's chosen callsign
+    // 3. Reset commander profile & 6 focus attributes cleanly from player's chosen options
     commander.deserialize(
       {
-        name: commanderName,
-        title: isAbundant ? '丰饶舰队司令' : '新任提督',
+        name: plan.commander.name,
+        title: plan.commander.title,
         avatarAssetId: null,
-        personalityTags: ['沉着务实', '重视协同'],
+        personalityTags: plan.commander.personalityTags,
         level: 1,
         exp: 0,
         freePoints: 0,
-        stats: { command: 10, tactics: 10, charisma: 10, affinity: 10, dispatch: 10, maintenance: 10 },
+        stats: { ...plan.commander.stats },
         luck: 0,
       },
       { persist: false }
     );
 
-    // 4. Reset resources & drop multiplier based on Resource Mode
+    // 4. Reset resources & exact drop multiplier from player's chosen Resource Mode + Drop Multiplier
     const now = Date.now();
-    const baseAmounts = isAbundant
-      ? { fuel: 6000, ammo: 6000, steel: 6000, bauxite: 4000, silver: 12000, gold: 600 }
-      : { fuel: 1800, ammo: 1800, steel: 1800, bauxite: 1200, silver: 3200, gold: 180 };
     const freshResources = DEFAULT_RESOURCES.map((def) => ({
       ...def,
-      amount: baseAmounts[def.id] ?? def.amount,
+      amount: plan.resources.amounts[def.id] ?? def.amount,
       updatedAt: now,
     }));
-    const targetDropMult = isAbundant ? 2.0 : 1.0;
     resources.deserialize(
-      { version: 3, lastRecoveryAt: now, dropMultiplier: targetDropMult, resources: freshResources },
+      {
+        version: 3,
+        lastRecoveryAt: now,
+        dropMultiplier: plan.resources.dropMultiplier,
+        resources: freshResources,
+      },
       { persist: false }
     );
 
@@ -1507,7 +1507,7 @@ async function startNewJourney(prefs = {}) {
     // Suppress any forced built-in intro story popup on New Game
     storyPacks.clearActiveTheatreSession();
 
-    // 6. Seed strictly clean 2-digit starter inventory & starter shipgirls from scratch
+    // 6. Seed strictly clean 2-digit starter warehouse items & tiered enemy templates (ZERO hardcoded demo ships!)
     entities.clear();
     inventory.deserialize(
       {
@@ -1521,179 +1521,147 @@ async function startNewJourney(prefs = {}) {
       { persist: false }
     );
 
+    // Only ensure tiered enemy templates (includeDemoShips: false -> NEVER inject hardcoded demo shipgirls!)
     await contentManager.mergeStarterContentBundle({
       personalityPool,
       storyPacks,
       statRules,
       persistRosterFn: null,
       silent: true,
+      includeDemoShips: false,
+      includeItems: false,
     });
-    // Ensure theatre stays clean & silent on New Game entry
     storyPacks.clearActiveTheatreSession();
 
-    // 7. Apply Starter Fleet Archetype preference (3-ship active fleet + fresh 3x4 formation + 2-digit themed bonus gear)
-    const archetypeConfig = {
-      balanced: {
-        label: '均衡编队',
-        formationId: 'double_line',
-        members: ['char_template_01', 'char_template_02', 'char_template_03'],
-        bonusGear: [],
-      },
-      torpedo: {
-        label: '雷击先锋',
-        formationId: 'echelon',
-        members: ['char_template_01', 'char_pack_dd_06', 'char_template_02'],
-        bonusGear: [
-          {
-            name: '先锋五联酸素鱼雷',
-            category: ITEM_CATEGORIES.EXTENSION,
-            subGroup: 'weapon',
-            subCategory: 'torpedo',
-            equipmentType: 'torpedo',
-            iconKey: 'torpedo',
-            rarity: ITEM_RARITIES.UNCOMMON,
-            statScaleVersion: 2,
-            tags: ['开局补给', '主战武器', '鱼雷'],
-            description: '雷击先锋开局特配高爆鱼雷发射管，显著提升雷击与机动先攻。',
-            bonuses: [
-              { stat: 'torpedo', layer: 'baseAdd', value: 7 },
-              { stat: 'evasion', layer: 'baseAdd', value: 4 },
-            ],
-          },
-          {
-            name: '高速主动深水声呐',
-            category: ITEM_CATEGORIES.EXTENSION,
-            subGroup: 'tactical',
-            subCategory: 'sonar',
-            equipmentType: 'sonar',
-            iconKey: 'sonar',
-            rarity: ITEM_RARITIES.UNCOMMON,
-            statScaleVersion: 2,
-            tags: ['开局补给', '战术辅助', '声呐'],
-            description: '雷击先锋开局特配反潜声呐，提前捕捉敌方水下潜艇。',
-            bonuses: [
-              { stat: 'asw', layer: 'baseAdd', value: 7 },
-              { stat: 'recon', layer: 'baseAdd', value: 4 },
-            ],
-          },
-        ],
-      },
-      battleship: {
-        label: '重炮主力',
-        formationId: 'line_ahead',
-        members: ['char_template_03', 'char_pack_ca_04', 'char_pack_ar_07'],
-        bonusGear: [
-          {
-            name: '主力双联穿甲重炮',
-            category: ITEM_CATEGORIES.EXTENSION,
-            subGroup: 'weapon',
-            subCategory: 'main_gun',
-            equipmentType: 'main_gun',
-            iconKey: 'main_gun',
-            rarity: ITEM_RARITIES.RARE,
-            statScaleVersion: 2,
-            tags: ['开局补给', '主战武器', '主炮'],
-            description: '重炮主力开局特配大口径主炮，大幅增强齐射火力与破甲能力。',
-            bonuses: [
-              { stat: 'firepower', layer: 'baseAdd', value: 10 },
-              { stat: 'armor', layer: 'baseAdd', value: 4 },
-            ],
-          },
-          {
-            name: '精炼复合主装甲带',
-            category: ITEM_CATEGORIES.ARMOR,
-            subGroup: 'core',
-            subCategory: 'armor',
-            equipmentType: 'armor',
-            iconKey: 'armor',
-            rarity: ITEM_RARITIES.RARE,
-            statScaleVersion: 2,
-            tags: ['开局补给', '核心必装', '防护'],
-            description: '重炮主力开局特配高强度舰体装甲，大幅提高前排耐久与防弹能力。',
-            bonuses: [
-              { stat: 'armor', layer: 'baseAdd', value: 9 },
-              { stat: 'maxHp', layer: 'baseAdd', value: 10 },
-            ],
-          },
-        ],
-      },
-      carrier: {
-        label: '航空制空',
-        formationId: 'diamond',
-        members: ['char_pack_cv_05', 'char_pack_ca_04', 'char_pack_ao_08'],
-        bonusGear: [
-          {
-            name: '制空舰载俯冲轰炸机队',
-            category: ITEM_CATEGORIES.EXTENSION,
-            subGroup: 'weapon',
-            subCategory: 'aircraft',
-            equipmentType: 'aircraft',
-            iconKey: 'aircraft',
-            rarity: ITEM_RARITIES.RARE,
-            statScaleVersion: 2,
-            tags: ['开局补给', '主战武器', '舰载机'],
-            description: '航空制空开局特配舰载机联队，强化开幕空袭与全图索敌能力。',
-            bonuses: [
-              { stat: 'firepower', layer: 'baseAdd', value: 9 },
-              { stat: 'recon', layer: 'baseAdd', value: 8 },
-              { stat: 'aa', layer: 'baseAdd', value: 5 },
-            ],
-          },
-          {
-            name: '舰队远程相控对空雷达',
-            category: ITEM_CATEGORIES.EXTENSION,
-            subGroup: 'tactical',
-            subCategory: 'radar',
-            equipmentType: 'radar',
-            iconKey: 'radar',
-            rarity: ITEM_RARITIES.RARE,
-            statScaleVersion: 2,
-            tags: ['开局补给', '战术辅助', '雷达'],
-            description: '航空制空开局特配对空警戒雷达，提供高额防空与侦查视野。',
-            bonuses: [
-              { stat: 'recon', layer: 'baseAdd', value: 9 },
-              { stat: 'aa', layer: 'baseAdd', value: 8 },
-              { stat: 'checkBonus', layer: 'flatFinal', value: 1 },
-            ],
-          },
-        ],
-      },
-    };
-
-    chosen = archetypeConfig[fleetPref] || archetypeConfig.balanced;
-    for (const gear of chosen.bonusGear) {
-      await inventory.createItem(gear);
+    // 7. Create archetype bonus gear & abundant loot rolls
+    const createdBonusItems = [];
+    for (const gear of plan.bonusGear) {
+      const created = await inventory.createItem(gear);
+      createdBonusItems.push(created);
     }
-    if (isAbundant) {
-      await inventory.rollLootDropItem({ tier: 'elite', difficulty: 'star_2', dropMultiplier: 2.0 });
-      await inventory.rollLootDropItem({ tier: 'boss', difficulty: 'star_2', dropMultiplier: 2.0 });
+    if (plan.resources.isAbundant) {
+      await inventory.rollLootDropItem({
+        tier: 'elite',
+        difficulty: 'star_2',
+        dropMultiplier: plan.resources.dropMultiplier,
+      });
+      await inventory.rollLootDropItem({
+        tier: 'boss',
+        difficulty: 'star_2',
+        dropMultiplier: plan.resources.dropMultiplier,
+      });
     }
 
-    // Grant starter AR / AO 1 support slot automatically so they can equip repair/supply gear immediately
-    if (entities.has('char_pack_ar_07')) {
-      await inventory.addExpandedSlot('char_pack_ar_07', 'support', { skipCost: true });
-    }
-    if (entities.has('char_pack_ao_08')) {
-      await inventory.addExpandedSlot('char_pack_ao_08', 'support', { skipCost: true });
+    // 8. Strictly instantiate ONLY the exact chosen starter ship(s) — 0 ships for Free Build mode!
+    const createdShipIds = [];
+    const usedComboKeys = new Set();
+    for (const tpl of plan.starterShips) {
+      let combo = null;
+      if (personalityPool) {
+        for (let attempt = 0; attempt < 8; attempt++) {
+          const cand = personalityPool.rollCombination();
+          if (!usedComboKeys.has(cand.key)) {
+            combo = cand;
+            break;
+          }
+        }
+        if (!combo) combo = personalityPool.rollCombination();
+        usedComboKeys.add(combo.key);
+      }
+
+      const entity = entities.register({
+        id: tpl.id,
+        kind: 'character',
+        name: tpl.name,
+        tags: [tpl.shipType, ...(combo ? [combo.primaryName, combo.secondaryName] : [])],
+        stats: { ...tpl.stats },
+        statBounds: {
+          hp: { min: 0, max: 500 },
+          morale: { min: 0, max: 100 },
+          ap: { min: 0, max: 100 },
+          affinity: { min: 0, max: 100 },
+        },
+        meta: {
+          shipType: tpl.shipType,
+          roleTag: tpl.roleTag,
+          avatarAssetId: null,
+          personalityCombo: combo,
+          personality: combo?.description || `${tpl.shipType}初始旗舰，已就位待命。`,
+          speechHabit: combo?.speechHabit || `「${tpl.name}，听候指挥官调遣！」`,
+          locked: false,
+        },
+      });
+      if (statRules?.ensureShipProgression) {
+        statRules.ensureShipProgression(entity);
+      }
+
+      // Equip dedicated seaworthy core 3-piece gear so the chosen starter ship can sortie immediately
+      const coreParts = [
+        {
+          slot: 'engine',
+          name: `${tpl.name}制式轮机`,
+          category: ITEM_CATEGORIES.ENGINE,
+          bonuses: [{ stat: 'evasion', layer: 'baseAdd', value: 4 }],
+        },
+        {
+          slot: 'armor',
+          name: `${tpl.name}舰体装甲`,
+          category: ITEM_CATEGORIES.ARMOR,
+          bonuses: [
+            { stat: 'armor', layer: 'baseAdd', value: 4 },
+            { stat: 'maxHp', layer: 'baseAdd', value: 4 },
+          ],
+        },
+        {
+          slot: 'core',
+          name: `${tpl.name}火控中枢`,
+          category: ITEM_CATEGORIES.CORE,
+          bonuses: [
+            { stat: 'firepower', layer: 'baseAdd', value: 4 },
+            { stat: 'recon', layer: 'baseAdd', value: 3 },
+          ],
+        },
+      ];
+      for (const part of coreParts) {
+        const gearItem = await inventory.createItem({
+          name: part.name,
+          category: part.category,
+          rarity: ITEM_RARITIES.COMMON,
+          statScaleVersion: 2,
+          bonuses: part.bonuses,
+        });
+        await inventory.equipItem(entity.id, part.slot, gearItem.id);
+      }
+
+      // If AR / AO starter ship, automatically unlock 1 support slot and equip starter support gear
+      if (tpl.grantSupportSlot) {
+        const supSlot = await inventory.addExpandedSlot(entity.id, 'support', { skipCost: true });
+        const supItem = createdBonusItems.find((it) => it.equipmentType === 'support');
+        if (supSlot?.id && supItem?.id) {
+          await inventory.equipItem(entity.id, supSlot.id, supItem.id);
+        }
+      }
+
+      const effMaxHp = Math.round(entities.getEffectiveStat(entity.id, 'maxHp', { round: 'round' }).final);
+      entities.setStat(entity.id, 'hp', effMaxHp, { min: 0, max: effMaxHp });
+      createdShipIds.push(entity.id);
     }
 
-    const validMemberIds = chosen.members.filter((id) => entities.has(id));
     formation.deserialize(
       {
         version: 2,
-        memberIds: validMemberIds,
+        memberIds: createdShipIds,
         gridSlots: null,
-        formationId: chosen.formationId,
+        formationId: plan.starter.formationId,
         customFormationMods: {},
       },
       { persist: false }
     );
-    const flagshipId = validMemberIds[0] || entities.list({ kind: 'character' })[0]?.id || null;
-    if (flagshipId) {
-      await interaction.setSecretary(flagshipId);
-    }
 
-    // 8. Await clean write of EVERY subsystem into IndexedDB before writing the fresh Auto-Save snapshot
+    flagshipId = createdShipIds[0] || null;
+    await interaction.setSecretary(flagshipId);
+
+    // 9. Await clean write of EVERY subsystem into IndexedDB before writing the fresh Auto-Save snapshot
     await persistAllWorldSubsystems(flagshipId);
     await saves.autoSave(captureFullWorldSnapshot(), {
       reason: 'new-journey',
@@ -1708,7 +1676,7 @@ async function startNewJourney(prefs = {}) {
   await renderTopStatusBar();
   fxStage.playSfx('success');
   showToast(
-    `欢迎就任，${commanderName}！已重置进度并保留外置 JSON 内容库，开启「${chosen.label}」· ${isAbundant ? '丰饶畅玩 (2.0x)' : '标准开荒 (1.0x)'}`,
+    `欢迎就任，${commanderName}（${plan.commander.focusLabel}）！已开启「${plan.starter.label}」· ${plan.resources.modeLabel} · ${plan.resources.dropMultiplier.toFixed(1)}x 掉落（外部 JSON 库已保留）`,
     'ok'
   );
   moduleManager.mount('port-hub', { transition: 'left' });
@@ -2087,7 +2055,8 @@ function openSaveVaultSheet() {
 
       body.innerHTML = `
         <div class="module-stack">
-          <div class="lab-btn-grid" style="grid-template-columns: repeat(3, 1fr);">
+          <div class="lab-btn-grid" style="grid-template-columns: repeat(2, 1fr);">
+            <button type="button" id="btn-vault-new-journey" class="btn-primary uikit-touch-target" style="font-size:12px;">开启新的征程（新建存档）</button>
             <button type="button" id="btn-vault-return-title" class="btn-secondary uikit-touch-target" style="font-size:12px;">返回标题封面</button>
             <button type="button" id="btn-vault-open-api" class="btn-secondary uikit-touch-target" style="font-size:12px;">AI 模型设置</button>
             <button type="button" id="btn-vault-open-data" class="btn-secondary uikit-touch-target" style="font-size:12px;">混合存储管理</button>
@@ -2172,6 +2141,10 @@ function openSaveVaultSheet() {
         </div>
       `;
 
+      body.querySelector('#btn-vault-new-journey')?.addEventListener('click', () => {
+        closeSheet();
+        openNewJourneyModal({ uiKit, commander, appActions });
+      });
       body.querySelector('#btn-vault-return-title')?.addEventListener('click', () => {
         closeSheet();
         moduleManager.mount('title-screen');
@@ -2370,15 +2343,17 @@ async function bootApplication() {
       storyEngine.init(),
     ]);
 
-    // On brand-new fresh saves, automatically load the full 8-ship / 16-gear / tiered-enemy starter bundle.
-    if (rosterRes?.seeded) {
-      await contentManager.mergeStarterContentBundle({
-        personalityPool,
-        storyPacks,
-        statRules,
-        persistRosterFn: () => persistCharacterRoster({ storage, entities }),
-        silent: true,
-      });
+    // Ensure tiered enemy templates exist without ever injecting hardcoded demo shipgirls into the dock
+    await contentManager.mergeStarterContentBundle({
+      personalityPool,
+      storyPacks,
+      statRules,
+      persistRosterFn: null,
+      silent: true,
+      includeDemoShips: false,
+      includeItems: false,
+    });
+    if (entities.list({ kind: 'character' }).length > 0) {
       storyEngine.syncLegacyBreakthroughs();
     }
 
@@ -2536,8 +2511,10 @@ window.__APP_BASE__ = {
   resetCurrentSavePreserveExternalJson: async () => {
     await startNewJourney({
       commanderName: commander.getProfile()?.name || '新任提督',
-      fleetPreference: 'balanced',
+      commanderFocus: 'balanced',
+      starterSelection: 'none',
       resourceMode: 'standard',
+      dropMultiplier: 1.0,
       keepCustomData: true,
     });
   },
