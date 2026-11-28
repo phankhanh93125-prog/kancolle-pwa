@@ -358,11 +358,32 @@ function openOutfitWardrobeDrawer(sec) {
 // Drawer 4: Memoirs Drawer (回忆录：突破小剧场回放 + 誓约仪式回放 + 特殊衣装展示)
 // ============================================================
 function openMemoirsDrawer(sec, status = null) {
-  const { storyEngine, inventory, entities, rootStorage, uiKit, fxStage } = portState.context;
+  const { storyEngine, storyPacks, personalityPool, inventory, entities, rootStorage, uiKit, fxStage } = portState.context;
   const liveStatus = storyEngine?.getAffectionStatus ? storyEngine.getAffectionStatus(sec.id) : status || { unlockedGates: [], isOathed: false };
+  const actorPrimaryId =
+    sec?.meta?.personalityCombo?.primaryId ||
+    storyEngine?._resolveActorPrimaryId?.(sec) ||
+    null;
+
+  const playablePacks = (storyPacks?.listPacks?.({ enabledOnly: true }) || [])
+    .filter((p) => !p.builtIn && p.category !== 'sortie_encounter')
+    .sort((a, b) => {
+      const rank = (p) => {
+        if (actorPrimaryId && p.personalityId === actorPrimaryId) return 0;
+        if (!p.personalityId) return 1;
+        return 2;
+      };
+      return rank(a) - rank(b);
+    });
+
+  const getPersonalityName = (pid) => {
+    if (!pid) return '';
+    return personalityPool?.getPrimaryByIdOrName?.(pid)?.name || pid;
+  };
+
   uiKit.openBottomSheet({
     title: `📖 专属回忆录 · ${sec.name}`,
-    subtitle: '汇集已解锁的六阶段突破小剧场、誓约仪式专属演出与特殊衣装展示',
+    subtitle: '汇集已解锁的六阶段突破小剧场、誓约仪式、专属深夜长剧场与特殊衣装展示',
     renderContent: (body, close) => {
       const gates = liveStatus.unlockedGates || [];
       const isOathed = Boolean(liveStatus.isOathed);
@@ -372,6 +393,44 @@ function openMemoirsDrawer(sec, status = null) {
 
       body.innerHTML = `
         <div class="module-stack" id="memoirs-drawer-body">
+          <!-- Section 0: Personal Late-Night & External Story Packs -->
+          <div class="surface-card lab-stack-sm" style="padding:10px 12px; border-color:rgba(244,114,182,0.45);">
+            <div class="section-header-row" style="margin-bottom:0;">
+              <strong style="font-size:13px;">🌙 专属深夜剧场与外置剧本（${playablePacks.length} 篇）</strong>
+              <span class="status-badge badge-ok">一键直达</span>
+            </div>
+            ${
+              playablePacks.length === 0
+                ? '<p class="muted-text" style="font-size:12px; margin:0;">暂无已启用的港区剧场包，可在顶栏「自定义工坊 → 模组包管理」导入或启用。</p>'
+                : `<div class="lab-stack-sm" style="gap:6px;">
+                    ${playablePacks
+                      .map((p) => {
+                        const isMatched = Boolean(actorPrimaryId && p.personalityId === actorPrimaryId);
+                        const pLabel = p.personalityId ? getPersonalityName(p.personalityId) : '';
+                        return `
+                        <div class="lab-slot-card interact-drawer-item ${isMatched ? 'is-active' : ''}" style="padding:8px 10px; ${isMatched ? 'border-color:rgba(244,114,182,0.55); background:rgba(244,114,182,0.08);' : ''}">
+                          <div class="interact-drawer-info">
+                            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                              <strong>${escapeHtml(p.name || p.title || p.id)}</strong>
+                              ${
+                                isMatched
+                                  ? '<span class="status-badge badge-warn">💖 本性格专属</span>'
+                                  : pLabel
+                                  ? `<span class="status-badge badge-muted">${escapeHtml(pLabel)}</span>`
+                                  : '<span class="status-badge badge-muted">通用剧场</span>'
+                              }
+                            </div>
+                            <div class="cc-stat-sub">${(p.nodes || []).length} 幕交互节点${p.description ? ` · ${escapeHtml(String(p.description).slice(0, 34))}` : ''}</div>
+                          </div>
+                          <button type="button" class="${isMatched ? 'btn-primary' : 'btn-secondary'} fac-mini-btn" data-memoirs-play-pack="${escapeHtml(p.id)}">▶ 进入剧场</button>
+                        </div>
+                      `;
+                      })
+                      .join('')}
+                  </div>`
+            }
+          </div>
+
           <!-- Section 1: 6-Stage Breakthrough Mini-Theatres -->
           <div class="surface-card lab-stack-sm" style="padding:10px 12px;">
             <div class="section-header-row" style="margin-bottom:0;">
@@ -459,6 +518,19 @@ function openMemoirsDrawer(sec, status = null) {
           </div>
         </div>
       `;
+
+      body.querySelectorAll('[data-memoirs-play-pack]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const pid = btn.getAttribute('data-memoirs-play-pack');
+          const pack = storyPacks?.getPack?.(pid);
+          if (!pack) return;
+          storyPacks.setActiveTheatreSession(pack.id, pack.entryNodeId || pack.nodes?.[0]?.id || null);
+          fxStage?.playSfx?.('click');
+          uiKit.showToast(`已开启剧场：「${pack.name || pack.title}」`, 'ok');
+          close();
+          await renderPortHub({ forceFull: true });
+        });
+      });
 
       body.querySelectorAll('[data-replay-gate]').forEach((btn) => {
         btn.addEventListener('click', async () => {
@@ -596,6 +668,13 @@ function renderExternalStorySessionCard() {
       const choiceId = btn.getAttribute('data-ext-choice');
       try {
         const rec = await storyPacks.executeChoice(pack.id, node.id, choiceId, { actorId: sec?.id || null });
+        if (sec?.id && portState.context?.rootStorage && portState.context?.entities) {
+          await persistCharacterRoster({
+            storage: portState.context.rootStorage,
+            entities: portState.context.entities,
+            activeCharacterId: sec.id,
+          });
+        }
         storyPacks.updateActiveTheatreOutcome(rec, rec.nextNodeId || null);
         renderPortHub({ forceFull: true });
       } catch (err) {
@@ -1043,6 +1122,7 @@ export default {
       context.bus.on('buildings:ship-retrofitted', () => renderPortHub()),
       context.bus.on('story-engine:updated', () => renderPortHub()),
       context.bus.on('story:packs-changed', () => renderPortHub({ forceFull: true })),
+      context.bus.on('story:theatre-updated', () => renderPortHub({ forceFull: true })),
       context.bus.on('character:deleted', () => renderPortHub({ forceFull: true })),
       context.bus.on('character:saved', () => renderPortHub({ forceFull: true })),
     ];

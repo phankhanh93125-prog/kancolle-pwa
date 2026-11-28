@@ -2299,6 +2299,7 @@ function openCustomWorkshop(initialTab = 'ship') {
       storage,
       uiKit,
       bus,
+      appActions,
     },
     { initialTab }
   );

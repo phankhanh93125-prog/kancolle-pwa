@@ -98,6 +98,7 @@ export function openCustomWorkshopModal(services, { initialTab = 'ship' } = {}) 
     storage,
     uiKit,
     bus,
+    appActions = null,
   } = services;
 
   const cwState = {
@@ -889,7 +890,12 @@ export function openCustomWorkshopModal(services, { initialTab = 'ship' } = {}) 
                 <strong>${escapeHtml(p.name || p.title || p.id)}</strong>
                 <div class="cc-stat-sub">${escapeHtml(categoryLabelMap[p.category] || p.category || '港区日常')} · 节点数 ${(p.nodes || []).length} · ${p.enabled !== false ? '已启用' : '已停用'}</div>
               </div>
-              <div style="display:flex; gap:6px; flex-shrink:0;">
+              <div style="display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end;">
+                ${
+                  p.category !== 'sortie_encounter' && p.enabled !== false
+                    ? `<button type="button" class="btn-primary fac-mini-btn" data-cw-pack-play="${escapeHtml(p.id)}">▶ 游玩</button>`
+                    : ''
+                }
                 <button type="button" class="btn-secondary fac-mini-btn" data-cw-pack-toggle="${escapeHtml(p.id)}">${p.enabled !== false ? '停用' : '启用'}</button>
                 <button type="button" class="btn-danger fac-mini-btn" data-cw-pack-del="${escapeHtml(p.id)}">删除</button>
               </div>
@@ -909,6 +915,22 @@ export function openCustomWorkshopModal(services, { initialTab = 'ship' } = {}) 
       };
       triggerJsonDownload(`kancolle-custom-library-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(bundle, null, 2));
       uiKit.showToast('已导出全部自定义内容库 JSON 备份', 'ok');
+    });
+
+    listCard.querySelectorAll('[data-cw-pack-play]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const pid = btn.getAttribute('data-cw-pack-play');
+        const pack = storyPacks?.getPack?.(pid);
+        if (!pack) return;
+        const entryNode = pack.entryNodeId || pack.nodes?.[0]?.id || null;
+        close();
+        if (appActions && typeof appActions.launchStoryPackInTheatre === 'function') {
+          appActions.launchStoryPackInTheatre(pack.id, entryNode);
+        } else {
+          storyPacks.setActiveTheatreSession(pack.id, entryNode);
+        }
+        uiKit.showToast(`已在「互动」主舞台开启剧场：「${pack.name || pack.title}」`, 'ok');
+      });
     });
 
     listCard.querySelectorAll('[data-cw-pack-toggle]').forEach((btn) => {
