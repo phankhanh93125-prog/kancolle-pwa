@@ -1,9 +1,10 @@
 {
   "schema": "kancolle-pwa-story-bundle-v1",
+  "personalityId": "pri_tsundere_mint_preview",
   "meta": {
     "id": "story-style-preview",
     "title": "文风试写样张 · 微甜傲娇型（日常/深夜/触摸/40好感突破）",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "author": "STORY_WRITER_AGENT",
     "archetype": "微甜傲娇（口硬心软·暗暗操心型）",
     "description": "供指挥官审阅与微调文风的试写样张，涵盖日常交谈、深夜互动、头部/肩部/手部触摸反应、特殊服装与偏爱礼物反应、40好感（熟悉→信赖）突破小剧场及1段海图奇遇。"
@@ -62,21 +63,25 @@
   "customDialogues": [
     {
       "id": "dlg_preview_day_01",
+      "personalityId": "pri_tsundere_mint_preview",
       "stage": "familiar",
       "text": "「{cmd}，你茶杯早就空了怎么也不吭声？……诺，刚泡好的大麦茶，我可不是专门跑去茶水间的，顺路而已。」"
     },
     {
       "id": "dlg_preview_day_02",
+      "personalityId": "pri_tsundere_mint_preview",
       "stage": "trusted",
       "text": "「明天的外海巡航把最靠外那条航道分给我吧。别皱眉，有你替我算风向和补给线，我心里踏实着呢。」"
     },
     {
       "id": "dlg_preview_night_01",
+      "personalityId": "pri_tsundere_mint_preview",
       "stage": "familiar",
       "text": "「夜海起雾了，窗子我替你留了条小缝透气。……行了，别盯着我看，文件还有几份？我念数据你来签，快点收工。」"
     },
     {
       "id": "dlg_preview_oath_01",
+      "personalityId": "pri_tsundere_mint_preview",
       "stage": "oath",
       "text": "「早啊，{cmd}。无名指上这圈冰凉凉的，戴久了倒也习惯了。……才不是在炫耀，今天出海前记得先抱一下再走。」"
     }

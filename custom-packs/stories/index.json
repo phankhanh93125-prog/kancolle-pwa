@@ -4,9 +4,37 @@
     {
       "id": "story-style-preview",
       "file": "story-style-preview.json",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "enabled": true,
       "title": "文风试写样张 · 微甜傲娇型（日常/深夜/触摸/40好感突破）"
+    },
+    {
+      "id": "story-batch1-contrast-20261127",
+      "file": "story-batch1-contrast-20261127.json",
+      "version": "1.0.0",
+      "enabled": true,
+      "title": "反差拉扯组剧情包 · 傲娇/腹黑/三无（全阶日常·深夜暧昧·突破与誓约）"
+    },
+    {
+      "id": "story-batch2-tender-20261127",
+      "file": "story-batch2-tender-20261127.json",
+      "version": "1.0.0",
+      "enabled": true,
+      "title": "温柔黏人组剧情包 · 温柔/害羞/慵懒（全阶日常·深夜暧昧·突破与誓约）"
+    },
+    {
+      "id": "story-batch3-mature-20261127",
+      "file": "story-batch3-mature-20261127.json",
+      "version": "1.0.0",
+      "enabled": true,
+      "title": "成熟克制组剧情包 · 沉稳/严厉/优雅（全阶日常·深夜暧昧·突破与誓约）"
+    },
+    {
+      "id": "story-batch4-bright-20261127",
+      "file": "story-batch4-bright-20261127.json",
+      "version": "1.0.0",
+      "enabled": true,
+      "title": "元气直球组剧情包 · 元气/天然/热血（全阶日常·深夜暧昧·突破与誓约）"
     }
   ]
 }
