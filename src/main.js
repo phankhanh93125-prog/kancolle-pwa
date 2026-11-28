@@ -1383,6 +1383,12 @@ async function restoreFullWorldSnapshot(rawData, { syncAutoSave = true, sourceNa
     contentManager.deserialize(data.contentManager, { persist: false });
     storyPacks.deserialize(data.storyPacks, { persist: false });
     storyPacks.clearActiveTheatreSession();
+    // Ensure bundled external story packs are non-destructively merged into older save slots too
+    await contentManager.syncStoryPackManifest('./custom-packs/stories/index.json', {
+      storyPacks,
+      personalityPool,
+      statRules,
+    });
     theme.deserialize(data.theme, { persist: false });
 
     // Ensure secretary / activeCharacterId points to a valid ship in the restored slot
@@ -1493,6 +1499,8 @@ async function startNewJourney(prefs = {}) {
         customDialogues: prevContentSnap?.customDialogues || [],
         customGifts: prevContentSnap?.customGifts || [],
         customEquipment: prevContentSnap?.customEquipment || [],
+        storyExtensions: prevContentSnap?.storyExtensions || null,
+        loadedStoryPackFiles: prevContentSnap?.loadedStoryPackFiles || {},
         encounteredEnemyNames: ['前哨巡逻编队'],
         clearedRouteIds: [],
         updatedAt: now,
@@ -1508,6 +1516,11 @@ async function startNewJourney(prefs = {}) {
       },
       { persist: false }
     );
+    await contentManager.syncStoryPackManifest('./custom-packs/stories/index.json', {
+      storyPacks,
+      personalityPool,
+      statRules,
+    });
     // Suppress any forced built-in intro story popup on New Game
     storyPacks.clearActiveTheatreSession();
 

@@ -881,10 +881,10 @@ export class ContentManager {
    */
   async syncStoryPackManifest(
     manifestUrl = './custom-packs/stories/index.json',
-    { storyPacks = null, personalityPool = null, statRules = null, fetchImpl = null } = {}
+    { storyPacks = null, personalityPool = null, statRules = null, fetchImpl = null, force = false } = {}
   ) {
     const fetcher = fetchImpl || (typeof fetch === 'function' ? fetch : null);
-    if (!fetcher) return { loaded: 0, skipped: 0 };
+    if (!fetcher) return { loaded: 0, skipped: 0, failed: 0, totalEntries: 0 };
     if (!this._state.loadedStoryPackFiles || typeof this._state.loadedStoryPackFiles !== 'object') {
       this._state.loadedStoryPackFiles = {};
     }
@@ -892,22 +892,23 @@ export class ContentManager {
     let manifest;
     try {
       const resp = await fetcher(manifestUrl, { cache: 'no-cache' });
-      if (!resp || !resp.ok) return { loaded: 0, skipped: 0 };
+      if (!resp || !resp.ok) return { loaded: 0, skipped: 0, failed: 1, totalEntries: 0 };
       manifest = await resp.json();
     } catch {
-      return { loaded: 0, skipped: 0 };
+      return { loaded: 0, skipped: 0, failed: 1, totalEntries: 0 };
     }
 
     const entries = Array.isArray(manifest?.packs) ? manifest.packs : Array.isArray(manifest) ? manifest : [];
     const baseDir = manifestUrl.replace(/[^/]+$/, '');
     let loaded = 0;
     let skipped = 0;
+    let failed = 0;
 
     for (const entry of entries) {
       if (!entry || entry.enabled === false || !entry.file) continue;
       const fileKey = String(entry.file).trim();
       const ver = String(entry.version || '1.0.0').trim();
-      if (this._state.loadedStoryPackFiles[fileKey] === ver) {
+      if (!force && this._state.loadedStoryPackFiles[fileKey] === ver) {
         skipped += 1;
         continue;
       }
@@ -916,12 +917,16 @@ export class ContentManager {
           ? fileKey
           : `${baseDir}${fileKey}`;
         const packResp = await fetcher(packUrl, { cache: 'no-cache' });
-        if (!packResp || !packResp.ok) continue;
+        if (!packResp || !packResp.ok) {
+          failed += 1;
+          continue;
+        }
         const rawText = await packResp.text();
         await this.smartImportJSONText(rawText, { mode: 'merge', storyPacks, personalityPool, statRules });
         this._state.loadedStoryPackFiles[fileKey] = ver;
         loaded += 1;
       } catch (err) {
+        failed += 1;
         console.warn(`[ContentManager] Failed to auto-load story pack "${fileKey}":`, err);
       }
     }
@@ -929,7 +934,7 @@ export class ContentManager {
     if (loaded > 0) {
       await this.persist();
     }
-    return { loaded, skipped };
+    return { loaded, skipped, failed, totalEntries: entries.length };
   }
 
   // ------------------------------------------------------------

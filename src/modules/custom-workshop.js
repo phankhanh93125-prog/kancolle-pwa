@@ -872,16 +872,25 @@ export function openCustomWorkshopModal(services, { initialTab = 'ship' } = {}) 
       sortie_encounter: '出征奇遇',
       main_chapter: '章节主线',
     };
+    const storyExt = contentManager?.getStoryExtensions?.() || {};
+    const pExtCount = Object.keys(storyExt.personalityExtensions || {}).length;
+    const customDlgCount = (contentManager?.listCustomDialogues?.() || []).length;
     const listCard = document.createElement('section');
     listCard.className = 'surface-card lab-stack-sm';
     listCard.innerHTML = `
-      <div class="section-header-row" style="margin-bottom:0;">
+      <div class="section-header-row" style="margin-bottom:0; gap:6px; flex-wrap:wrap;">
         <h3 class="section-title">已导入外置剧情与奇遇包（${extPacks.length}）</h3>
-        <button type="button" id="btn-cw-export-all" class="btn-secondary fac-mini-btn">导出全部备份 JSON</button>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          <button type="button" id="btn-cw-sync-official" class="btn-primary fac-mini-btn">🔄 同步官方剧情包</button>
+          <button type="button" id="btn-cw-export-all" class="btn-secondary fac-mini-btn">导出全部备份 JSON</button>
+        </div>
+      </div>
+      <div class="cc-stat-sub" style="margin-top:-2px;">
+        当前已载入：<strong>${pExtCount}</strong> 套性格专属剧情词库 · <strong>${customDlgCount}</strong> 条随机台词 · <strong>${extPacks.length}</strong> 个多幕剧场/海遇包
       </div>
       ${
         extPacks.length === 0
-          ? '<p class="muted-text" style="font-size:12px;">当前尚无外置剧情/海遇包，可在上方粘贴导入或在「设施与剧情」分栏自行编写。</p>'
+          ? '<p class="muted-text" style="font-size:12px;">当前尚无外置剧情/海遇包，可点击上方「🔄 同步官方剧情包」一键载入，或在上方粘贴导入。</p>'
           : extPacks
               .map(
                 (p) => `
@@ -905,6 +914,32 @@ export function openCustomWorkshopModal(services, { initialTab = 'ship' } = {}) 
               .join('')
       }
     `;
+
+    listCard.querySelector('#btn-cw-sync-official')?.addEventListener('click', async (ev) => {
+      const btn = ev.currentTarget;
+      if (btn) btn.disabled = true;
+      try {
+        const res = await contentManager.syncStoryPackManifest('./custom-packs/stories/index.json', {
+          storyPacks,
+          personalityPool,
+          statRules,
+          force: true,
+        });
+        const newPacksCount = (storyPacks?.listPacks?.() || []).filter((p) => !p.builtIn).length;
+        const newPExtCount = Object.keys(contentManager?.getStoryExtensions?.()?.personalityExtensions || {}).length;
+        if (res.loaded > 0) {
+          cwState.lastImportReport = `已同步 ${res.loaded} 份官方剧情文件，当前共 ${newPExtCount} 套性格专属词库、${newPacksCount} 个剧场/海遇包`;
+          uiKit.showToast(cwState.lastImportReport, 'ok');
+        } else {
+          uiKit.showToast('未检测到可用的官方剧情清单或网络离线，请刷新后重试', 'warn');
+        }
+        render();
+      } catch (err) {
+        uiKit.showToast(err instanceof Error ? err.message : '同步官方剧情包失败', 'error');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
 
     listCard.querySelector('#btn-cw-export-all')?.addEventListener('click', () => {
       const worldMod = contentManager?.exportWorldMod ? contentManager.exportWorldMod({ name: '自定义工坊内容库备份' }) : {};
