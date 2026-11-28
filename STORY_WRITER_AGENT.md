@@ -59,6 +59,16 @@
   "traits": [],
   "customDialogues": [],
   "storyPacks": [],
+  "personalityExtensions": {
+    "tsundere": {
+      "dialogueBank": {},
+      "portraitTouchLines": {},
+      "outfitFlavorLines": {},
+      "favoriteGiftReactions": [],
+      "breakthroughTheatres": {},
+      "oathRitualTheatre": {}
+    }
+  },
   "dialogueBank": {},
   "portraitTouchLines": {},
   "outfitFlavorLines": {},
@@ -70,11 +80,14 @@
 ```
 
 - **全部字段均已实时挂载生效**（`ContentManager.smartImportJSONText` 直接写入 IndexedDB 并由各引擎精准分流，启动时自动同步 `custom-packs/stories/index.json` 清单）：
-  - `personalities` → 写入 `PersonalityPool` 主性格语音库
-  - `traits` → 写入 `PersonalityPool` 副特质/口癖库
-  - `customDialogues` → 写入 `ContentManager` 自定义日常互动台词库（`StoryEngine.dailyTalk` 直接抽取，完整支持全部六阶段 + `any`）
+  - `personalities` → 写入 `PersonalityPool` 主性格语音库（12 大内置主性格 ID：`genki`、`kuudere`、`tsundere`、`composed`、`scheming`、`airhead`、`strict`、`lazy`、`gentle`、`hotblooded`、`shy`、`noble`）
+  - `traits` → 写入 `PersonalityPool` 副特质/口癖库（12 大内置副性格 ID：`protective`、`foodie`、`milgeek`、`sharp_tongue`、`worrier`、`romantic`、`sleepy`、`neatfreak`、`collector`、`perfectionist`、`tease`、`lucky_star`）
+  - `customDialogues` → 写入 `ContentManager` 自定义日常互动台词库（支持可选 `personalityId` 按主性格严格隔离，`StoryEngine.dailyTalk` 直接抽取，完整支持全部六阶段 + `any`）
   - `storyPacks` → 写入 `StoryPackEngine` 外置剧场与海图奇遇包（`port_daily` / `main_chapter` 供港区/图鉴剧场游玩，`sortie_encounter` 专供出征突发海遇抽选，互不串台）
-  - `dialogueBank` / `portraitTouchLines` / `outfitFlavorLines` / `favoriteGiftReactions` / `breakthroughTheatres` / `oathRitualTheatre` / `maritimeEncounters` → 写入 `ContentManager.storyExtensions`，由 `StoryEngine` 按阶段、昼夜、服装风格、触摸部位/档位、偏爱礼物 ID、20/40/60/80/100 突破节点、誓约仪式与海图奇遇**精准分流并优先抽取**（无自定义条目时无缝回退内置词库）
+  - `personalityExtensions` → **主性格专属隔离词库（0% 串词保障）**。以主性格 ID（如 `tsundere`、`scheming` 等）为键，内含该性格专属的 `dialogueBank`、`portraitTouchLines`、`outfitFlavorLines`、`favoriteGiftReactions`、`breakthroughTheatres`、`oathRitualTheatre`。`StoryEngine` 执行**三级严格隔离匹配**：
+    1. **第一优先级（100% 专属命中）**：读取当前舰娘 `primaryId` 对应的 `personalityExtensions[primaryId]`（或带 `personalityId === primaryId` 的条目），只要非空即 **100% 从专属池抽取，严禁混入其他性格或通用台词**；
+    2. **第二优先级（通用扩展回退）**：当该性格无专属池条目时，回退至无 `personalityId` 的顶层通用 `storyExtensions` 池；
+    3. **第三优先级（内置兜底）**：回退至内置 `src/data/default-dialogues.js`。
   - （可选扩展）`customGifts`、`outfits`、`ships`、`customEnemies`
 
 > **自动挂载清单**：每次在 `custom-packs/stories/` 新增正式剧情包后，将其登记到 `custom-packs/stories/index.json` 的 `packs` 数组中（含 `id`、`file`、`version`、`enabled`），游戏启动时即会自动无损增量加载（同版本仅加载一次，绝不覆盖存档或复活玩家主动删除的包）。
@@ -85,28 +98,29 @@
 
 `src/data/default-dialogues.js` 中的六阶段慢节奏好感体系：
 
-| 索引 | 阶段 ID (`stage`) | 中文名 | 好感区间 | 突破阈值 (`gate`) | 情绪基调 |
-| --- | --- | --- | --- | --- | --- |
-| 0 | `stranger` | 陌生 | 0 ~ 19 | 20 | 礼貌克制、略带距离感 |
-| 1 | `familiar` | 熟悉 | 20 ~ 39 | 40 | 轻松自然、愿意搭话 |
-| 2 | `trusted` | 信赖 | 40 ~ 59 | 60 | 默契坦诚、彼此托付 |
-| 3 | `flutter` | 心动 | 60 ~ 79 | 80 | 细微羞赧、藏不住在意 |
-| 4 | `adoration` | 恋慕 | 80 ~ 99 | 100 | 温柔依恋、私密亲近 |
-| 5 | `oath` | 誓约 | 100 ~ 150 | 誓约仪式解放 | 长相厮守、心照不宣 |
+| 索引 | 阶段 ID (`stage`) | 兼容别名 | 中文名 | 好感区间 | 突破阈值 (`gate`) | 情绪基调 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | `stranger` | `stranger` | 陌生 | 0 ~ 19 | 20 | 礼貌克制、略带距离感 |
+| 1 | `familiar` | `friendly` | 熟悉 | 20 ~ 39 | 40 | 轻松自然、愿意搭话 |
+| 2 | `trusted` | `close` | 信赖 | 40 ~ 59 | 60 | 默契坦诚、彼此托付 |
+| 3 | `flutter` | `flutter` | 心动 | 60 ~ 79 | 80 | 细微羞赧、藏不住在意 |
+| 4 | `adoration` | `adoration` | 恋慕 | 80 ~ 99 | 100 | 温柔依恋、私密亲近 |
+| 5 | `oath` | `oath` | 誓约 | 100 ~ 150 | 誓约仪式解放 | 长相厮守、心照不宣 |
 
-#### A. `customDialogues`（直接导入「自定义工坊」生效）
+#### A. `customDialogues`（直接导入「自定义工坊」生效，支持 `personalityId` 防串词）
 
 ```json
 "customDialogues": [
   {
-    "id": "dlg_unique_01",
+    "id": "dlg_tsundere_01",
+    "personalityId": "tsundere",
     "stage": "familiar",
     "text": "「{cmd}，今天的执勤表我已经按优先级排好了，省得你又翻半天。」"
   }
 ]
 ```
 
-> `ContentManager.createCustomDialogue()` 已完整支持全部六阶段 `stranger` / `familiar` / `trusted` / `flutter` / `adoration` / `oath` 及 `any`（保留 `close` 向后兼容）。
+> `ContentManager.createCustomDialogue()` 已完整支持全部六阶段 `stranger` / `familiar`（兼容 `friendly`）/ `trusted`（兼容 `close`）/ `flutter` / `adoration` / `oath` 及 `any`，并支持 `personalityId` 按主性格严格隔离。
 
 #### B. `dialogueBank`（六阶段 × 白天/深夜时段问候与分支选项）
 
@@ -410,16 +424,16 @@
 
 ### 3.2 用户文风调优区（STYLE_TUNING_OVERRIDES）
 
-> 审阅样张后，可直接在下方表格中修改偏好；后续所有剧情生成任务将**优先覆盖执行**本区配置。
+> 审阅样张后，已根据指挥官要求固化以下文风与尺度覆盖配置；后续所有剧情生成任务**优先覆盖执行**本区配置。
 
-| 调优维度 | 当前默认预设 | 用户自定义覆盖（留空则沿用默认） |
+| 调优维度 | 当前默认预设 | 用户自定义覆盖（已生效） |
 | --- | --- | --- |
-| 角色对指挥官默认称呼 | `{cmd}`（支持玩家自定义名） | _（待用户审阅后填写）_ |
-| 傲娇/嘴硬浓度 | 中偏软（嘴上别扭 40% + 细心体贴 60%，不刻薄） | _（待用户审阅后填写）_ |
-| 暧昧与亲密描写尺度 | 细腻含蓄、重呼吸/指尖/眼神拉扯（全年龄清爽向） | _（待用户审阅后填写）_ |
-| 单句台词篇幅偏好 | 20 ~ 65 字（适配手机气泡聊天阅读节奏） | _（待用户审阅后填写）_ |
-| 旁白镜头感偏好 | 轻描写、重微动作与氛围感，不抢台词戏份 | _（待用户审阅后填写）_ |
-| 明确禁用词 / 忌讳桥段 | 翻译腔、说教总结、高频“哼笨蛋”复读、OOC 强行降智 | _（待用户审阅后填写）_ |
+| 角色对指挥官默认称呼 | `{cmd}`（支持玩家自定义名） | `{cmd}`（通用剧情严禁写死具体舰娘名，统一使用 `{actor}` / `{{flagship}}`） |
+| 傲娇/嘴硬浓度 | 中偏软（嘴上别扭 40% + 细心体贴 60%，不刻薄） | 像真实人类女孩子，按 12 主性格×12 副性格精准区分矜持慢热与直球大胆，并用 `personalityExtensions` 严格防串词 |
+| 暧昧与亲密描写尺度 | 细腻含蓄、重呼吸/指尖/眼神拉扯（全年龄清爽向） | **高张力成人浪漫与色气拉扯**：顺应感情升温大胆描写耳畔吐息、锁骨/耳垂亲吻、体温贴合、丝质睡裙/宽衬衫滑落、跨坐拥吻与拉灯留白/次日清晨余韵（不写露骨器官词） |
+| 单句台词篇幅偏好 | 20 ~ 65 字（适配手机气泡聊天阅读节奏） | 25 ~ 85 字（文本饱满高密度，神态、微动作与口语停顿自然穿插） |
+| 旁白镜头感偏好 | 轻描写、重微动作与氛围感，不抢台词戏份 | 强化呼吸、视线、指尖力度、衣料摩擦、耳根温度与夜色光影的感官张力 |
+| 明确禁用词 / 忌讳桥段 | 翻译腔、说教总结、高频“哼笨蛋”复读、OOC 强行降智 | 严禁翻译腔、AI 说教、跨性格串词、空洞敷衍短句 |
 
 ---
 

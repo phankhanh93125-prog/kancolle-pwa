@@ -255,7 +255,15 @@ function deepClone(v) {
   return JSON.parse(JSON.stringify(v ?? null));
 }
 
-function createEmptyStoryExtensions() {
+function normalizeDialogueStageKey(rawStage = 'any') {
+  const s = String(rawStage || 'any').trim().toLowerCase();
+  if (s === 'friendly' || s === 'familiar') return 'familiar';
+  if (s === 'close' || s === 'trusted') return 'trusted';
+  if (['any', 'stranger', 'flutter', 'adoration', 'oath'].includes(s)) return s;
+  return 'any';
+}
+
+function createEmptyStoryBank() {
   return {
     dialogueBank: {},
     portraitTouchLines: {},
@@ -263,7 +271,15 @@ function createEmptyStoryExtensions() {
     favoriteGiftReactions: [],
     breakthroughTheatres: {},
     oathRitualTheatre: null,
+    oathRitualTheatres: [],
+  };
+}
+
+function createEmptyStoryExtensions() {
+  return {
+    ...createEmptyStoryBank(),
     maritimeEncounters: [],
+    personalityExtensions: {},
   };
 }
 
@@ -446,20 +462,32 @@ export class ContentManager {
     return deepClone(this._state.customDialogues);
   }
 
-  async createCustomDialogue({ id = null, stage = 'any', text = '' } = {}) {
+  _upsertCustomDialogueSync({ id = null, stage = 'any', text = '', personalityId = null, secondaryId = null } = {}) {
     const cleanText = String(text || '').trim();
-    if (!cleanText) throw new Error('台词模板内容不能为空');
-    const validStages = ['any', 'stranger', 'familiar', 'trusted', 'flutter', 'adoration', 'close', 'oath'];
+    if (!cleanText) return null;
+    const normStage = normalizeDialogueStageKey(stage);
+    const cleanPid = personalityId ? String(personalityId).trim() : null;
+    const cleanSid = secondaryId ? String(secondaryId).trim() : null;
     const dlg = {
       id: String(id || `dlg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`),
-      stage: validStages.includes(stage) ? stage : 'any',
+      stage: normStage,
       text: cleanText,
+      ...(cleanPid ? { personalityId: cleanPid } : {}),
+      ...(cleanSid ? { secondaryId: cleanSid } : {}),
       createdAt: Date.now(),
     };
-    const idx = this._state.customDialogues.findIndex((d) => d.id === dlg.id);
+    const idx = this._state.customDialogues.findIndex(
+      (d) => d.id === dlg.id || (d.text === dlg.text && (d.personalityId || null) === (dlg.personalityId || null))
+    );
     if (idx >= 0) this._state.customDialogues[idx] = dlg;
     else this._state.customDialogues.push(dlg);
+    return dlg;
+  }
 
+  async createCustomDialogue({ id = null, stage = 'any', text = '', personalityId = null, secondaryId = null } = {}) {
+    const cleanText = String(text || '').trim();
+    if (!cleanText) throw new Error('台词模板内容不能为空');
+    const dlg = this._upsertCustomDialogueSync({ id, stage, text: cleanText, personalityId, secondaryId });
     await this.persist();
     this._emit('content:updated', { type: 'dialogue', id: dlg.id });
     return deepClone(dlg);
@@ -479,74 +507,183 @@ export class ContentManager {
   // ------------------------------------------------------------
   // 2B. Extended Story Engine Banks (dialogueBank, portraitTouchLines,
   //     outfitFlavorLines, favoriteGiftReactions, breakthroughTheatres,
-  //     oathRitualTheatre, maritimeEncounters)
+  //     oathRitualTheatre/oathRitualTheatres, maritimeEncounters,
+  //     and per-personality isolated personalityExtensions)
   // ------------------------------------------------------------
 
   getStoryExtensions() {
     if (!this._state.storyExtensions || typeof this._state.storyExtensions !== 'object') {
       this._state.storyExtensions = createEmptyStoryExtensions();
     }
+    if (!this._state.storyExtensions.personalityExtensions || typeof this._state.storyExtensions.personalityExtensions !== 'object') {
+      this._state.storyExtensions.personalityExtensions = {};
+    }
+    if (!Array.isArray(this._state.storyExtensions.oathRitualTheatres)) {
+      this._state.storyExtensions.oathRitualTheatres = this._state.storyExtensions.oathRitualTheatre
+        ? [deepClone(this._state.storyExtensions.oathRitualTheatre)]
+        : [];
+    }
     return deepClone(this._state.storyExtensions);
   }
 
-  mergeStoryExtensions(rawExt = {}) {
+  getPersonalityStoryExtensions(personalityId) {
+    const pid = String(personalityId || '').trim();
+    if (!pid) return null;
+    const ext = this._state.storyExtensions;
+    const pBank = ext?.personalityExtensions?.[pid];
+    return pBank ? deepClone(pBank) : null;
+  }
+
+  mergeStoryExtensions(rawExt = {}, { personalityId = null } = {}) {
     if (!rawExt || typeof rawExt !== 'object') return 0;
     if (!this._state.storyExtensions || typeof this._state.storyExtensions !== 'object') {
       this._state.storyExtensions = createEmptyStoryExtensions();
     }
     const ext = this._state.storyExtensions;
+    if (!ext.personalityExtensions || typeof ext.personalityExtensions !== 'object') {
+      ext.personalityExtensions = {};
+    }
+    if (!Array.isArray(ext.oathRitualTheatres)) {
+      ext.oathRitualTheatres = ext.oathRitualTheatre ? [deepClone(ext.oathRitualTheatre)] : [];
+    }
+
     let mergedCount = 0;
 
-    // 1. Six-stage x day/night dialogueBank
-    if (rawExt.dialogueBank && typeof rawExt.dialogueBank === 'object') {
-      const validStageKeys = ['stranger', 'familiar', 'trusted', 'flutter', 'adoration', 'oath'];
-      for (const stageKey of validStageKeys) {
-        const srcStage = rawExt.dialogueBank[stageKey];
-        if (!srcStage || typeof srcStage !== 'object') continue;
-        if (!ext.dialogueBank[stageKey]) ext.dialogueBank[stageKey] = { day: [], night: [] };
-        for (const tod of ['day', 'night']) {
-          const arr = Array.isArray(srcStage[tod]) ? srcStage[tod] : [];
-          const dest = ext.dialogueBank[stageKey][tod];
-          for (const entry of arr) {
-            if (!entry || typeof entry !== 'object' || !String(entry.text || '').trim()) continue;
-            const norm = {
-              narration: String(entry.narration || '').trim(),
-              text: String(entry.text || '').trim(),
-              ...(Array.isArray(entry.choices) && entry.choices.length > 0
-                ? {
-                    choices: entry.choices
-                      .filter((c) => c && (c.label || c.reply))
-                      .map((c) => ({
-                        label: String(c.label || '').trim(),
-                        narration: String(c.narration || '').trim(),
-                        reply: String(c.reply || '').trim(),
-                      })),
-                  }
-                : {}),
-            };
-            const existIdx = dest.findIndex((x) => x.text === norm.text);
-            if (existIdx >= 0) dest[existIdx] = norm;
-            else dest.push(norm);
-            mergedCount += 1;
+    const resolveTargetBank = (pid = null) => {
+      const cleanPid = String(pid || '').trim();
+      if (!cleanPid) return ext;
+      if (!ext.personalityExtensions[cleanPid] || typeof ext.personalityExtensions[cleanPid] !== 'object') {
+        ext.personalityExtensions[cleanPid] = createEmptyStoryBank();
+      }
+      const pBank = ext.personalityExtensions[cleanPid];
+      if (!Array.isArray(pBank.oathRitualTheatres)) {
+        pBank.oathRitualTheatres = pBank.oathRitualTheatre ? [deepClone(pBank.oathRitualTheatre)] : [];
+      }
+      return pBank;
+    };
+
+    const mergeSingleStoryBank = (bankObj, forcedPid = null) => {
+      if (!bankObj || typeof bankObj !== 'object') return;
+      const bankDefaultPid = String(forcedPid || bankObj.personalityId || '').trim() || null;
+
+      // Optional nested customDialogues inside a personality bank
+      if (Array.isArray(bankObj.customDialogues)) {
+        for (const d of bankObj.customDialogues) {
+          const line = typeof d === 'string' ? d : d?.text || d?.line || d?.content;
+          if (!line) continue;
+          const itemPid = (typeof d === 'object' && d?.personalityId) || bankDefaultPid;
+          const saved = this._upsertCustomDialogueSync({
+            ...(typeof d === 'object' ? d : {}),
+            text: line,
+            personalityId: itemPid,
+          });
+          if (saved) mergedCount += 1;
+        }
+      }
+
+      // 1. Six-stage x day/night dialogueBank (supports familiar/friendly and trusted/close aliases)
+      if (bankObj.dialogueBank && typeof bankObj.dialogueBank === 'object') {
+        const rawStageMap = [
+          ['stranger', 'stranger'],
+          ['familiar', 'familiar'],
+          ['friendly', 'familiar'],
+          ['trusted', 'trusted'],
+          ['close', 'trusted'],
+          ['flutter', 'flutter'],
+          ['adoration', 'adoration'],
+          ['oath', 'oath'],
+        ];
+        for (const [rawKey, stageKey] of rawStageMap) {
+          const srcStage = bankObj.dialogueBank[rawKey];
+          if (!srcStage || typeof srcStage !== 'object') continue;
+          for (const tod of ['day', 'night']) {
+            const arr = Array.isArray(srcStage[tod]) ? srcStage[tod] : [];
+            for (const entry of arr) {
+              if (!entry || typeof entry !== 'object') continue;
+              const textVal = String(entry.text || entry.line || entry.content || '').trim();
+              if (!textVal) continue;
+              const itemPid = String(forcedPid || entry.personalityId || bankDefaultPid || '').trim() || null;
+              const targetBank = resolveTargetBank(itemPid);
+              if (!targetBank.dialogueBank[stageKey]) {
+                targetBank.dialogueBank[stageKey] = { day: [], night: [] };
+              }
+              const dest = targetBank.dialogueBank[stageKey][tod];
+              const norm = {
+                ...(itemPid ? { personalityId: itemPid } : {}),
+                narration: String(entry.narration || '').trim(),
+                text: textVal,
+                ...(Array.isArray(entry.choices) && entry.choices.length > 0
+                  ? {
+                      choices: entry.choices
+                        .filter((c) => c && (c.label || c.reply || c.text || c.line))
+                        .map((c) => ({
+                          label: String(c.label || '').trim(),
+                          narration: String(c.narration || '').trim(),
+                          reply: String(c.reply || c.text || c.line || c.resultText || '').trim(),
+                        })),
+                    }
+                  : {}),
+              };
+              const existIdx = dest.findIndex((x) => x.text === norm.text);
+              if (existIdx >= 0) dest[existIdx] = norm;
+              else dest.push(norm);
+              mergedCount += 1;
+            }
           }
         }
       }
-    }
 
-    // 2. Portrait touch reactions (head / shoulder / hand x low / mid / high / oath)
-    if (rawExt.portraitTouchLines && typeof rawExt.portraitTouchLines === 'object') {
-      for (const zone of ['head', 'shoulder', 'hand']) {
-        const srcZone = rawExt.portraitTouchLines[zone];
-        if (!srcZone || typeof srcZone !== 'object') continue;
-        if (!ext.portraitTouchLines[zone]) ext.portraitTouchLines[zone] = { low: [], mid: [], high: [], oath: [] };
-        for (const band of ['low', 'mid', 'high', 'oath']) {
-          const arr = Array.isArray(srcZone[band]) ? srcZone[band] : [];
-          const dest = ext.portraitTouchLines[zone][band];
-          for (const item of arr) {
-            if (!item || typeof item !== 'object' || !String(item.text || '').trim()) continue;
+      // 2. Portrait touch reactions (head / shoulder / hand x low / mid / high / oath)
+      if (bankObj.portraitTouchLines && typeof bankObj.portraitTouchLines === 'object') {
+        for (const zone of ['head', 'shoulder', 'hand']) {
+          const srcZone = bankObj.portraitTouchLines[zone];
+          if (!srcZone || typeof srcZone !== 'object') continue;
+          for (const band of ['low', 'mid', 'high', 'oath']) {
+            const arr = Array.isArray(srcZone[band]) ? srcZone[band] : [];
+            for (const item of arr) {
+              if (!item || typeof item !== 'object') continue;
+              const textVal = String(item.text || item.line || item.content || '').trim();
+              if (!textVal) continue;
+              const itemPid = String(forcedPid || item.personalityId || bankDefaultPid || '').trim() || null;
+              const targetBank = resolveTargetBank(itemPid);
+              if (!targetBank.portraitTouchLines[zone]) {
+                targetBank.portraitTouchLines[zone] = { low: [], mid: [], high: [], oath: [] };
+              }
+              const dest = targetBank.portraitTouchLines[zone][band];
+              const norm = {
+                ...(itemPid ? { personalityId: itemPid } : {}),
+                narration: String(item.narration || '').trim(),
+                text: textVal,
+              };
+              const existIdx = dest.findIndex((x) => x.text === norm.text);
+              if (existIdx >= 0) dest[existIdx] = norm;
+              else dest.push(norm);
+              mergedCount += 1;
+            }
+          }
+        }
+      }
+
+      // 3. Outfit flavor lines (outfitStyle -> array of { narration, text })
+      if (bankObj.outfitFlavorLines && typeof bankObj.outfitFlavorLines === 'object') {
+        for (const [styleKey, val] of Object.entries(bankObj.outfitFlavorLines)) {
+          const key = String(styleKey || '').trim();
+          if (!key || !val) continue;
+          const list = Array.isArray(val) ? val : [val];
+          for (const item of list) {
+            if (!item || typeof item !== 'object') continue;
+            const textVal = String(item.text || item.line || item.content || '').trim();
+            if (!textVal) continue;
+            const itemPid = String(forcedPid || item.personalityId || bankDefaultPid || '').trim() || null;
+            const targetBank = resolveTargetBank(itemPid);
+            if (!Array.isArray(targetBank.outfitFlavorLines[key])) {
+              targetBank.outfitFlavorLines[key] = [];
+            }
+            const dest = targetBank.outfitFlavorLines[key];
             const norm = {
+              ...(itemPid ? { personalityId: itemPid } : {}),
               narration: String(item.narration || '').trim(),
-              text: String(item.text || '').trim(),
+              text: textVal,
             };
             const existIdx = dest.findIndex((x) => x.text === norm.text);
             if (existIdx >= 0) dest[existIdx] = norm;
@@ -555,120 +692,161 @@ export class ContentManager {
           }
         }
       }
-    }
 
-    // 3. Outfit flavor lines (outfitStyle -> array of { narration, text })
-    if (rawExt.outfitFlavorLines && typeof rawExt.outfitFlavorLines === 'object') {
-      for (const [styleKey, val] of Object.entries(rawExt.outfitFlavorLines)) {
-        const key = String(styleKey || '').trim();
-        if (!key || !val) continue;
-        const list = Array.isArray(val) ? val : [val];
-        if (!Array.isArray(ext.outfitFlavorLines[key])) ext.outfitFlavorLines[key] = [];
-        const dest = ext.outfitFlavorLines[key];
-        for (const item of list) {
-          if (!item || typeof item !== 'object' || !String(item.text || '').trim()) continue;
-          const norm = {
-            narration: String(item.narration || '').trim(),
-            text: String(item.text || '').trim(),
-          };
-          const existIdx = dest.findIndex((x) => x.text === norm.text);
-          if (existIdx >= 0) dest[existIdx] = norm;
-          else dest.push(norm);
-          mergedCount += 1;
-        }
-      }
-    }
-
-    // 4. Favorite gift reactions
-    if (Array.isArray(rawExt.favoriteGiftReactions)) {
-      if (!Array.isArray(ext.favoriteGiftReactions)) ext.favoriteGiftReactions = [];
-      for (const item of rawExt.favoriteGiftReactions) {
-        if (!item || typeof item !== 'object' || !String(item.text || '').trim()) continue;
-        const norm = {
-          ...(item.giftId ? { giftId: String(item.giftId).trim() } : {}),
-          ...(item.giftName ? { giftName: String(item.giftName).trim() } : {}),
-          narration: String(item.narration || '').trim(),
-          text: String(item.text || '').trim(),
-        };
-        const existIdx = ext.favoriteGiftReactions.findIndex((x) => x.text === norm.text);
-        if (existIdx >= 0) ext.favoriteGiftReactions[existIdx] = norm;
-        else ext.favoriteGiftReactions.push(norm);
-        mergedCount += 1;
-      }
-    }
-
-    // 5. Stage breakthrough mini-theatres (20 / 40 / 60 / 80 / 100)
-    if (rawExt.breakthroughTheatres && typeof rawExt.breakthroughTheatres === 'object') {
-      for (const gate of [20, 40, 60, 80, 100]) {
-        const rawVal = rawExt.breakthroughTheatres[gate] ?? rawExt.breakthroughTheatres[String(gate)];
-        if (!rawVal) continue;
-        const list = Array.isArray(rawVal) ? rawVal : [rawVal];
-        const gk = String(gate);
-        if (!Array.isArray(ext.breakthroughTheatres[gk])) ext.breakthroughTheatres[gk] = [];
-        const dest = ext.breakthroughTheatres[gk];
-        for (const t of list) {
-          if (!t || typeof t !== 'object' || !String(t.openingLine || '').trim() || !Array.isArray(t.choices) || t.choices.length === 0) {
-            continue;
+      // 4. Favorite gift reactions (array OR object keyed by giftId)
+      if (bankObj.favoriteGiftReactions && typeof bankObj.favoriteGiftReactions === 'object') {
+        let rawGiftList = [];
+        if (Array.isArray(bankObj.favoriteGiftReactions)) {
+          rawGiftList = bankObj.favoriteGiftReactions;
+        } else {
+          for (const [gKey, gVal] of Object.entries(bankObj.favoriteGiftReactions)) {
+            const arr = Array.isArray(gVal) ? gVal : [gVal];
+            for (const it of arr) {
+              if (it && typeof it === 'object') {
+                rawGiftList.push({ giftId: it.giftId || gKey, ...it });
+              }
+            }
           }
+        }
+        for (const item of rawGiftList) {
+          if (!item || typeof item !== 'object') continue;
+          const textVal = String(item.text || item.line || item.content || '').trim();
+          if (!textVal) continue;
+          const itemPid = String(forcedPid || item.personalityId || bankDefaultPid || '').trim() || null;
+          const targetBank = resolveTargetBank(itemPid);
+          if (!Array.isArray(targetBank.favoriteGiftReactions)) {
+            targetBank.favoriteGiftReactions = [];
+          }
+          const dest = targetBank.favoriteGiftReactions;
           const norm = {
-            gate,
-            fromLabel: String(t.fromLabel || '').trim(),
-            toLabel: String(t.toLabel || '').trim(),
-            title: String(t.title || `阶段突破 · ${gate}`).trim(),
-            introNarration: String(t.introNarration || '').trim(),
-            openingLine: String(t.openingLine || '').trim(),
-            choices: t.choices
-              .filter((c) => c && String(c.label || '').trim())
-              .map((c, idx) => ({
-                id: String(c.id || `bt${gate}_ext_${idx + 1}`),
-                label: String(c.label || '').trim(),
-                narration: String(c.narration || '').trim(),
-                reply: String(c.reply || '').trim(),
-                closingNarration: String(c.closingNarration || '').trim(),
-              })),
+            ...(itemPid ? { personalityId: itemPid } : {}),
+            ...(item.giftId ? { giftId: String(item.giftId).trim() } : {}),
+            ...(item.giftName ? { giftName: String(item.giftName).trim() } : {}),
+            narration: String(item.narration || '').trim(),
+            text: textVal,
           };
-          if (norm.choices.length === 0) continue;
-          const existIdx = dest.findIndex((x) => x.title === norm.title && x.openingLine === norm.openingLine);
+          const existIdx = dest.findIndex((x) => x.text === norm.text && (x.giftId || '') === (norm.giftId || ''));
           if (existIdx >= 0) dest[existIdx] = norm;
           else dest.push(norm);
           mergedCount += 1;
         }
       }
-    }
 
-    // 6. Custom Oath Ritual Theatre
-    if (rawExt.oathRitualTheatre && typeof rawExt.oathRitualTheatre === 'object') {
-      const r = rawExt.oathRitualTheatre;
-      if (String(r.openingLine || '').trim() && Array.isArray(r.choices) && r.choices.length > 0) {
-        ext.oathRitualTheatre = {
+      // 5. Stage breakthrough mini-theatres (20 / 40 / 60 / 80 / 100)
+      if (bankObj.breakthroughTheatres && typeof bankObj.breakthroughTheatres === 'object') {
+        for (const gate of [20, 40, 60, 80, 100]) {
+          const rawVal = bankObj.breakthroughTheatres[gate] ?? bankObj.breakthroughTheatres[String(gate)];
+          if (!rawVal) continue;
+          const list = Array.isArray(rawVal) ? rawVal : [rawVal];
+          const gk = String(gate);
+          for (const t of list) {
+            if (!t || typeof t !== 'object') continue;
+            const openingLine = String(t.openingLine || t.text || t.line || '').trim();
+            if (!openingLine || !Array.isArray(t.choices) || t.choices.length === 0) continue;
+            const itemPid = String(forcedPid || t.personalityId || bankDefaultPid || '').trim() || null;
+            const targetBank = resolveTargetBank(itemPid);
+            if (!Array.isArray(targetBank.breakthroughTheatres[gk])) {
+              targetBank.breakthroughTheatres[gk] = [];
+            }
+            const dest = targetBank.breakthroughTheatres[gk];
+            const norm = {
+              ...(itemPid ? { personalityId: itemPid } : {}),
+              gate,
+              fromLabel: String(t.fromLabel || '').trim(),
+              toLabel: String(t.toLabel || '').trim(),
+              title: String(t.title || `阶段突破 · ${gate}`).trim(),
+              introNarration: String(t.introNarration || t.narration || '').trim(),
+              openingLine,
+              choices: t.choices
+                .filter((c) => c && String(c.label || '').trim())
+                .map((c, idx) => ({
+                  id: String(c.id || `bt${gate}_${itemPid || 'ext'}_${idx + 1}`),
+                  label: String(c.label || '').trim(),
+                  narration: String(c.narration || '').trim(),
+                  reply: String(c.reply || c.text || c.line || '').trim(),
+                  closingNarration: String(c.closingNarration || '').trim(),
+                })),
+            };
+            if (norm.choices.length === 0) continue;
+            const existIdx = dest.findIndex((x) => x.title === norm.title && x.openingLine === norm.openingLine);
+            if (existIdx >= 0) dest[existIdx] = norm;
+            else dest.push(norm);
+            mergedCount += 1;
+          }
+        }
+      }
+
+      // 6. Custom Oath Ritual Theatre(s) (supports both oathRitualTheatre and oathRitualTheatres)
+      const oathCandidates = [];
+      if (Array.isArray(bankObj.oathRitualTheatres)) {
+        oathCandidates.push(...bankObj.oathRitualTheatres);
+      }
+      if (bankObj.oathRitualTheatre && typeof bankObj.oathRitualTheatre === 'object') {
+        if (Array.isArray(bankObj.oathRitualTheatre)) {
+          oathCandidates.push(...bankObj.oathRitualTheatre);
+        } else {
+          oathCandidates.push(bankObj.oathRitualTheatre);
+        }
+      }
+      for (const r of oathCandidates) {
+        if (!r || typeof r !== 'object') continue;
+        const openingLine = String(r.openingLine || r.text || r.line || '').trim();
+        if (!openingLine || !Array.isArray(r.choices) || r.choices.length === 0) continue;
+        const itemPid = String(forcedPid || r.personalityId || bankDefaultPid || '').trim() || null;
+        const targetBank = resolveTargetBank(itemPid);
+        const normOath = {
+          ...(itemPid ? { personalityId: itemPid } : {}),
           title: String(r.title || '誓约仪式').trim(),
-          introNarration: String(r.introNarration || '').trim(),
-          openingLine: String(r.openingLine || '').trim(),
+          introNarration: String(r.introNarration || r.narration || '').trim(),
+          openingLine,
           choices: r.choices
             .filter((c) => c && String(c.label || '').trim())
             .map((c, idx) => ({
-              id: String(c.id || `oath_ext_${idx + 1}`),
+              id: String(c.id || `oath_${itemPid || 'ext'}_${idx + 1}`),
               label: String(c.label || '').trim(),
               oathTitle: String(c.oathTitle || '永恒誓约').trim(),
               narration: String(c.narration || '').trim(),
-              reply: String(c.reply || '').trim(),
+              reply: String(c.reply || c.text || c.line || '').trim(),
               closingNarration: String(c.closingNarration || '').trim(),
             })),
         };
+        if (normOath.choices.length === 0) continue;
+        targetBank.oathRitualTheatre = normOath;
+        if (!Array.isArray(targetBank.oathRitualTheatres)) {
+          targetBank.oathRitualTheatres = [];
+        }
+        const existIdx = targetBank.oathRitualTheatres.findIndex(
+          (x) => x.title === normOath.title && x.openingLine === normOath.openingLine
+        );
+        if (existIdx >= 0) targetBank.oathRitualTheatres[existIdx] = normOath;
+        else targetBank.oathRitualTheatres.push(normOath);
         mergedCount += 1;
+      }
+    };
+
+    // A. Merge top-level banks (respecting optional personalityId or item-level personalityId)
+    const topPid = String(personalityId || rawExt.personalityId || '').trim() || null;
+    mergeSingleStoryBank(rawExt, topPid);
+
+    // B. Merge per-personality isolated banks under `personalityExtensions`
+    if (rawExt.personalityExtensions && typeof rawExt.personalityExtensions === 'object') {
+      for (const [pidKey, pBankObj] of Object.entries(rawExt.personalityExtensions)) {
+        const cleanPid = String(pidKey || '').trim();
+        if (!cleanPid || !pBankObj || typeof pBankObj !== 'object') continue;
+        mergeSingleStoryBank(pBankObj, cleanPid);
       }
     }
 
-    // 7. Maritime encounters
+    // C. Maritime encounters (universal sea chart encounter pool)
     if (Array.isArray(rawExt.maritimeEncounters)) {
       if (!Array.isArray(ext.maritimeEncounters)) ext.maritimeEncounters = [];
       for (const enc of rawExt.maritimeEncounters) {
-        if (!enc || typeof enc !== 'object' || !String(enc.body || '').trim()) continue;
+        if (!enc || typeof enc !== 'object' || !String(enc.body || enc.text || '').trim()) continue;
         const norm = {
           id: String(enc.id || `sea_enc_ext_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`),
           title: String(enc.title || '海面奇遇').trim(),
           speaker: String(enc.speaker || '{actor}').trim(),
-          body: String(enc.body || '').trim(),
+          body: String(enc.body || enc.text || '').trim(),
           choices: Array.isArray(enc.choices)
             ? enc.choices
                 .filter((c) => c && String(c.label || '').trim())
@@ -677,7 +855,7 @@ export class ContentManager {
                   label: String(c.label || '').trim(),
                   statKey: c.statKey || null,
                   dc: Number(c.dc) || 0,
-                  successText: String(c.successText || '').trim(),
+                  successText: String(c.successText || c.resultText || '').trim(),
                   failText: String(c.failText || '').trim(),
                   reward: c.reward && typeof c.reward === 'object' ? deepClone(c.reward) : {},
                   affinity: Number(c.affinity) || 2,
@@ -1628,18 +1806,21 @@ export class ContentManager {
       }
 
       // 7. Extended Story Engine Banks (6-stage day/night dialogueBank, portraitTouchLines,
-      //    outfitFlavorLines, favoriteGiftReactions, breakthroughTheatres, oathRitualTheatre, maritimeEncounters)
+      //    outfitFlavorLines, favoriteGiftReactions, breakthroughTheatres, oathRitualTheatre/oathRitualTheatres,
+      //    maritimeEncounters, and per-personality isolated personalityExtensions)
       const extSource =
         rootObj.storyExtensions && typeof rootObj.storyExtensions === 'object'
           ? { ...rootObj, ...rootObj.storyExtensions }
           : rootObj;
       const hasStoryExtKeys =
+        Boolean(extSource.personalityExtensions) ||
         Boolean(extSource.dialogueBank) ||
         Boolean(extSource.portraitTouchLines) ||
         Boolean(extSource.outfitFlavorLines) ||
-        Array.isArray(extSource.favoriteGiftReactions) ||
+        Boolean(extSource.favoriteGiftReactions) ||
         Boolean(extSource.breakthroughTheatres) ||
         Boolean(extSource.oathRitualTheatre) ||
+        Boolean(extSource.oathRitualTheatres) ||
         Array.isArray(extSource.maritimeEncounters);
       if (hasStoryExtKeys) {
         const extMerged = this.mergeStoryExtensions(extSource);
@@ -1870,7 +2051,12 @@ export class ContentManager {
     const def = createDefaultContentState();
     this._state = {
       customEnemies: Array.isArray(snapshot.customEnemies) ? deepClone(snapshot.customEnemies) : [],
-      customDialogues: Array.isArray(snapshot.customDialogues) ? deepClone(snapshot.customDialogues) : [],
+      customDialogues: Array.isArray(snapshot.customDialogues)
+        ? deepClone(snapshot.customDialogues).map((d) => ({
+            ...d,
+            stage: normalizeDialogueStageKey(d?.stage || 'any'),
+          }))
+        : [],
       customGifts: Array.isArray(snapshot.customGifts) ? deepClone(snapshot.customGifts) : [],
       customEquipment: Array.isArray(snapshot.customEquipment) ? deepClone(snapshot.customEquipment) : [],
       storyExtensions: createEmptyStoryExtensions(),
@@ -1888,6 +2074,9 @@ export class ContentManager {
     };
     if (snapshot.storyExtensions && typeof snapshot.storyExtensions === 'object') {
       this.mergeStoryExtensions(snapshot.storyExtensions);
+    }
+    if (snapshot.personalityExtensions && typeof snapshot.personalityExtensions === 'object') {
+      this.mergeStoryExtensions({ personalityExtensions: snapshot.personalityExtensions });
     }
     if (persist) this.persist();
   }

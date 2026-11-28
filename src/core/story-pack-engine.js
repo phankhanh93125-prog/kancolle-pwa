@@ -503,20 +503,30 @@ export class StoryPackEngine {
     if (choice.check && choice.check.statKey) {
       const sk = choice.check.statKey;
       const baseVal = Number(actor?.stats?.[sk] ?? 50);
-      const effVal = actor ? this._entities.getEffectiveStat(actor.id, sk, { round: 'round' }).final : baseVal;
-      const eqCheck = actor ? this._inventory.getCharacterEquipmentBonuses(actor.id).checkBonus : 0;
-      checkResult = this._statRules.performCheck({
-        actorId: actor?.id || null,
-        actorName: actor?.name || '舰娘',
-        statKey: sk,
-        baseStatValue: baseVal,
-        effectiveStatValue: effVal,
-        equipmentCheckBonus: eqCheck,
-        moraleValue: actor?.stats?.morale ?? 70,
-        dc: Number(choice.check.dc) || 12,
-        commanderLuck: this._commander ? this._commander.getLuck() : 0,
-      });
-      passed = checkResult.outcome === 'crit-success' || checkResult.outcome === 'success';
+      const effVal =
+        actor && this._entities && typeof this._entities.getEffectiveStat === 'function'
+          ? this._entities.getEffectiveStat(actor.id, sk, { round: 'round' }).final
+          : baseVal;
+      const eqCheck =
+        actor && this._inventory && typeof this._inventory.getCharacterEquipmentBonuses === 'function'
+          ? this._inventory.getCharacterEquipmentBonuses(actor.id).checkBonus
+          : 0;
+      if (this._statRules && typeof this._statRules.performCheck === 'function') {
+        checkResult = this._statRules.performCheck({
+          actorId: actor?.id || null,
+          actorName: actor?.name || '舰娘',
+          statKey: sk,
+          baseStatValue: baseVal,
+          effectiveStatValue: effVal,
+          equipmentCheckBonus: eqCheck,
+          moraleValue: actor?.stats?.morale ?? 70,
+          dc: Number(choice.check.dc) || 12,
+          commanderLuck: this._commander ? this._commander.getLuck() : 0,
+        });
+        passed = checkResult.outcome === 'crit-success' || checkResult.outcome === 'success';
+      } else {
+        passed = true;
+      }
     }
 
     const activeEffects = passed ? choice.effects || {} : choice.failEffects || choice.effects || {};
@@ -531,7 +541,7 @@ export class StoryPackEngine {
     }
 
     // 2. Apply Resource Deltas
-    if (activeEffects.resources && typeof activeEffects.resources === 'object') {
+    if (activeEffects.resources && typeof activeEffects.resources === 'object' && this._resources) {
       for (const [rk, rawDelta] of Object.entries(activeEffects.resources)) {
         const delta = Math.round(Number(rawDelta) || 0);
         if (delta > 0) {
@@ -555,13 +565,13 @@ export class StoryPackEngine {
             text: res.gained >= 0 ? `好感 +${res.gained}${res.hitGate ? `（达上限${res.hitGate}）` : ''}` : `好感 ${res.gained}`,
             negative: res.gained < 0,
           });
-        } else {
+        } else if (this._entities && typeof this._entities.adjustStat === 'function') {
           const maxAff = this._interaction ? this._interaction.getMaxAffinityFor(actor.id) : 100;
           this._entities.adjustStat(actor.id, 'affinity', affDelta, { min: 0, max: maxAff });
           appliedChips.push({ text: `好感 ${affDelta >= 0 ? `+${affDelta}` : affDelta}`, negative: affDelta < 0 });
         }
       }
-      if (activeEffects.morale) {
+      if (activeEffects.morale && this._entities && typeof this._entities.adjustStat === 'function') {
         const mDelta = Math.round(Number(activeEffects.morale));
         this._entities.adjustStat(actor.id, 'morale', mDelta, { min: 0, max: 100 });
         appliedChips.push({ text: `士气 ${mDelta >= 0 ? `+${mDelta}` : mDelta}`, negative: mDelta < 0 });
@@ -665,6 +675,10 @@ export class StoryPackEngine {
     };
     this._emit('story:theatre-updated', deepClone(this._theatreSession));
     return deepClone(this._theatreSession);
+  }
+
+  startSession(packId, nodeId = null) {
+    return this.setActiveTheatreSession(packId, nodeId);
   }
 
   getActiveTheatreSession() {
@@ -1022,11 +1036,14 @@ export function normalizeAdaptiveStoryPack(raw = {}) {
     ];
   }
 
+  const cleanPid = raw.personalityId ? String(raw.personalityId).trim() : null;
   return {
     id,
     name,
+    title: name,
     version: String(raw.version || '1.0.0').trim(),
     category,
+    ...(cleanPid ? { personalityId: cleanPid } : {}),
     description: String(raw.description ?? raw.desc ?? raw.summary ?? raw.intro ?? '自定义本地事件/剧情包').trim(),
     enabled: raw.enabled !== false,
     builtIn: Boolean(raw.builtIn),

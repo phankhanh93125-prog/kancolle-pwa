@@ -384,7 +384,7 @@ function openMemoirsDrawer(sec, status = null) {
                 : `<div class="lab-stack-sm" style="gap:6px;">
                     ${gates
                       .map((gate) => {
-                        const t = storyEngine?.getBreakthroughTheatreForGate?.(gate) || BREAKTHROUGH_THEATRES[gate];
+                        const t = storyEngine?.getBreakthroughTheatreForGate?.(gate, { actor: sec }) || BREAKTHROUGH_THEATRES[gate];
                         if (!t) return '';
                         return `
                         <div class="lab-slot-card interact-drawer-item" style="padding:8px 10px;">

@@ -57,6 +57,7 @@ function getLocalDateKey(d = new Date()) {
 
 function formatDialogueText(template, vars = {}) {
   return String(template || '')
+    .replaceAll('{{flagship}}', vars.actorName || '舰娘')
     .replaceAll('{actor.name}', vars.actorName || '舰娘')
     .replaceAll('{actor}', vars.actorName || '舰娘')
     .replaceAll('{commander.name}', vars.cmdName || '指挥官')
@@ -218,12 +219,45 @@ export class StoryEngine {
   }
 
   // ------------------------------------------------------------
-  // External Imported Story Extension Resolvers (with Built-in Fallback)
+  // External Imported Story Extension Resolvers (3-Tier Strict Personality Isolation)
   // ------------------------------------------------------------
 
   _getStoryExtensions() {
     if (this._contentManager && typeof this._contentManager.getStoryExtensions === 'function') {
       return this._contentManager.getStoryExtensions();
+    }
+    return null;
+  }
+
+  _resolveActorPrimaryId(actor) {
+    if (!actor || typeof actor !== 'object') return null;
+    const direct =
+      actor?.meta?.personalityCombo?.primaryId ||
+      actor?.personalityCombo?.primaryId ||
+      actor?.meta?.primaryPersonalityId ||
+      actor?.primaryId ||
+      null;
+    if (direct) return String(direct).trim();
+    const resolved = this._dialogueEngine?.resolvePersonality?.(actor)?.primaryId || null;
+    return resolved ? String(resolved).trim() : null;
+  }
+
+  _getPersonalityBank(primaryId) {
+    const pid = String(primaryId || '').trim();
+    if (!pid) return null;
+    const ext = this._getStoryExtensions();
+    return ext?.personalityExtensions?.[pid] || null;
+  }
+
+  _pickTieredEntry(tier1List = [], tier2List = [], tier3List = []) {
+    if (Array.isArray(tier1List) && tier1List.length > 0) {
+      return pickRandom(tier1List);
+    }
+    if (Array.isArray(tier2List) && tier2List.length > 0) {
+      return pickRandom(tier2List);
+    }
+    if (Array.isArray(tier3List) && tier3List.length > 0) {
+      return pickRandom(tier3List);
     }
     return null;
   }
@@ -239,13 +273,141 @@ export class StoryEngine {
     return null;
   }
 
-  getBreakthroughTheatreForGate(gate, { random = false } = {}) {
-    const gNum = Number(gate);
-    const builtin = BREAKTHROUGH_THEATRES[gNum] || null;
+  _pickStageDialogueEntry(actor, stageId, tod) {
+    const pid = this._resolveActorPrimaryId(actor);
+    const pBank = this._getPersonalityBank(pid);
     const ext = this._getStoryExtensions();
-    const extList = ext?.breakthroughTheatres?.[String(gNum)];
-    if (Array.isArray(extList) && extList.length > 0) {
-      const picked = random ? pickRandom(extList) : extList[extList.length - 1];
+
+    const pStage = pBank?.dialogueBank?.[stageId];
+    const pList = pStage?.[tod]?.length ? pStage[tod] : pStage?.day || [];
+
+    const uStage = ext?.dialogueBank?.[stageId];
+    const uRaw = uStage?.[tod]?.length ? uStage[tod] : uStage?.day || [];
+
+    const tier1 = [...pList, ...(pid ? uRaw.filter((x) => x && x.personalityId === pid) : [])];
+    const tier2 = uRaw.filter((x) => x && !x.personalityId);
+
+    const stageBank = DEFAULT_DIALOGUE_BANK[stageId] || DEFAULT_DIALOGUE_BANK.stranger;
+    const tier3 = stageBank[tod] || stageBank.day || [];
+
+    return this._pickTieredEntry(tier1, tier2, tier3) || tier3[0];
+  }
+
+  _pickOutfitFlavorEntry(actor, outfitStyle) {
+    const style = String(outfitStyle || '').trim();
+    if (!style) return null;
+    const pid = this._resolveActorPrimaryId(actor);
+    const pBank = this._getPersonalityBank(pid);
+    const ext = this._getStoryExtensions();
+
+    const pList = Array.isArray(pBank?.outfitFlavorLines?.[style]) ? pBank.outfitFlavorLines[style] : [];
+    const uRaw = Array.isArray(ext?.outfitFlavorLines?.[style]) ? ext.outfitFlavorLines[style] : [];
+
+    const tier1 = [...pList, ...(pid ? uRaw.filter((x) => x && x.personalityId === pid) : [])];
+    const tier2 = uRaw.filter((x) => x && !x.personalityId);
+    const tier3 = OUTFIT_FLAVOR_LINES[style] ? [OUTFIT_FLAVOR_LINES[style]] : [];
+
+    return this._pickTieredEntry(tier1, tier2, tier3);
+  }
+
+  _pickCustomDialogueEntry(actor, stageId) {
+    const pid = this._resolveActorPrimaryId(actor);
+    const allCustom = this._contentManager?.listCustomDialogues ? this._contentManager.listCustomDialogues() : [];
+    const stageMatched = allCustom.filter((d) => {
+      if (!d || !d.text) return false;
+      const st = d.stage === 'friendly' ? 'familiar' : d.stage === 'close' ? 'trusted' : d.stage;
+      return st === 'any' || st === stageId;
+    });
+    const tier1 = pid ? stageMatched.filter((d) => d.personalityId === pid) : [];
+    const tier2 = stageMatched.filter((d) => !d.personalityId);
+    return this._pickTieredEntry(tier1, tier2, []);
+  }
+
+  _pickPortraitTouchEntry(actor, safeZone, band) {
+    const pid = this._resolveActorPrimaryId(actor);
+    const pBank = this._getPersonalityBank(pid);
+    const ext = this._getStoryExtensions();
+
+    const pList = Array.isArray(pBank?.portraitTouchLines?.[safeZone]?.[band])
+      ? pBank.portraitTouchLines[safeZone][band]
+      : [];
+    const uRaw = Array.isArray(ext?.portraitTouchLines?.[safeZone]?.[band])
+      ? ext.portraitTouchLines[safeZone][band]
+      : [];
+
+    const tier1 = [...pList, ...(pid ? uRaw.filter((x) => x && x.personalityId === pid) : [])];
+    const tier2 = uRaw.filter((x) => x && !x.personalityId);
+    const zonePool = PORTRAIT_TOUCH_LINES[safeZone] || PORTRAIT_TOUCH_LINES.head;
+    const tier3 = zonePool[band] || zonePool.low || [];
+
+    return this._pickTieredEntry(tier1, tier2, tier3) || tier3[0];
+  }
+
+  _pickGiftReactionEntry(actor, item, { isFavorite = false } = {}) {
+    const pid = this._resolveActorPrimaryId(actor);
+    const pBank = this._getPersonalityBank(pid);
+    const ext = this._getStoryExtensions();
+
+    const matchGift = (r) =>
+      r &&
+      ((r.giftId && (item.id === r.giftId || String(item.id || '').includes(r.giftId))) ||
+        (r.giftName && item.name === r.giftName));
+
+    const pAll = Array.isArray(pBank?.favoriteGiftReactions) ? pBank.favoriteGiftReactions : [];
+    const uRaw = Array.isArray(ext?.favoriteGiftReactions) ? ext.favoriteGiftReactions : [];
+
+    const pPool = [...pAll, ...(pid ? uRaw.filter((r) => r && r.personalityId === pid) : [])];
+    const pExact = pPool.filter(matchGift);
+    const pGeneric = pPool.filter((r) => !r.giftId && !r.giftName);
+    const tier1 = pExact.length > 0 ? pExact : pGeneric;
+    if (tier1.length > 0) {
+      return pickRandom(tier1);
+    }
+
+    const uPool = uRaw.filter((r) => r && !r.personalityId);
+    const uExact = uPool.filter(matchGift);
+    const uGeneric = uPool.filter((r) => !r.giftId && !r.giftName);
+    const tier2 = uExact.length > 0 ? uExact : isFavorite ? uGeneric : [];
+    if (tier2.length > 0) {
+      return pickRandom(tier2);
+    }
+
+    if (isFavorite) {
+      return pickRandom(FAVORITE_GIFT_REACTIONS) || FAVORITE_GIFT_REACTIONS[0];
+    }
+    return null;
+  }
+
+  getBreakthroughTheatreForGate(gate, actorOrOpts = {}) {
+    let actor = null;
+    let characterId = null;
+    let personalityId = null;
+    let random = false;
+    if (actorOrOpts && (actorOrOpts.id || actorOrOpts.meta)) {
+      actor = actorOrOpts;
+    } else if (actorOrOpts && typeof actorOrOpts === 'object') {
+      ({ actor = null, characterId = null, personalityId = null, random = false } = actorOrOpts);
+    }
+    if (!actor && characterId && this._entities) {
+      actor = this._entities.get(String(characterId));
+    }
+    const pid = personalityId ? String(personalityId).trim() : this._resolveActorPrimaryId(actor);
+
+    const gNum = Number(gate);
+    const gk = String(gNum);
+    const builtin = BREAKTHROUGH_THEATRES[gNum] || null;
+    const pBank = this._getPersonalityBank(pid);
+    const ext = this._getStoryExtensions();
+
+    const pList = Array.isArray(pBank?.breakthroughTheatres?.[gk]) ? pBank.breakthroughTheatres[gk] : [];
+    const uRaw = Array.isArray(ext?.breakthroughTheatres?.[gk]) ? ext.breakthroughTheatres[gk] : [];
+
+    const tier1 = [...pList, ...(pid ? uRaw.filter((x) => x && x.personalityId === pid) : [])];
+    const tier2 = uRaw.filter((x) => x && !x.personalityId);
+    const activePool = tier1.length > 0 ? tier1 : tier2;
+
+    if (activePool.length > 0) {
+      const picked = random ? pickRandom(activePool) : activePool[activePool.length - 1];
       if (picked) {
         return {
           ...picked,
@@ -258,10 +420,44 @@ export class StoryEngine {
     return builtin;
   }
 
-  getOathRitualTheatre() {
+  getOathRitualTheatre(actorOrOpts = {}) {
+    let actor = null;
+    let characterId = null;
+    let personalityId = null;
+    let random = false;
+    if (actorOrOpts && (actorOrOpts.id || actorOrOpts.meta)) {
+      actor = actorOrOpts;
+    } else if (actorOrOpts && typeof actorOrOpts === 'object') {
+      ({ actor = null, characterId = null, personalityId = null, random = false } = actorOrOpts);
+    }
+    if (!actor && characterId && this._entities) {
+      actor = this._entities.get(String(characterId));
+    }
+    const pid = personalityId ? String(personalityId).trim() : this._resolveActorPrimaryId(actor);
+
+    const pBank = this._getPersonalityBank(pid);
     const ext = this._getStoryExtensions();
-    if (ext?.oathRitualTheatre && ext.oathRitualTheatre.openingLine && Array.isArray(ext.oathRitualTheatre.choices) && ext.oathRitualTheatre.choices.length > 0) {
-      return ext.oathRitualTheatre;
+
+    const pList =
+      Array.isArray(pBank?.oathRitualTheatres) && pBank.oathRitualTheatres.length > 0
+        ? pBank.oathRitualTheatres
+        : pBank?.oathRitualTheatre
+        ? [pBank.oathRitualTheatre]
+        : [];
+    const uRaw =
+      Array.isArray(ext?.oathRitualTheatres) && ext.oathRitualTheatres.length > 0
+        ? ext.oathRitualTheatres
+        : ext?.oathRitualTheatre
+        ? [ext.oathRitualTheatre]
+        : [];
+
+    const isValidOath = (r) => r && r.openingLine && Array.isArray(r.choices) && r.choices.length > 0;
+    const tier1 = [...pList, ...(pid ? uRaw.filter((x) => x && x.personalityId === pid) : [])].filter(isValidOath);
+    const tier2 = uRaw.filter((x) => x && !x.personalityId && isValidOath(x));
+    const activePool = tier1.length > 0 ? tier1 : tier2;
+
+    if (activePool.length > 0) {
+      return random ? pickRandom(activePool) : activePool[activePool.length - 1];
     }
     return OATH_RITUAL_THEATRE;
   }
@@ -326,7 +522,7 @@ export class StoryEngine {
       stages: AFFINITY_STAGES_6,
       unlockedGates: unlockedList,
       pendingGate,
-      pendingTheatre: pendingGate ? this.getBreakthroughTheatreForGate(pendingGate) : null,
+      pendingTheatre: pendingGate ? this.getBreakthroughTheatreForGate(pendingGate, { actor }) : null,
       currentCap,
       atStageCap,
       canStartOath,
@@ -459,20 +655,15 @@ export class StoryEngine {
     return entry;
   }
 
-  ensureGreeting(actor) {
+  ensureGreeting(actor, { timeOfDay = null } = {}) {
     if (!actor || !actor.id) return;
     const hist = this._state.chatLogsByShip[actor.id];
     if (Array.isArray(hist) && hist.length > 0) return;
 
     const vars = this._buildVars(actor);
-    const tod = getTimeOfDayBucket();
+    const tod = timeOfDay === 'day' || timeOfDay === 'night' ? timeOfDay : getTimeOfDayBucket();
     const st = this.getAffectionStatus(actor.id);
-    const ext = this._getStoryExtensions();
-    const extStage = ext?.dialogueBank?.[st.stage.id];
-    const extList = extStage?.[tod]?.length ? extStage[tod] : extStage?.day || [];
-    const stageBank = DEFAULT_DIALOGUE_BANK[st.stage.id] || DEFAULT_DIALOGUE_BANK.stranger;
-    const builtinList = stageBank[tod] || stageBank.day;
-    const sample = this._pickFromImportedOrBuiltin(extList, builtinList, 0.68) || stageBank.day[0];
+    const sample = this._pickStageDialogueEntry(actor, st.stage.id, tod);
 
     if (sample?.narration) {
       this._appendMessage(actor.id, {
@@ -504,16 +695,15 @@ export class StoryEngine {
   // Core Chat Actions (Daily Talk / Free Input / Touch / Gift / Breakthrough)
   // ------------------------------------------------------------
 
-  async dailyTalk(actor, { customTopic = '' } = {}) {
+  async dailyTalk(actor, { customTopic = '', timeOfDay = null, preferSource = null } = {}) {
     if (!actor || !actor.id) throw new Error('暂无可互动的舰娘');
-    this.ensureGreeting(actor);
+    this.ensureGreeting(actor, { timeOfDay });
 
     const cid = actor.id;
     const vars = this._buildVars(actor);
     const status = this.getAffectionStatus(cid);
-    const tod = getTimeOfDayBucket();
+    const tod = timeOfDay === 'day' || timeOfDay === 'night' ? timeOfDay : getTimeOfDayBucket();
     const topic = String(customTopic || '').trim();
-    const ext = this._getStoryExtensions();
 
     if (topic) {
       this._appendMessage(cid, {
@@ -523,34 +713,32 @@ export class StoryEngine {
       });
     }
 
-    // Pick natural dialogue (compatible with custom JSON dialogues, extended dialogueBank, outfit flavors, and 6-stage bank)
-    const customDialogues = this._contentManager?.listCustomDialogues
-      ? this._contentManager
-          .listCustomDialogues()
-          .filter((d) => d && d.text && (d.stage === 'any' || d.stage === status.stage.id))
-      : [];
-
     let narrationText = '';
     let spokenText = '';
     let quickChoices = null;
 
-    const extOutfitList = vars.outfitStyle ? ext?.outfitFlavorLines?.[vars.outfitStyle] || [] : [];
-    const builtinOutfit = vars.outfitStyle && OUTFIT_FLAVOR_LINES[vars.outfitStyle] ? [OUTFIT_FLAVOR_LINES[vars.outfitStyle]] : [];
-    const outfitFlavor = this._pickFromImportedOrBuiltin(extOutfitList, builtinOutfit, 0.7);
+    const outfitFlavor = vars.outfitStyle ? this._pickOutfitFlavorEntry(actor, vars.outfitStyle) : null;
+    const pickedCustom = this._pickCustomDialogueEntry(actor, status.stage.id);
 
-    if (!topic && outfitFlavor && Math.random() < 0.3) {
+    const useOutfit =
+      !topic &&
+      outfitFlavor &&
+      (preferSource === 'outfit' || (!preferSource && Math.random() < 0.3));
+    const useCustom =
+      !topic &&
+      !useOutfit &&
+      pickedCustom &&
+      (preferSource === 'customDialogue' || (!preferSource && Math.random() < 0.25));
+
+    if (useOutfit) {
       narrationText = formatDialogueText(outfitFlavor.narration, vars);
       spokenText = formatDialogueText(outfitFlavor.text, vars);
-    } else if (!topic && customDialogues.length > 0 && Math.random() < 0.25) {
-      const pickedCustom = pickRandom(customDialogues);
+    } else if (useCustom) {
       spokenText = formatDialogueText(pickedCustom.text, vars);
       narrationText = `${actor.name}看着你，轻声分享了港区近况。`;
     } else if (topic) {
       // Respond naturally to commander's typed message (with optional AI polish via PromptPipeline)
-      const extStage = ext?.dialogueBank?.[status.stage.id];
-      const extList = extStage?.[tod]?.length ? extStage[tod] : extStage?.day || [];
-      const stagePool = DEFAULT_DIALOGUE_BANK[status.stage.id] || DEFAULT_DIALOGUE_BANK.familiar;
-      const fallbackEntry = this._pickFromImportedOrBuiltin(extList, stagePool[tod] || stagePool.day, 0.65) || stagePool.day[0];
+      const fallbackEntry = this._pickStageDialogueEntry(actor, status.stage.id, tod);
       const baseReply =
         this._dialogueEngine && typeof this._dialogueEngine.composeSecretaryTalk === 'function'
           ? this._dialogueEngine.composeSecretaryTalk({
@@ -561,8 +749,8 @@ export class StoryEngine {
               affStageId: status.stage.id,
               isOathed: status.isOathed,
               customTopic: topic,
-            })?.text || formatDialogueText(fallbackEntry.text, vars)
-          : formatDialogueText(fallbackEntry.text, vars);
+            })?.text || formatDialogueText(fallbackEntry?.text || '', vars)
+          : formatDialogueText(fallbackEntry?.text || '', vars);
 
       let finalReply = baseReply;
       if (this._narrative && typeof this._narrative.run === 'function') {
@@ -585,14 +773,10 @@ export class StoryEngine {
       narrationText = `${actor.name}认真听完你的话，轻轻抬起眼眸。`;
       spokenText = finalReply;
     } else {
-      const extStage = ext?.dialogueBank?.[status.stage.id];
-      const extList = extStage?.[tod]?.length ? extStage[tod] : [];
-      const stagePool = DEFAULT_DIALOGUE_BANK[status.stage.id] || DEFAULT_DIALOGUE_BANK.stranger;
-      const builtinList = stagePool[tod] || stagePool.day;
-      const entry = this._pickFromImportedOrBuiltin(extList, builtinList, 0.68) || builtinList[0];
-      narrationText = formatDialogueText(entry.narration || '', vars);
-      spokenText = formatDialogueText(entry.text || '', vars);
-      if (Array.isArray(entry.choices) && entry.choices.length > 0) {
+      const entry = this._pickStageDialogueEntry(actor, status.stage.id, tod);
+      narrationText = formatDialogueText(entry?.narration || '', vars);
+      spokenText = formatDialogueText(entry?.text || '', vars);
+      if (Array.isArray(entry?.choices) && entry.choices.length > 0) {
         quickChoices = {
           kind: 'casual_branch',
           choices: entry.choices.map((ch, idx) => ({
@@ -623,7 +807,7 @@ export class StoryEngine {
         this._state.dailyTalkByShip[cid] = { dateKey: todayKey, count: usedToday + 1 };
       }
     }
-    this._entities.adjustStat(cid, 'morale', 3, { min: 0, max: 100 });
+    this._entities?.adjustStat?.(cid, 'morale', 3, { min: 0, max: 100 });
 
     if (quickChoices) {
       this._state.activePromptByShip[cid] = quickChoices;
@@ -666,6 +850,7 @@ export class StoryEngine {
       afterAff: affResult.after,
       dailyCapReached,
       pendingGate: affResult.hitGate,
+      narration: narrationText,
       text: spokenText,
     };
   }
@@ -686,25 +871,30 @@ export class StoryEngine {
       : status.stage.index >= 2
       ? 'mid'
       : 'low';
-    const ext = this._getStoryExtensions();
-    const extList = ext?.portraitTouchLines?.[safeZone]?.[band] || [];
-    const builtinList = zonePool[band] || zonePool.low;
-    const picked = this._pickFromImportedOrBuiltin(extList, builtinList, 0.7) || zonePool.low[0];
+    const picked = this._pickPortraitTouchEntry(actor, safeZone, band);
 
     const zoneLabels = { head: '轻抚发顶', shoulder: '轻触肩头', hand: '轻握指尖' };
+    const formattedNarration = formatDialogueText(picked.narration, vars);
+    const formattedText = formatDialogueText(picked.text, vars);
     this._appendMessage(cid, {
       role: 'narration',
-      text: formatDialogueText(picked.narration, vars),
+      text: formattedNarration,
     });
     this._appendMessage(cid, {
       role: 'ship',
       speaker: actor.name,
-      text: formatDialogueText(picked.text, vars),
+      text: formattedText,
     });
-    this._entities.adjustStat(cid, 'morale', 2, { min: 0, max: 100 });
+    this._entities?.adjustStat?.(cid, 'morale', 2, { min: 0, max: 100 });
     await this.persist();
     this._emit('story-engine:updated', { characterId: cid, action: 'touch', zone: safeZone });
-    return { zoneLabel: zoneLabels[safeZone] || '互动', text: formatDialogueText(picked.text, vars) };
+    return {
+      zone: safeZone,
+      band,
+      zoneLabel: zoneLabels[safeZone] || '互动',
+      narration: formattedNarration,
+      text: formattedText,
+    };
   }
 
   async giveBackpackGift(actor, itemId) {
@@ -730,7 +920,7 @@ export class StoryEngine {
 
     const vars = this._buildVars(actor, { giftName: item.name });
     const affResult = this.gainAffection(cid, rawAff, { source: isFavorite ? 'favorite-gift' : 'gift' });
-    this._entities.adjustStat(cid, 'morale', moraleGain, { min: 0, max: 100 });
+    this._entities?.adjustStat?.(cid, 'morale', moraleGain, { min: 0, max: 100 });
 
     this._appendMessage(cid, {
       role: 'commander',
@@ -742,32 +932,15 @@ export class StoryEngine {
 
     const postStatus = this.getAffectionStatus(cid);
     const stage = postStatus.stage;
-    if (isFavorite) {
-      const ext = this._getStoryExtensions();
-      const allExtFav = Array.isArray(ext?.favoriteGiftReactions) ? ext.favoriteGiftReactions : [];
-      const exactExtFav = allExtFav.filter(
-        (r) =>
-          (r.giftId && (item.id === r.giftId || String(item.id || '').includes(r.giftId))) ||
-          (r.giftName && item.name === r.giftName)
-      );
-      const extCandidates = exactExtFav.length > 0 ? exactExtFav : allExtFav.filter((r) => !r.giftId && !r.giftName);
-      const favReact =
-        this._pickFromImportedOrBuiltin(extCandidates, FAVORITE_GIFT_REACTIONS, exactExtFav.length > 0 ? 0.85 : 0.68) ||
-        FAVORITE_GIFT_REACTIONS[0];
-      this._appendMessage(cid, {
-        role: 'narration',
-        text: formatDialogueText(favReact.narration, vars),
-      });
-      this._appendMessage(cid, {
-        role: 'ship',
-        speaker: actor.name,
-        text: formatDialogueText(favReact.text, vars),
-      });
+    const matchedReaction = this._pickGiftReactionEntry(actor, item, { isFavorite });
+    let narrationGiftText = '';
+    let spokenGiftText = '';
+
+    if (matchedReaction) {
+      narrationGiftText = formatDialogueText(matchedReaction.narration, vars);
+      spokenGiftText = formatDialogueText(matchedReaction.text, vars);
     } else {
-      this._appendMessage(cid, {
-        role: 'narration',
-        text: `${actor.name}双手接过「${item.name}」，眼底浮起柔和的惊喜。`,
-      });
+      narrationGiftText = `${actor.name}双手接过「${item.name}」，眼底浮起柔和的惊喜。`;
       const replyByStage = {
         stranger: `「给我的吗？谢谢{cmd}，这份{gift}我会好好收起来的。」`,
         familiar: `「哇，是{gift}！{cmd}眼光真好，刚好是我最近想找的呢。」`,
@@ -776,12 +949,18 @@ export class StoryEngine {
         adoration: `「{gift}我很喜欢，不过……比起礼物，更开心的是送它的人是你，{cmd}。」`,
         oath: `「每次收到你送的{gift}，都会觉得和你在一起的每一天都闪闪发光呢。」`,
       };
-      this._appendMessage(cid, {
-        role: 'ship',
-        speaker: actor.name,
-        text: formatDialogueText(replyByStage[stage.id] || replyByStage.familiar, vars),
-      });
+      spokenGiftText = formatDialogueText(replyByStage[stage.id] || replyByStage.familiar, vars);
     }
+
+    this._appendMessage(cid, {
+      role: 'narration',
+      text: narrationGiftText,
+    });
+    this._appendMessage(cid, {
+      role: 'ship',
+      speaker: actor.name,
+      text: spokenGiftText,
+    });
 
     this._appendMessage(cid, {
       role: 'system',
@@ -810,6 +989,8 @@ export class StoryEngine {
       afterAff: affResult.after,
       pendingGate: affResult.hitGate,
       cappedByGate: affResult.cappedByGate,
+      narration: narrationGiftText,
+      text: spokenGiftText,
     };
   }
 
@@ -904,7 +1085,7 @@ export class StoryEngine {
    */
   async startBreakthroughTheatre(actor, gate, { isReplay = false } = {}) {
     if (!actor || !actor.id) throw new Error('舰娘不存在');
-    const theatre = this.getBreakthroughTheatreForGate(gate, { random: true });
+    const theatre = this.getBreakthroughTheatreForGate(gate, { actor, random: true });
     if (!theatre) throw new Error('未找到对应阶段突破小剧场');
 
     const cid = actor.id;
@@ -965,7 +1146,7 @@ export class StoryEngine {
     }
 
     const vars = this._buildVars(actor);
-    const ritual = this.getOathRitualTheatre();
+    const ritual = this.getOathRitualTheatre({ actor });
 
     this._appendMessage(cid, {
       role: 'system',
@@ -1036,7 +1217,7 @@ export class StoryEngine {
         this._state.unlockedBreakthroughs[cid] = Array.from(set).sort((a, b) => a - b);
         unlockedGate = gate;
         const postSt = this.getAffectionStatus(cid);
-        const theatreMeta = this.getBreakthroughTheatreForGate(gate) || BREAKTHROUGH_THEATRES[gate];
+        const theatreMeta = this.getBreakthroughTheatreForGate(gate, { actor }) || BREAKTHROUGH_THEATRES[gate];
         this._appendMessage(cid, {
           role: 'system',
           text:
